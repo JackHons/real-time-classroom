@@ -2,11 +2,13 @@ packages:
   - apps/*
   - packages/*
 
-# Vite, SvelteKit, and Vitest require esbuild's platform binary. This is the
-# only dependency build script approved for this bootstrap.
+# The pinned native modules below provide the SQLite store and Argon2id password
+# verification used by the local server; esbuild supports the web toolchain.
 onlyBuiltDependencies:
+  - argon2
   - better-sqlite3
   - esbuild
 allowBuilds:
+  argon2: true
   better-sqlite3: true
   esbuild: true

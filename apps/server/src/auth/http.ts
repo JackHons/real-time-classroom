@@ -88,7 +88,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         const teacherToken = cookies[TEACHER_SESSION_COOKIE];
         const studentToken = cookies[STUDENT_SESSION_COOKIE];
         const token = teacherToken ?? studentToken;
-        if (token !== undefined && !csrfMatches(request.headers['x-csrf-token'], token, options.csrfSecret)) { json(response, 403, { error: 'CSRF_REQUIRED' }); return; }
+        if (token !== undefined && !isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) { json(response, 403, { error: 'CSRF_REQUIRED' }); return; }
         if (teacherToken !== undefined) options.sessions.logoutTeacher(teacherToken);
         if (studentToken !== undefined) options.sessions.logoutStudent(studentToken);
         clearSessionCookie(response, TEACHER_SESSION_COOKIE);
@@ -116,7 +116,8 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
 
 export function csrfToken(sessionToken: string, secret: string): string { return createHmac('sha256', secret).update(sessionToken).digest('base64url'); }
 
-function csrfMatches(header: string | string[] | undefined, sessionToken: string, secret: string): boolean {
+/** Shared by the composition root so every cookie-authenticated mutation has identical CSRF verification. */
+export function isValidCsrfToken(header: string | string[] | undefined, sessionToken: string, secret: string): boolean {
   if (typeof header !== 'string') return false;
   const expected = Buffer.from(csrfToken(sessionToken, secret));
   const actual = Buffer.from(header);

@@ -6,10 +6,13 @@ import {
 } from 'node:http';
 
 export type HttpRequestListener = (request: IncomingMessage, response: ServerResponse) => void;
+export type HttpRouteHandler = (request: IncomingMessage, response: ServerResponse) => boolean | Promise<boolean>;
 
 export type ServerOptions = Readonly<{
   host?: string;
   port?: number;
+  /** API routes share this host and take precedence over the SvelteKit handler. */
+  apiHandler?: HttpRouteHandler;
   webHandler?: HttpRequestListener;
 }>;
 
@@ -26,21 +29,7 @@ export type RunningServer = Readonly<{
 export async function startServer(options: ServerOptions = {}): Promise<RunningServer> {
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 4173;
-  const server = createServer((request, response) => {
-    if (request.method === 'GET' && request.url === '/health') {
-      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify({ status: 'ok', service: 'lan-classroom-platform' }));
-      return;
-    }
-
-    if (options.webHandler !== undefined) {
-      options.webHandler(request, response);
-      return;
-    }
-
-    response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
-    response.end(JSON.stringify({ error: 'NOT_IMPLEMENTED' }));
-  });
+  const server = createServer((request, response) => { void dispatch(request, response, options); });
 
   await listen(server, host, port);
   const address = server.address();
@@ -54,6 +43,33 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     port: address.port,
     close: () => close(server)
   };
+}
+
+async function dispatch(request: IncomingMessage, response: ServerResponse, options: ServerOptions): Promise<void> {
+  try {
+    if (request.method === 'GET' && request.url === '/health') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ status: 'ok', service: 'lan-classroom-platform' }));
+      return;
+    }
+
+    if (options.apiHandler !== undefined && await options.apiHandler(request, response)) return;
+
+    if (options.webHandler !== undefined) {
+      options.webHandler(request, response);
+      return;
+    }
+
+    response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ error: 'NOT_IMPLEMENTED' }));
+  } catch {
+    if (!response.headersSent) {
+      response.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ error: 'INTERNAL_ERROR' }));
+    } else if (!response.writableEnded) {
+      response.end();
+    }
+  }
 }
 
 function listen(server: HttpServer, host: string, port: number): Promise<void> {

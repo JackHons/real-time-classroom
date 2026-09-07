@@ -1,6 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Buffer } from 'node:buffer';
 import type { ClassId, PendingStudentRequestId } from '../domain/types.js';
 import { ClassService } from './class-service.js';
+
+const MAX_BODY_BYTES = 8 * 1024;
 
 export type ClassRoutesDependencies = Readonly<{
   service: ClassService;
@@ -64,8 +67,13 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
 function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let raw = '';
+    let size = 0;
     request.setEncoding('utf8');
-    request.on('data', (chunk: string) => { raw += chunk; });
+    request.on('data', (chunk: string) => {
+      size += Buffer.byteLength(chunk);
+      if (size > MAX_BODY_BYTES) { reject(new Error('REQUEST_BODY_TOO_LARGE')); return; }
+      raw += chunk;
+    });
     request.on('end', () => {
       try {
         const parsed: unknown = raw.length === 0 ? {} : JSON.parse(raw);
