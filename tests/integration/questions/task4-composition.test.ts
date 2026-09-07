@@ -75,12 +75,18 @@ describe('Task 4 composed question API', () => {
     const missingRead = await fetch(`${base}/api/questions/not-a-question?as=student`, { headers: { cookie: ada.cookie } });
     expect(draftRead.status).toBe(404);
     expect(await draftRead.json()).toEqual(await missingRead.json());
-    expect((await fetch(`${base}/api/questions/${question.id}/open`, { method: 'POST', headers: headers(teacher) })).status).toBe(204);
+    const oversizedOpen = await fetch(`${base}/api/questions/${question.id}/open`, { method: 'POST', headers: headers(teacher), body: JSON.stringify({ padding: 'x'.repeat(100 * 1024) }) });
+    expect(oversizedOpen.status).toBe(413);
+    expect(oversizedOpen.headers.get('cache-control')).toBe('no-store');
+    const opened = await fetch(`${base}/api/questions/${question.id}/open`, { method: 'POST', headers: headers(teacher) });
+    expect(opened.status).toBe(204);
+    expect(opened.headers.get('cache-control')).toBe('no-store');
 
     const crossClass = await fetch(`${base}/api/questions/${question.id}/answers`, { method: 'POST', headers: headers(bea), body: JSON.stringify({ revision: 0, idempotencyKey: 'bea-0', payload: { kind: 'single_choice', selectedOptions: [template.options[0]?.id] } }) });
     const missingAnswer = await fetch(`${base}/api/questions/not-a-question/answers`, { method: 'POST', headers: headers(bea), body: JSON.stringify({ revision: 0, idempotencyKey: 'missing-0', payload: { kind: 'single_choice', selectedOptions: [template.options[0]?.id] } }) });
     expect(crossClass.status).toBe(404);
     expect(await crossClass.json()).toEqual(await missingAnswer.json());
+    expect(crossClass.headers.get('cache-control')).toBe('no-store');
     const studentCsrfRejected = await fetch(`${base}/api/questions/${question.id}/answers`, { method: 'POST', headers: { origin, cookie: ada.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ revision: 0, idempotencyKey: 'ada-0', payload: { kind: 'single_choice', selectedOptions: [template.options[0]?.id] } }) });
     expect(studentCsrfRejected.status).toBe(403);
 
@@ -103,6 +109,7 @@ describe('Task 4 composed question API', () => {
 
     const closed = await fetch(`${base}/api/questions/${question.id}/close`, { method: 'POST', headers: headers(teacher) });
     expect(closed.status).toBe(200);
+    expect(closed.headers.get('cache-control')).toBe('no-store');
     expect(await closed.json()).toMatchObject({ counts: { [template.options[1]?.id ?? 'missing']: 1 } });
     const late = await fetch(`${base}/api/questions/${question.id}/answers`, { method: 'PUT', headers: headers(ada), body: JSON.stringify({ revision: 2, idempotencyKey: 'ada-2', payload: { kind: 'single_choice', selectedOptions: [template.options[0]?.id] } }) });
     expect(late.status).toBe(200);
@@ -131,5 +138,33 @@ describe('Task 4 composed question API', () => {
     expect(deleteReplay.status).toBe(204);
     expect(database?.prepare('SELECT count(*) AS count FROM answer_current WHERE question_id=?').get(question.id)).toEqual({ count: 0 });
     expect(database?.prepare('SELECT count(*) AS count FROM answer_at_close WHERE question_id=?').get(question.id)).toEqual({ count: 0 });
+  });
+
+  it('bounds named closed-answer pages for a large roster', async () => {
+    const base = await applicationBase();
+    const teacher = await login(base, '/api/auth/teacher/login', { password: 'correct' });
+    const roster = ['name,studentNumber', ...Array.from({ length: 75 }, (_, index) => `Student ${index},S${index}`)].join('\n');
+    const classId = await createClass(base, teacher, 'large roster', roster);
+    const templateResponse = await fetch(`${base}/api/question-templates`, { method: 'POST', headers: headers(teacher), body: JSON.stringify({ kind: 'short_text', prompt: 'Respond' }) });
+    expect(templateResponse.status).toBe(201);
+    const template = await templateResponse.json() as { id: string };
+    const drafted = await fetch(`${base}/api/classes/${classId}/question-drafts`, { method: 'POST', headers: headers(teacher), body: JSON.stringify({ templateId: template.id }) });
+    const question = await drafted.json() as { id: string };
+    expect((await fetch(`${base}/api/questions/${question.id}/open`, { method: 'POST', headers: headers(teacher) })).status).toBe(204);
+    expect((await fetch(`${base}/api/questions/${question.id}/close`, { method: 'POST', headers: headers(teacher) })).status).toBe(200);
+
+    const first = await fetch(`${base}/api/questions/${question.id}`, { headers: { cookie: teacher.cookie } });
+    expect(first.status).toBe(200);
+    expect(first.headers.get('cache-control')).toBe('no-store');
+    const firstPage = await first.json() as { answers: Array<{ studentId: string }>; nextCursor?: string };
+    expect(firstPage.answers).toHaveLength(50);
+    expect(firstPage.nextCursor).toBe('50');
+
+    const second = await fetch(`${base}/api/questions/${question.id}?cursor=${firstPage.nextCursor}&limit=1000`, { headers: { cookie: teacher.cookie } });
+    const secondPage = await second.json() as { answers: Array<{ studentId: string }>; nextCursor?: string };
+    // Requesting a larger limit cannot bypass the route's maximum of 100.
+    expect(secondPage.answers).toHaveLength(25);
+    expect(secondPage.nextCursor).toBeUndefined();
+    expect(new Set([...firstPage.answers, ...secondPage.answers].map((answer) => answer.studentId))).toHaveLength(75);
   });
 });

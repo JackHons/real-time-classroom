@@ -12,6 +12,7 @@
 - Answer idempotency is a separate immutable response record. It stores a request fingerprint and response JSON so a later mutable current answer cannot change a replay result.
 - File metadata tables model the complete upload state machine, SHA-256, byte count, staged/final keys, server completion time, errors, idempotency, submission integrity metadata, and deletion markers. `metadata_committed` is unique per task/student. The Task 5 boundary must pass the final storage key to `commitAfterFileRename`; a missing/mismatched key or unexpected state throws a defensive failure instead of claiming metadata success. The filesystem upload/rename implementation remains intentionally deferred to Task 5.
 - Teacher-confirmed answer deletion physically removes answer payload rows, writes `answer_deletion_markers`, and never rewrites an anonymous close snapshot.
+- Closed-question teacher reads expose named answers in bounded HTTP pages (default 50, maximum 100; `cursor` is an offset). The current Task 2 repository port still materializes the class roster before the HTTP route slices it; a future repository pagination port should move that bound into SQLite before this is used with very large rosters.
 
 ## Deferred work
 

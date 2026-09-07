@@ -1,9 +1,11 @@
-import { Buffer } from 'node:buffer';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DeleteConfirmation, QuestionId, StudentId } from '../../domain/types.js';
-import type { AnswerInput, LiveQuestionRouteDependencies } from './types.js';
+import { readBoundedJsonObject } from '../../http/bounded-json.js';
+import type { AnswerInput, ClosedQuestionView, LiveQuestionRouteDependencies } from './types.js';
 
 const MAX_BODY_BYTES = 16 * 1024;
+const DEFAULT_CLOSED_ANSWER_LIMIT = 50;
+const MAX_CLOSED_ANSWER_LIMIT = 100;
 
 /**
  * Opt-in routes only. The composition root must pass CSRF/session-aware context
@@ -16,17 +18,19 @@ export function createLiveQuestionRoutes(dependencies: LiveQuestionRouteDependen
     const questionId = base?.[1] === undefined ? undefined : decodeURIComponent(base[1]) as QuestionId;
     if (request.method === 'GET' && questionId !== undefined) {
       const actor = url.searchParams.get('as') === 'student' ? dependencies.service.readForStudent(dependencies.studentContext(request), questionId) : dependencies.service.readForTeacher(dependencies.teacherContext(request), questionId);
-      json(response, 200, actor);
+      json(response, 200, isClosedQuestionView(actor) ? paginatedClosedView(actor, url) : actor);
       return true;
     }
     const open = /^\/api\/questions\/([^/]+)\/open$/.exec(url.pathname);
     if (request.method === 'POST' && open?.[1] !== undefined) {
+      requireEmptyObject(await readJson(request));
       dependencies.service.open(dependencies.teacherContext(request), decodeURIComponent(open[1]) as QuestionId);
       json(response, 204, undefined);
       return true;
     }
     const close = /^\/api\/questions\/([^/]+)\/close$/.exec(url.pathname);
     if (request.method === 'POST' && close?.[1] !== undefined) {
+      requireEmptyObject(await readJson(request));
       json(response, 200, dependencies.service.close(dependencies.teacherContext(request), decodeURIComponent(close[1]) as QuestionId));
       return true;
     }
@@ -69,22 +73,36 @@ function deleteConfirmation(body: Record<string, unknown>): DeleteConfirmation {
 }
 
 function isObject(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
+function requireEmptyObject(body: Record<string, unknown>): void { if (Object.keys(body).length !== 0) throw new Error('REQUEST_UNEXPECTED_FIELD'); }
 
-function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    let size = 0;
-    let settled = false;
-    const stop = (): void => { request.removeListener('data', onData); request.removeListener('end', onEnd); };
-    const fail = (error: Error): void => { if (!settled) { settled = true; stop(); request.resume(); reject(error); } };
-    const onData = (chunk: string): void => { size += Buffer.byteLength(chunk); if (size > MAX_BODY_BYTES) fail(new Error('REQUEST_BODY_TOO_LARGE')); else raw += chunk; };
-    const onEnd = (): void => { if (!settled) { try { const body: unknown = raw === '' ? {} : JSON.parse(raw); if (!isObject(body)) throw new Error('REQUEST_BODY_OBJECT_REQUIRED'); settled = true; stop(); resolve(body); } catch (error) { fail(error instanceof Error ? error : new Error('REQUEST_BODY_INVALID')); } } };
-    request.setEncoding('utf8'); request.on('data', onData); request.on('end', onEnd); request.on('error', fail); request.on('aborted', () => fail(new Error('REQUEST_ABORTED')));
-  });
+function readJson(request: IncomingMessage): Promise<Record<string, unknown>> { return readBoundedJsonObject(request, MAX_BODY_BYTES); }
+
+function isClosedQuestionView(value: ReturnType<LiveQuestionRouteDependencies['service']['readForTeacher']> | ReturnType<LiveQuestionRouteDependencies['service']['readForStudent']>): value is ClosedQuestionView {
+  return 'snapshot' in value && 'answers' in value;
+}
+
+function paginatedClosedView(view: ClosedQuestionView, url: URL): Readonly<ClosedQuestionView & { nextCursor: string | undefined }> {
+  const limit = parseLimit(url.searchParams.get('limit'));
+  const offset = parseCursor(url.searchParams.get('cursor'));
+  const answers = view.answers.slice(offset, offset + limit);
+  const nextCursor = offset + answers.length < view.answers.length ? String(offset + answers.length) : undefined;
+  return { ...view, answers, nextCursor };
+}
+
+function parseLimit(value: string | null): number {
+  if (value === null) return DEFAULT_CLOSED_ANSWER_LIMIT;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, MAX_CLOSED_ANSWER_LIMIT) : DEFAULT_CLOSED_ANSWER_LIMIT;
+}
+
+function parseCursor(value: string | null): number {
+  if (value === null) return 0;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
-  if (status === 204) { response.writeHead(204); response.end(); return; }
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  response.end(JSON.stringify(body));
+  const headers = { 'cache-control': 'no-store', ...(status === 204 ? {} : { 'content-type': 'application/json; charset=utf-8' }) };
+  response.writeHead(status, headers);
+  response.end(status === 204 ? undefined : JSON.stringify(body));
 }

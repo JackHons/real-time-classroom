@@ -1,6 +1,6 @@
-import { Buffer } from 'node:buffer';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ClassId, QuestionId, QuestionTemplateId } from '../../domain/types.js';
+import { readBoundedJsonObject } from '../../http/bounded-json.js';
 import { QuestionBankService } from './service.js';
 import type { TemplateInput } from './types.js';
 
@@ -48,11 +48,10 @@ function draftBody(body: Record<string, unknown>): Readonly<{ templateId?: strin
 function assertExactKeys(body: Record<string, unknown>, allowed: readonly string[]): void { if (Object.keys(body).some((key) => !allowed.includes(key))) throw new Error('REQUEST_UNEXPECTED_FIELD'); }
 function requireEmptyOrObject(body: Record<string, unknown>): void { if (Object.keys(body).length !== 0) throw new Error('REQUEST_UNEXPECTED_FIELD'); }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
-async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of request) { const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string); size += buffer.length; if (size > MAX_BODY_BYTES) throw new Error('REQUEST_BODY_TOO_LARGE'); chunks.push(buffer); }
-  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-  if (!isRecord(parsed)) throw new Error('REQUEST_BODY_OBJECT_REQUIRED');
-  return parsed;
+function readJson(request: IncomingMessage): Promise<Record<string, unknown>> { return readBoundedJsonObject(request, MAX_BODY_BYTES); }
+function respond(response: ServerResponse, status: number, body?: unknown): true {
+  const headers = { 'cache-control': 'no-store', ...(status === 204 ? {} : { 'content-type': 'application/json; charset=utf-8' }) };
+  response.writeHead(status, headers);
+  response.end(status === 204 ? undefined : JSON.stringify(body));
+  return true;
 }
-function respond(response: ServerResponse, status: number, body?: unknown): true { if (status === 204) { response.writeHead(status); response.end(); } else { response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); } return true; }
