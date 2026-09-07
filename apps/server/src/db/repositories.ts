@@ -1,11 +1,15 @@
-import type { AnswerAtClose, AnswerCurrent, AnswerPayload, AuthorizedStudentContext, AuthorizedTeacherContext, Class, ClassId, DeleteConfirmation, FileSubmissionTaskId, LifecycleState, Question, QuestionId, QuestionResultSnapshot, Student, StudentId, StudentSession, UploadSessionId } from '../domain/types.js';
+import type { AnswerAtClose, AnswerCurrent, AnswerPayload, AuthorizedStudentContext, AuthorizedTeacherContext, Class, ClassId, DeleteConfirmation, FileSubmissionTaskId, LifecycleState, Question, QuestionId, QuestionResultSnapshot, QuestionTemplate, QuestionTemplateId, Student, StudentId, StudentSession, UploadSessionId } from '../domain/types.js';
 
-export type CreateQuestion = Readonly<{ id: QuestionId; classId: ClassId; kind: Question['kind']; prompt: string; options: readonly Readonly<{ key: string; label: string }>[]; referenceAnswer?: string | null }>;
+export type TemplateOptionInput = Readonly<{ key: string; label: string }>;
+export type CreateQuestionTemplate = Readonly<{ id: QuestionTemplateId; kind: Question['kind']; prompt: string; options: readonly TemplateOptionInput[]; referenceAnswer?: string | null }>;
+export type CreateQuestion = Readonly<{ id: QuestionId; classId: ClassId; templateId?: QuestionTemplateId | null; kind: Question['kind']; prompt: string; options: readonly TemplateOptionInput[]; referenceAnswer?: string | null }>;
 export type SubmitAnswer = Readonly<{ questionId: QuestionId; revision: number; idempotencyKey: string; requestFingerprint: string; payload: AnswerPayload }>;
 export interface DomainRepository {
   createClass(input: Class): void;
   createStudent(input: Student): void;
   createStudentSession(input: StudentSession): void;
+  createQuestionTemplate(context: AuthorizedTeacherContext, input: CreateQuestionTemplate): QuestionTemplate;
+  listQuestionTemplates(context: AuthorizedTeacherContext): readonly QuestionTemplate[];
   createQuestion(context: AuthorizedTeacherContext, input: CreateQuestion): Question;
   transitionQuestion(context: AuthorizedTeacherContext, questionId: QuestionId, to: LifecycleState): void;
   submitAnswer(context: AuthorizedStudentContext, input: SubmitAnswer): AnswerCurrent;

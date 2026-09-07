@@ -33,6 +33,7 @@ export type StudentSession = Readonly<{ id: StudentSessionId; studentId: Student
 export type TeacherSession = Readonly<{ id: TeacherSessionId; tokenHash: string } & SessionTimes>;
 export type Class = Readonly<{ id: ClassId; name: string; createdAtUtc: IsoUtc; updatedAtUtc: IsoUtc }>;
 export type QuestionOption = Readonly<{ key: string; label: string; ordinal: number }>;
+export type QuestionTemplate = Readonly<{ id: QuestionTemplateId; kind: QuestionKind; prompt: string; options: readonly QuestionOption[]; referenceAnswer: string | null }>;
 export type Question = Readonly<{ id: QuestionId; classId: ClassId; templateId: QuestionTemplateId | null; kind: QuestionKind; prompt: string; options: readonly QuestionOption[]; referenceAnswer: string | null; state: LifecycleState; openedAtUtc: IsoUtc | null; closedAtUtc: IsoUtc | null }>;
 export type AnswerPayload = Readonly<{ kind: QuestionKind; selectedOptions?: readonly string[]; text?: string }>;
 export type AnswerCurrent = Readonly<{ id: AnswerId; questionId: QuestionId; studentId: StudentId; revision: number; idempotencyKey: string; payload: AnswerPayload; submittedAtUtc: IsoUtc; late: boolean }>;

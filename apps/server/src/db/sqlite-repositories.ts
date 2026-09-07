@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { assertLifecycleTransition } from '../domain/state-machine.js';
-import type { AnswerAtClose, AnswerCurrent, AnswerPayload, AuthorizedStudentContext, AuthorizedTeacherContext, Class, FileSubmissionTaskId, IsoUtc, LifecycleState, Question, QuestionId, QuestionResultSnapshot, Student, StudentId, StudentSession, UploadSessionId } from '../domain/types.js';
+import { assertTemplateSnapshotMatches } from '../domain/template-consistency.js';
+import type { AnswerAtClose, AnswerCurrent, AnswerPayload, AuthorizedStudentContext, AuthorizedTeacherContext, Class, FileSubmissionTaskId, IsoUtc, LifecycleState, Question, QuestionId, QuestionResultSnapshot, QuestionTemplate, QuestionTemplateId, Student, StudentId, StudentSession, UploadSessionId } from '../domain/types.js';
 import type { SqliteDatabase } from './connection.js';
-import type { CreateQuestion, DomainRepository, FileMetadataRepository, SubmitAnswer } from './repositories.js';
+import type { CreateQuestion, CreateQuestionTemplate, DomainRepository, FileMetadataRepository, SubmitAnswer } from './repositories.js';
 
 type QuestionRow = { id: string; class_id: string; template_id: string | null; kind: Question['kind']; prompt: string; reference_answer: string | null; state: LifecycleState; opened_at_utc: string | null; closed_at_utc: string | null };
 type AnswerRow = { id: string; student_id: string; revision: number; idempotency_key: string; payload_json: string; submitted_at_utc: string; late: number };
@@ -28,11 +29,30 @@ export class SqliteDomainRepository implements DomainRepository {
     })();
   }
 
+  createQuestionTemplate(context: AuthorizedTeacherContext, input: CreateQuestionTemplate): QuestionTemplate {
+    void context;
+    const now = this.now();
+    this.database.transaction(() => {
+      this.database.prepare('INSERT INTO question_templates (id,kind,prompt,reference_answer,created_at_utc,updated_at_utc) VALUES (?,?,?,?,?,?)').run(input.id, input.kind, input.prompt, input.referenceAnswer ?? null, now, now);
+      const option = this.database.prepare('INSERT INTO question_template_options (id,template_id,option_key,label,ordinal) VALUES (?,?,?,?,?)');
+      input.options.forEach((value, ordinal) => option.run(`${input.id}:${value.key}`, input.id, value.key, value.label, ordinal));
+    })();
+    return this.getQuestionTemplate(input.id);
+  }
+
+  listQuestionTemplates(context: AuthorizedTeacherContext): readonly QuestionTemplate[] {
+    void context;
+    const rows = this.database.prepare('SELECT id FROM question_templates ORDER BY created_at_utc,id').all() as readonly { id: string }[];
+    return rows.map((row) => this.getQuestionTemplate(row.id as QuestionTemplateId));
+  }
+
   createQuestion(context: AuthorizedTeacherContext, input: CreateQuestion): Question {
     void context;
     const now = this.now();
     this.database.transaction(() => {
-      this.database.prepare('INSERT INTO questions (id,class_id,template_id,kind,prompt,reference_answer,state,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,?,?,?,?,\'draft\',NULL,NULL,?,?)').run(input.id, input.classId, null, input.kind, input.prompt, input.referenceAnswer ?? null, now, now);
+      const templateId = input.templateId ?? null;
+      if (templateId !== null) assertTemplateSnapshotMatches(this.getQuestionTemplate(templateId), input);
+      this.database.prepare('INSERT INTO questions (id,class_id,template_id,kind,prompt,reference_answer,state,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,?,?,?,?,\'draft\',NULL,NULL,?,?)').run(input.id, input.classId, templateId, input.kind, input.prompt, input.referenceAnswer ?? null, now, now);
       const option = this.database.prepare('INSERT INTO question_options (id,question_id,option_key,label,ordinal) VALUES (?,?,?,?,?)');
       input.options.forEach((value, ordinal) => option.run(`${input.id}:${value.key}`, input.id, value.key, value.label, ordinal));
     })();
@@ -121,6 +141,13 @@ export class SqliteDomainRepository implements DomainRepository {
     const row = this.database.prepare('SELECT id,class_id,template_id,kind,prompt,reference_answer,state,opened_at_utc,closed_at_utc FROM questions WHERE id=?').get(questionId) as QuestionRow | undefined;
     if (row === undefined) throw new Error('QUESTION_NOT_FOUND');
     return row;
+  }
+
+  private getQuestionTemplate(templateId: QuestionTemplateId): QuestionTemplate {
+    const row = this.database.prepare('SELECT id,kind,prompt,reference_answer FROM question_templates WHERE id=?').get(templateId) as { id: string; kind: QuestionTemplate['kind']; prompt: string; reference_answer: string | null } | undefined;
+    if (row === undefined) throw new Error('QUESTION_TEMPLATE_NOT_FOUND');
+    const options = this.database.prepare('SELECT option_key,label,ordinal FROM question_template_options WHERE template_id=? ORDER BY ordinal').all(templateId) as readonly { option_key: string; label: string; ordinal: number }[];
+    return { id: row.id as QuestionTemplateId, kind: row.kind, prompt: row.prompt, options: options.map((option) => ({ key: option.option_key, label: option.label, ordinal: option.ordinal })), referenceAnswer: row.reference_answer };
   }
 
   private getQuestion(questionId: QuestionId): Question {

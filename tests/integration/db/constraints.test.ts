@@ -51,6 +51,19 @@ describe('SQLite migration and repository transactions', () => {
     expect(database?.prepare('SELECT revoked_at_utc FROM student_sessions WHERE id=?').get('expired')).toMatchObject({ revoked_at_utc: expect.any(String) });
   });
 
+  it('persists template options and only permits an exact template-backed draft snapshot', () => {
+    const repository = setup();
+    const template = repository.createQuestionTemplate(teacher, { id: 'template-1' as never, kind: 'single_choice', prompt: 'Pick a letter', options: [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }], referenceAnswer: 'a' });
+    expect(repository.listQuestionTemplates(teacher)).toEqual([template]);
+
+    const draft = repository.createQuestion(teacher, { id: 'template-draft' as never, classId: 'class-1' as ClassId, templateId: template.id, kind: template.kind, prompt: template.prompt, options: template.options.map(({ key, label }) => ({ key, label })), referenceAnswer: template.referenceAnswer });
+    expect(draft).toMatchObject({ templateId: template.id, options: template.options });
+    expect(() => repository.createQuestion(teacher, { id: 'mismatched-template-draft' as never, classId: 'class-1' as ClassId, templateId: template.id, kind: template.kind, prompt: template.prompt, options: [{ key: 'a', label: 'Changed' }, { key: 'b', label: 'B' }], referenceAnswer: template.referenceAnswer })).toThrow('QUESTION_TEMPLATE_SNAPSHOT_MISMATCH');
+    expect(database?.prepare('SELECT id FROM questions WHERE id=?').get('mismatched-template-draft')).toBeUndefined();
+    expect(() => repository.createQuestion(teacher, { id: 'missing-template-draft' as never, classId: 'class-1' as ClassId, templateId: 'missing-template' as never, kind: 'short_text', prompt: 'Missing', options: [] })).toThrow('QUESTION_TEMPLATE_NOT_FOUND');
+    expect(database?.prepare('SELECT id FROM questions WHERE id=?').get('missing-template-draft')).toBeUndefined();
+  });
+
   it('closes atomically, snapshots no-answer rows, and rejects reopen', () => {
     const repository = setup();
     repository.createQuestion(teacher, { id: 'q1' as never, classId: 'class-1' as ClassId, kind: 'single_choice', prompt: 'Pick', options: [{ key: 'a', label: 'A' }] });
