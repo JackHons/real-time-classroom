@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createAuthHttpHandler, LoginRateLimiter, type StudentJoinPort } from '../../../apps/server/src/auth/http.js';
 import { AuthSessions, type Clock, type SessionToken } from '../../../apps/server/src/auth/session.js';
 import type { AuthSessionRepository } from '../../../apps/server/src/db/auth-session-repository.js';
-import type { IsoUtc, StudentSession, TeacherSession } from '../../../apps/server/src/domain/types.js';
+import type { ClassId, IsoUtc, Student, StudentId, StudentSession, TeacherSession } from '../../../apps/server/src/domain/types.js';
 
 class TestRepository implements AuthSessionRepository {
   readonly teachers = new Map<string, TeacherSession>(); readonly students = new Map<string, StudentSession>();
@@ -19,11 +19,14 @@ class TestRepository implements AuthSessionRepository {
 function revoke<T extends TeacherSession | StudentSession>(map: Map<string, T>, hash: string, now: IsoUtc): boolean { const value = map.get(hash); if (value === undefined || value.revokedAtUtc !== null) return false; map.set(hash, { ...value, revokedAtUtc: now } as T); return true; }
 class FixedClock implements Clock { now(): Date { return new Date('2026-09-07T00:00:00.000Z'); } }
 let server: Server | undefined;
+let auditCodes: string[];
 afterEach(async () => { await new Promise<void>((resolve) => server?.close(() => resolve()) ?? resolve()); server = undefined; });
 
 async function authServer(join: StudentJoinPort): Promise<string> {
   const repository = new TestRepository();
-  const handler = createAuthHttpHandler({ sessions: new AuthSessions(repository, new FixedClock(), () => 'teacher-token' as SessionToken), sessionRepository: repository, studentJoin: join, allowedOrigin: 'http://classroom.test', csrfSecret: 'test-secret', passwordVerifier: async (password) => password === 'correct', loginRateLimiter: new LoginRateLimiter(1, 60_000) });
+  auditCodes = [];
+  let nextToken = 0;
+  const handler = createAuthHttpHandler({ sessions: new AuthSessions(repository, new FixedClock(), () => `${nextToken === 0 ? 'teacher' : 'session'}-token-${nextToken++}` as SessionToken), sessionRepository: repository, studentJoin: join, allowedOrigin: 'http://classroom.test', csrfSecret: 'test-secret', passwordVerifier: async (password) => password === 'correct', loginRateLimiter: new LoginRateLimiter(2, 60_000), auditStudentJoinDenial: (entry) => { auditCodes.push(entry.code); } });
   server = createServer((request, response) => { void handler(request, response); });
   await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (address === null || typeof address === 'string') throw new Error('missing address'); return `http://127.0.0.1:${address.port}`;
@@ -34,17 +37,56 @@ describe('auth HTTP listener', () => {
     const base = await authServer({ join: () => undefined });
     const response = await fetch(`${base}/api/auth/teacher/login`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct' }) });
     expect(response.status).toBe(200);
-    expect(response.headers.get('set-cookie')).toMatch(/teacher_session=teacher-token; Max-Age=43200; Path=\/; HttpOnly; SameSite=Lax/);
+    expect(response.headers.get('set-cookie')).toMatch(/teacher_session=teacher-token-0; Max-Age=43200; Path=\/; HttpOnly; SameSite=Lax/);
     await expect(response.json()).resolves.toMatchObject({ actor: 'teacher', csrfToken: expect.any(String) });
   });
 
-  it('requires origin and rate-limits failed teacher credentials', async () => {
+  it('requires origin and rate-limits only repeated failed teacher credentials', async () => {
     const base = await authServer({ join: () => undefined });
     const missingOrigin = await fetch(`${base}/api/auth/teacher/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct' }) });
     expect(missingOrigin.status).toBe(403);
     const invalid = () => fetch(`${base}/api/auth/teacher/login`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ password: 'wrong' }) });
     expect((await invalid()).status).toBe(401);
+    // A successful authentication is never consumed as an attempt and clears
+    // the preceding failures for this teacher/IP bucket.
+    expect((await fetch(`${base}/api/auth/teacher/login`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct' }) })).status).toBe(200);
+    expect((await invalid()).status).toBe(401);
+    expect((await invalid()).status).toBe(401);
     expect((await invalid()).status).toBe(429);
+  });
+
+  it('keeps failure buckets bounded and expires old identities', () => {
+    const limiter = new LoginRateLimiter(1, 1_000, 2);
+    const start = new Date('2026-09-07T00:00:00.000Z');
+    limiter.recordFailure('first', start);
+    limiter.recordFailure('second', new Date(start.getTime() + 1));
+    limiter.recordFailure('third', new Date(start.getTime() + 2));
+    expect(limiter.allow('first', new Date(start.getTime() + 3))).toBe(true);
+    expect(limiter.allow('second', new Date(start.getTime() + 3))).toBe(false);
+    expect(limiter.allow('second', new Date(start.getTime() + 1_001))).toBe(true);
+  });
+
+  it('makes active-device, unknown, and unapproved student joins externally indistinguishable', async () => {
+    const student: Student = { id: 'student-1' as StudentId, classId: 'class-1' as ClassId, displayName: 'Ada', rawStudentNumber: 'A1', normalizedStudentNumber: 'A1', isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never };
+    const base = await authServer({ join: ({ displayName }) => displayName === 'Ada' ? student : undefined });
+    const join = (displayName: string) => fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', displayName, studentNumber: 'A1' }) });
+    expect((await join('Ada')).status).toBe(200);
+    const secondDevice = await join('Ada');
+    const unknown = await join('Unknown');
+    expect(secondDevice.status).toBe(403);
+    expect(await secondDevice.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
+    expect(unknown.status).toBe(secondDevice.status);
+    expect(await unknown.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
+    expect(auditCodes).toEqual(['STUDENT_SESSION_ALREADY_ACTIVE', 'STUDENT_JOIN_NOT_APPROVED']);
+  });
+
+  it('does not let successful student joins behind one NAT consume its failure budget', async () => {
+    const students = new Map(Array.from({ length: 6 }, (_, index) => [`Student ${index}`, { id: `student-${index}` as StudentId, classId: 'class-1' as ClassId, displayName: `Student ${index}`, rawStudentNumber: `S${index}`, normalizedStudentNumber: `S${index}`, isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never }]));
+    const base = await authServer({ join: ({ displayName }) => students.get(displayName) });
+    for (const index of Array.from({ length: 6 }, (_, item) => item)) {
+      const response = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', displayName: `Student ${index}`, studentNumber: `S${index}` }) });
+      expect(response.status).toBe(200);
+    }
   });
 
   it('requires the session-derived CSRF token before logout', async () => {

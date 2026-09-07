@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApplication, FirstRunSetupRequiredError } from '../../apps/server/src/application.js';
+import type { Clock } from '../../apps/server/src/auth/session.js';
 import { openSqlite, type SqliteDatabase } from '../../apps/server/src/db/connection.js';
 import { migrate } from '../../apps/server/src/db/migrator.js';
 import { startServer, type RunningServer } from '../../apps/server/src/server.js';
@@ -11,6 +12,12 @@ const origin = 'http://classroom.test';
 let database: SqliteDatabase | undefined;
 let directory: string | undefined;
 let server: RunningServer | undefined;
+
+class MutableClock implements Clock {
+  constructor(private current: Date) {}
+  now(): Date { return this.current; }
+  advance(milliseconds: number): void { this.current = new Date(this.current.getTime() + milliseconds); }
+}
 
 afterEach(async () => {
   await server?.close(); server = undefined;
@@ -28,8 +35,8 @@ function databaseWithTeacherHash(): SqliteDatabase {
   return database;
 }
 
-async function applicationBase(): Promise<string> {
-  const app = createApplication({ database: databaseWithTeacherHash(), allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async (password) => password === 'correct' });
+async function applicationBase(clock?: Clock): Promise<string> {
+  const app = createApplication({ database: databaseWithTeacherHash(), allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async (password) => password === 'correct', ...(clock === undefined ? {} : { clock }) });
   server = await startServer({ host: '127.0.0.1', port: 0, apiHandler: app.apiHandler });
   return `http://${server.host}:${server.port}`;
 }
@@ -72,6 +79,19 @@ describe('Task 3 composed API routes', () => {
     expect(noOrigin.status).toBe(403);
   });
 
+  it('does not refresh a teacher idle session for rejected Origin or CSRF requests', async () => {
+    const clock = new MutableClock(new Date('2026-09-07T00:00:00.000Z'));
+    const base = await applicationBase(clock);
+    const login = await teacherLogin(base);
+    const before = database?.prepare('SELECT last_seen_at_utc,idle_expires_at_utc FROM teacher_sessions').get();
+    clock.advance(60_000);
+    const csrfRejected = await fetch(`${base}/api/classes`, { method: 'POST', headers: { origin, cookie: login.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ name: '1A' }) });
+    expect(csrfRejected.status).toBe(403);
+    const originRejected = await fetch(`${base}/api/classes`, { method: 'POST', headers: { cookie: login.cookie, 'x-csrf-token': login.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ name: '1A' }) });
+    expect(originRejected.status).toBe(403);
+    expect(database?.prepare('SELECT last_seen_at_utc,idle_expires_at_utc FROM teacher_sessions').get()).toEqual(before);
+  });
+
   it('creates sessions only for exact roster matches, never for pending joins', async () => {
     const base = await applicationBase();
     const login = await teacherLogin(base);
@@ -90,12 +110,20 @@ describe('Task 3 composed API routes', () => {
     const request = await pending.json() as { request: { id: string } };
     const denied = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
     expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
     expect(database?.prepare('SELECT count(*) AS count FROM student_sessions').get()).toEqual({ count: 1 });
+
+    const unknown = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'unknown-class', displayName: 'Unauthorised', studentNumber: 'S2' }) });
+    expect(unknown.status).toBe(denied.status);
+    expect(await unknown.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
 
     const approved = await fetch(`${base}/api/pending-student-requests/${request.request.id}/approve`, { method: 'POST', headers: teacherHeaders(login) });
     expect(approved.status).toBe(201);
     const approvedJoin = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
     expect(approvedJoin.status).toBe(200);
     expect(database?.prepare('SELECT count(*) AS count FROM student_sessions').get()).toEqual({ count: 2 });
+    const secondDevice = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
+    expect(secondDevice.status).toBe(403);
+    expect(await secondDevice.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
   });
 });

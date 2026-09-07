@@ -58,11 +58,14 @@ export function createApplication(options: ApplicationOptions): Application {
   const authenticateTeacherMutation = (request: IncomingMessage): AuthorizedTeacherContext => {
     requireAllowedOrigin(request, options.allowedOrigin);
     const token = cookie(request, 'teacher_session');
-    const teacher = sessions.authenticateTeacher(token);
-    if (teacher === undefined) throw new HttpError(401, 'TEACHER_AUTH_REQUIRED');
-    if (token === undefined || !isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) {
+    if (token === undefined) throw new HttpError(401, 'TEACHER_AUTH_REQUIRED');
+    if (!isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) {
       throw new HttpError(403, 'CSRF_REQUIRED');
     }
+    // authenticateTeacher refreshes idle expiry. Validate every non-touching
+    // request property first so a rejected CSRF request cannot keep a session alive.
+    const teacher = sessions.authenticateTeacher(token);
+    if (teacher === undefined) throw new HttpError(401, 'TEACHER_AUTH_REQUIRED');
     return { teacherSessionId: teacher.teacherSessionId, csrfValidated: true };
   };
   const authHandler = createAuthHttpHandler({

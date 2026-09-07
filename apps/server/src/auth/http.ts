@@ -26,22 +26,57 @@ export type AuthHttpHandlerOptions = Readonly<{
   csrfSecret: string;
   passwordVerifier?: PasswordVerifier;
   loginRateLimiter?: LoginRateLimiter;
+  studentJoinRateLimiter?: LoginRateLimiter;
+  studentIpRateLimiter?: LoginRateLimiter;
+  /** Receives a private reason for a deliberately generic student-facing denial. */
+  auditStudentJoinDenial?: (entry: Readonly<{ code: 'STUDENT_JOIN_NOT_APPROVED' | 'STUDENT_SESSION_ALREADY_ACTIVE'; remoteAddress: string; classId: ClassId }>) => void;
 }>;
 
 type LoginBody = Readonly<{ password?: unknown }>;
 type StudentJoinBody = Readonly<{ classId?: unknown; displayName?: unknown; studentNumber?: unknown }>;
 
 export class LoginRateLimiter {
-  private readonly attempts = new Map<string, number[]>();
-  constructor(private readonly maximum = 5, private readonly windowMs = 15 * 60 * 1000) {}
+  private readonly attempts = new Map<string, Readonly<{ failures: number[]; lastAccessedAt: number }>>();
+  constructor(private readonly maximum = 5, private readonly windowMs = 15 * 60 * 1000, private readonly maximumEntries = 1_024) {}
 
+  /** Checks a failure-only budget; this never records a successful request. */
   allow(key: string, now: Date): boolean {
-    const threshold = now.getTime() - this.windowMs;
-    const recent = (this.attempts.get(key) ?? []).filter((time) => time > threshold);
-    if (recent.length >= this.maximum) { this.attempts.set(key, recent); return false; }
-    recent.push(now.getTime());
-    this.attempts.set(key, recent);
-    return true;
+    const timestamp = now.getTime();
+    this.cleanup(timestamp);
+    const existing = this.attempts.get(key);
+    if (existing === undefined) return true;
+    const failures = this.recent(existing.failures, timestamp);
+    this.attempts.set(key, { failures, lastAccessedAt: timestamp });
+    return failures.length < this.maximum;
+  }
+
+  recordFailure(key: string, now: Date): void {
+    const timestamp = now.getTime();
+    this.cleanup(timestamp);
+    const existing = this.attempts.get(key);
+    if (existing === undefined) this.evictOneIfFull();
+    const failures = [...this.recent(existing?.failures ?? [], timestamp), timestamp];
+    this.attempts.set(key, { failures, lastAccessedAt: timestamp });
+  }
+
+  clear(key: string): void { this.attempts.delete(key); }
+
+  private recent(failures: readonly number[], timestamp: number): number[] { return failures.filter((time) => time > timestamp - this.windowMs); }
+  private cleanup(timestamp: number): void {
+    for (const [key, entry] of this.attempts) {
+      const failures = this.recent(entry.failures, timestamp);
+      if (failures.length === 0) this.attempts.delete(key);
+      else if (failures.length !== entry.failures.length) this.attempts.set(key, { failures, lastAccessedAt: entry.lastAccessedAt });
+    }
+  }
+  private evictOneIfFull(): void {
+    if (this.attempts.size < this.maximumEntries) return;
+    let oldest: string | undefined;
+    let oldestAccess = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of this.attempts) {
+      if (entry.lastAccessedAt < oldestAccess) { oldest = key; oldestAccess = entry.lastAccessedAt; }
+    }
+    if (oldest !== undefined) this.attempts.delete(oldest);
   }
 }
 
@@ -52,6 +87,11 @@ export class LoginRateLimiter {
  */
 export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
   const rateLimiter = options.loginRateLimiter ?? new LoginRateLimiter();
+  // Identity failures protect a particular pupil without allowing five valid
+  // joins behind one NAT address to lock out the rest of a class. A much higher
+  // IP-only failure budget still limits broad credential spraying.
+  const studentJoinRateLimiter = options.studentJoinRateLimiter ?? new LoginRateLimiter();
+  const studentIpRateLimiter = options.studentIpRateLimiter ?? new LoginRateLimiter(50);
   const verifyPassword = options.passwordVerifier ?? verifyTeacherPassword;
   return async (request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://auth.local').pathname;
@@ -65,8 +105,14 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
       if (request.method === 'POST' && pathname === '/api/auth/teacher/login') {
         const body = await readJson<LoginBody>(request);
         if (typeof body.password !== 'string') { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
-        if (!rateLimiter.allow(`teacher:${remoteAddress(request)}`, new Date())) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
-        if (!await verifyPassword(body.password, options.sessionRepository.teacherPasswordHash())) { json(response, 401, { error: 'INVALID_CREDENTIALS' }); return; }
+        const now = new Date();
+        const rateKey = `teacher:${remoteAddress(request)}`;
+        if (!rateLimiter.allow(rateKey, now)) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        if (!await verifyPassword(body.password, options.sessionRepository.teacherPasswordHash())) {
+          rateLimiter.recordFailure(rateKey, now);
+          json(response, 401, { error: 'INVALID_CREDENTIALS' }); return;
+        }
+        rateLimiter.clear(rateKey);
         const login = options.sessions.createTeacherSession();
         setSessionCookie(response, TEACHER_SESSION_COOKIE, login.token);
         json(response, 200, { actor: 'teacher', csrfToken: csrfToken(login.token, options.csrfSecret) }); return;
@@ -75,10 +121,26 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
       if (request.method === 'POST' && pathname === '/api/auth/student/join') {
         const body = await readJson<StudentJoinBody>(request);
         if (!isStudentJoinBody(body)) { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
-        if (!rateLimiter.allow(`student:${remoteAddress(request)}:${body.classId}`, new Date())) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        const now = new Date();
+        const address = remoteAddress(request);
+        const identityKey = studentIdentityRateKey(address, body);
+        const ipKey = `student-ip:${address}`;
+        if (!studentJoinRateLimiter.allow(identityKey, now) || !studentIpRateLimiter.allow(ipKey, now)) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        const denyStudentJoin = (code: 'STUDENT_JOIN_NOT_APPROVED' | 'STUDENT_SESSION_ALREADY_ACTIVE') => {
+          studentJoinRateLimiter.recordFailure(identityKey, now);
+          studentIpRateLimiter.recordFailure(ipKey, now);
+          options.auditStudentJoinDenial?.({ code, remoteAddress: address, classId: body.classId as ClassId });
+          json(response, 403, { error: 'STUDENT_ACCESS_DENIED' });
+        };
         const student = await options.studentJoin.join({ classId: body.classId as ClassId, displayName: body.displayName, studentNumber: body.studentNumber });
-        if (student === undefined) { json(response, 403, { error: 'STUDENT_JOIN_NOT_APPROVED' }); return; }
-        const login = options.sessions.createStudentSession(student);
+        if (student === undefined) { denyStudentJoin('STUDENT_JOIN_NOT_APPROVED'); return; }
+        let login;
+        try { login = options.sessions.createStudentSession(student); }
+        catch (error) {
+          if (error instanceof Error && error.message === 'STUDENT_SESSION_ALREADY_ACTIVE') { denyStudentJoin('STUDENT_SESSION_ALREADY_ACTIVE'); return; }
+          throw error;
+        }
+        studentJoinRateLimiter.clear(identityKey);
         setSessionCookie(response, STUDENT_SESSION_COOKIE, login.token);
         json(response, 200, { actor: 'student', csrfToken: csrfToken(login.token, options.csrfSecret) }); return;
       }
@@ -108,7 +170,6 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
       json(response, 404, { error: 'NOT_FOUND' });
     } catch (error) {
       if (error instanceof SyntaxError || error instanceof RequestBodyError) { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
-      if (error instanceof Error && error.message === 'STUDENT_SESSION_ALREADY_ACTIVE') { json(response, 409, { error: error.message }); return; }
       json(response, 500, { error: 'AUTH_INTERNAL_ERROR' });
     }
   };
@@ -126,6 +187,10 @@ export function isValidCsrfToken(header: string | string[] | undefined, sessionT
 
 function hasAllowedOrigin(request: IncomingMessage, allowedOrigin: string): boolean { return allowedOrigin.length > 0 && request.headers.origin === allowedOrigin; }
 function remoteAddress(request: IncomingMessage): string { return request.socket.remoteAddress ?? 'unknown'; }
+function studentIdentityRateKey(address: string, body: Readonly<{ classId: string; displayName: string; studentNumber: string }>): string {
+  const normalize = (value: string) => value.normalize('NFKC').trim().toUpperCase();
+  return `student:${address}:${normalize(body.classId)}:${normalize(body.displayName)}:${normalize(body.studentNumber)}`;
+}
 function isStudentJoinBody(body: StudentJoinBody): body is Readonly<{ classId: string; displayName: string; studentNumber: string }> {
   return typeof body.classId === 'string' && body.classId.length > 0 && typeof body.displayName === 'string' && body.displayName.trim().length > 0 && typeof body.studentNumber === 'string' && body.studentNumber.trim().length > 0;
 }

@@ -32,7 +32,7 @@ Teacher-confirmed deletion physically removes the affected payload and metadata 
 
 ### 6. The shared teacher password is initialized once, locally
 
-There is no default password. While the sole settings row is absent, only a loopback-only first-run setup flow may accept two matching password entries and atomically persist an Argon2id hash. It is unavailable after initialization, never logs the password, and creates no teacher account. Normal teacher login starts only after this one-time setup has succeeded.
+There is no default password. While the sole settings row is absent, only a loopback-only first-run setup flow may accept two matching password entries and atomically persist an Argon2id hash. The Task 9 writer must use the exported `TEACHER_PASSWORD_ARGON2_POLICY` (currently Argon2id v19, 64 MiB memory, three iterations, parallelism one); login rejects malformed, non-Argon2id, or weaker hashes. Setup is unavailable after initialization, never logs the password, and creates no teacher account. Normal teacher login starts only after this one-time setup has succeeded.
 
 ### 7. Temporary students are explicit approved Student records
 
