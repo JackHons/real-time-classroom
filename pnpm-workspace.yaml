@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Vite, SvelteKit, and Vitest require esbuild's platform binary. This is the
+# only dependency build script approved for this bootstrap.
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,17 @@
+{
+  "name": "@lan-classroom/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "5.5.7",
+    "@sveltejs/kit": "2.70.3",
+    "svelte": "5.57.0",
+    "svelte-check": "4.7.6",
+    "vite": "8.2.2"
+  }
+}

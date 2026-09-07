@@ -1,0 +1,21 @@
+{
+  "name": "@lan-classroom/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @lan-classroom/web build && tsx src/main.ts",
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/main.js",
+    "check": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "socket.io": "4.8.3"
+  },
+  "devDependencies": {
+    "tsx": "4.23.13"
+  }
+}

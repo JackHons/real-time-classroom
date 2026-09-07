@@ -1,0 +1,20 @@
+node_modules/
+.pnpm-store/
+.svelte-kit/
+build/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+.env.*
+!.env.example
+
+# Runtime data never belongs in the repository. The default production location
+# is %LOCALAPPDATA%\LanClassroomPlatform.
+runtime-data/
+uploads/

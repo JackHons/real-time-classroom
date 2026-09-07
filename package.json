@@ -1,0 +1,37 @@
+{
+  "name": "lan-classroom-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Windows private-LAN classroom interaction platform",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @lan-classroom/server dev",
+    "build": "pnpm --filter @lan-classroom/web build && pnpm --filter @lan-classroom/server build",
+    "start": "pnpm --filter @lan-classroom/server start",
+    "lint": "pnpm lint:ts && pnpm lint:svelte",
+    "lint:ts": "eslint . --max-warnings 0",
+    "lint:svelte": "pnpm --filter @lan-classroom/web check",
+    "check": "pnpm --filter @lan-classroom/server check && pnpm --filter @lan-classroom/web check",
+    "test:unit": "vitest run --config vitest.workspace.ts tests/unit",
+    "test:integration": "vitest run --config vitest.workspace.ts tests/integration",
+    "test:e2e": "playwright test",
+    "test:a11y": "playwright test --grep @a11y",
+    "test:load": "node scripts/require-load-suite.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "@typescript-eslint/eslint-plugin": "8.69.0",
+    "@typescript-eslint/parser": "8.69.0",
+    "@vitest/coverage-v8": "5.0.0",
+    "eslint": "10.10.0",
+    "@playwright/test": "1.58.2",
+    "typescript": "6.0.3",
+    "vitest": "5.0.0"
+  }
+}
