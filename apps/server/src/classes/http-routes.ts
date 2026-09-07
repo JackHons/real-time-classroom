@@ -1,12 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Buffer } from 'node:buffer';
 import type { ClassId, PendingStudentRequestId } from '../domain/types.js';
+import { StudentJoinRateLimiter } from '../auth/http.js';
 import { ClassService } from './class-service.js';
 
 const MAX_BODY_BYTES = 8 * 1024;
 
 export type ClassRoutesDependencies = Readonly<{
   service: ClassService;
+  /** Shared with /api/auth/student/join so routes cannot bypass pending limits. */
+  studentJoinRateLimiter?: StudentJoinRateLimiter;
   /** Task 3 composition supplies cookie/session and CSRF validation before service authorization. */
   teacherContext: (request: IncomingMessage) => unknown;
 }>;
@@ -16,6 +19,7 @@ export type ClassRoutesDependencies = Readonly<{
  * Task 3 composition root must inject real authentication before mounting it.
  */
 export function createClassRoutes(dependencies: ClassRoutesDependencies): (request: IncomingMessage, response: ServerResponse) => Promise<boolean> {
+  const studentJoinRateLimiter = dependencies.studentJoinRateLimiter ?? new StudentJoinRateLimiter();
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (request.method === 'GET' && url.pathname === '/api/classes') {
@@ -50,8 +54,16 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
     const joinMatch = /^\/api\/classes\/([^/]+)\/join$/.exec(url.pathname);
     if (request.method === 'POST' && joinMatch?.[1] !== undefined) {
       const body = await readJson(request);
-      const result = dependencies.service.requestJoin(decodeURIComponent(joinMatch[1]) as ClassId, stringField(body, 'displayName'), stringField(body, 'studentNumber'));
+      const classId = decodeURIComponent(joinMatch[1]) as ClassId;
+      const displayName = stringField(body, 'displayName');
+      const studentNumber = stringField(body, 'studentNumber');
+      const reservation = studentJoinRateLimiter.reserve(remoteAddress(request), { classId, displayName, studentNumber }, new Date());
+      if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return true; }
+      let result;
+      try { result = dependencies.service.requestJoin(classId, displayName, studentNumber); }
+      catch (error) { reservation.release(); throw error; }
       // A pending outcome is deliberately not a student session or authorization.
+      if (result.outcome === 'matched') reservation.succeed(); else reservation.fail();
       json(response, result.outcome === 'matched' ? 200 : 202, result);
       return true;
     }
@@ -63,6 +75,8 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
     return false;
   };
 }
+
+function remoteAddress(request: IncomingMessage): string { return request.socket.remoteAddress ?? 'unknown'; }
 
 function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {

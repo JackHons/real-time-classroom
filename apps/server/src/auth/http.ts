@@ -26,8 +26,7 @@ export type AuthHttpHandlerOptions = Readonly<{
   csrfSecret: string;
   passwordVerifier?: PasswordVerifier;
   loginRateLimiter?: LoginRateLimiter;
-  studentJoinRateLimiter?: LoginRateLimiter;
-  studentIpRateLimiter?: LoginRateLimiter;
+  studentJoinRateLimiter?: StudentJoinRateLimiter;
   /** Receives a private reason for a deliberately generic student-facing denial. */
   auditStudentJoinDenial?: (entry: Readonly<{ code: 'STUDENT_JOIN_NOT_APPROVED' | 'STUDENT_SESSION_ALREADY_ACTIVE'; remoteAddress: string; classId: ClassId }>) => void;
 }>;
@@ -36,8 +35,9 @@ type LoginBody = Readonly<{ password?: unknown }>;
 type StudentJoinBody = Readonly<{ classId?: unknown; displayName?: unknown; studentNumber?: unknown }>;
 
 export class LoginRateLimiter {
-  private readonly attempts = new Map<string, Readonly<{ failures: number[]; lastAccessedAt: number }>>();
-  constructor(private readonly maximum = 5, private readonly windowMs = 15 * 60 * 1000, private readonly maximumEntries = 1_024) {}
+  private readonly attempts = new Map<string, Readonly<{ failures: number[]; reservations: Map<number, number>; lastAccessedAt: number }>>();
+  private nextReservation = 0;
+  constructor(private readonly maximum = 5, private readonly windowMs = 15 * 60 * 1000, private readonly maximumEntries = 1_024, private readonly reservationTtlMs = Math.min(windowMs, 60_000)) {}
 
   /** Checks a failure-only budget; this never records a successful request. */
   allow(key: string, now: Date): boolean {
@@ -46,37 +46,118 @@ export class LoginRateLimiter {
     const existing = this.attempts.get(key);
     if (existing === undefined) return true;
     const failures = this.recent(existing.failures, timestamp);
-    this.attempts.set(key, { failures, lastAccessedAt: timestamp });
-    return failures.length < this.maximum;
+    const reservations = this.recentReservations(existing.reservations, timestamp);
+    this.attempts.set(key, { failures, reservations, lastAccessedAt: timestamp });
+    return failures.length + reservations.size < this.maximum;
+  }
+
+  /** Atomically occupies capacity before an expensive asynchronous operation. */
+  reserve(key: string, now: Date): RateLimitReservation | undefined {
+    const timestamp = now.getTime();
+    this.cleanup(timestamp);
+    const entry = this.entryFor(key, timestamp);
+    if (entry === undefined || entry.failures.length + entry.reservations.size >= this.maximum) return undefined;
+    const id = this.nextReservation++;
+    entry.reservations.set(id, timestamp);
+    this.attempts.set(key, { ...entry, lastAccessedAt: timestamp });
+    let completed = false;
+    return {
+      release: () => { if (!completed) { completed = true; this.release(key, id, new Date()); } },
+      fail: () => { if (!completed) { completed = true; this.failReservation(key, id, new Date()); } },
+      succeed: () => { if (!completed) { completed = true; this.succeedReservation(key, id, new Date()); } }
+    };
   }
 
   recordFailure(key: string, now: Date): void {
     const timestamp = now.getTime();
     this.cleanup(timestamp);
-    const existing = this.attempts.get(key);
-    if (existing === undefined) this.evictOneIfFull();
-    const failures = [...this.recent(existing?.failures ?? [], timestamp), timestamp];
-    this.attempts.set(key, { failures, lastAccessedAt: timestamp });
+    const entry = this.entryFor(key, timestamp);
+    if (entry === undefined) return;
+    this.attempts.set(key, { ...entry, failures: [...entry.failures, timestamp], lastAccessedAt: timestamp });
   }
 
   clear(key: string): void { this.attempts.delete(key); }
 
   private recent(failures: readonly number[], timestamp: number): number[] { return failures.filter((time) => time > timestamp - this.windowMs); }
+  private recentReservations(reservations: ReadonlyMap<number, number>, timestamp: number): Map<number, number> {
+    return new Map([...reservations].filter(([, time]) => time > timestamp - this.reservationTtlMs));
+  }
   private cleanup(timestamp: number): void {
     for (const [key, entry] of this.attempts) {
       const failures = this.recent(entry.failures, timestamp);
-      if (failures.length === 0) this.attempts.delete(key);
-      else if (failures.length !== entry.failures.length) this.attempts.set(key, { failures, lastAccessedAt: entry.lastAccessedAt });
+      const reservations = this.recentReservations(entry.reservations, timestamp);
+      if (failures.length === 0 && reservations.size === 0) this.attempts.delete(key);
+      else if (failures.length !== entry.failures.length || reservations.size !== entry.reservations.size) this.attempts.set(key, { failures, reservations, lastAccessedAt: entry.lastAccessedAt });
     }
   }
-  private evictOneIfFull(): void {
-    if (this.attempts.size < this.maximumEntries) return;
+  private entryFor(key: string, timestamp: number): { failures: number[]; reservations: Map<number, number>; lastAccessedAt: number } | undefined {
+    const existing = this.attempts.get(key);
+    if (existing !== undefined) return { failures: this.recent(existing.failures, timestamp), reservations: this.recentReservations(existing.reservations, timestamp), lastAccessedAt: timestamp };
+    if (!this.evictOneIfFull()) return undefined;
+    return { failures: [], reservations: new Map(), lastAccessedAt: timestamp };
+  }
+  private release(key: string, id: number, now: Date): void {
+    const entry = this.attempts.get(key); if (entry === undefined) return;
+    const reservations = this.recentReservations(entry.reservations, now.getTime());
+    reservations.delete(id);
+    this.writeOrDelete(key, { failures: this.recent(entry.failures, now.getTime()), reservations, lastAccessedAt: now.getTime() });
+  }
+  private failReservation(key: string, id: number, now: Date): void {
+    const entry = this.attempts.get(key); if (entry === undefined) return;
+    const timestamp = now.getTime(); const reservations = this.recentReservations(entry.reservations, timestamp);
+    if (!reservations.delete(id)) return;
+    this.writeOrDelete(key, { failures: [...this.recent(entry.failures, timestamp), timestamp], reservations, lastAccessedAt: timestamp });
+  }
+  private succeedReservation(key: string, id: number, now: Date): void {
+    const entry = this.attempts.get(key); if (entry === undefined) return;
+    const timestamp = now.getTime(); const reservations = this.recentReservations(entry.reservations, timestamp);
+    reservations.delete(id);
+    // A successful teacher login resets its prior failure bucket, while active
+    // concurrent reservations remain protected from oversubscription.
+    this.writeOrDelete(key, { failures: [], reservations, lastAccessedAt: timestamp });
+  }
+  private writeOrDelete(key: string, entry: Readonly<{ failures: number[]; reservations: Map<number, number>; lastAccessedAt: number }>): void {
+    if (entry.failures.length === 0 && entry.reservations.size === 0) this.attempts.delete(key);
+    else this.attempts.set(key, entry);
+  }
+  private evictOneIfFull(): boolean {
+    if (this.attempts.size < this.maximumEntries) return true;
     let oldest: string | undefined;
     let oldestAccess = Number.POSITIVE_INFINITY;
     for (const [key, entry] of this.attempts) {
-      if (entry.lastAccessedAt < oldestAccess) { oldest = key; oldestAccess = entry.lastAccessedAt; }
+      if (entry.reservations.size === 0 && entry.lastAccessedAt < oldestAccess) { oldest = key; oldestAccess = entry.lastAccessedAt; }
     }
     if (oldest !== undefined) this.attempts.delete(oldest);
+    return this.attempts.size < this.maximumEntries;
+  }
+}
+
+export type RateLimitReservation = Readonly<{ release: () => void; fail: () => void; succeed: () => void }>;
+
+/** Shared limiter for both public student-join routes. Identity is scoped to a
+ * class; the higher class/IP backstop remains friendly to a classroom NAT. */
+export class StudentJoinRateLimiter {
+  private readonly identities: LoginRateLimiter;
+  private readonly classIps: LoginRateLimiter;
+  constructor(identityMaximum = 5, classIpMaximum = 50, windowMs = 15 * 60 * 1000, maximumEntries = 1_024) {
+    this.identities = new LoginRateLimiter(identityMaximum, windowMs, maximumEntries);
+    this.classIps = new LoginRateLimiter(classIpMaximum, windowMs, maximumEntries);
+  }
+
+  reserve(address: string, request: Readonly<{ classId: string; displayName: string; studentNumber: string }>, now: Date): RateLimitReservation | undefined {
+    const identity = this.identities.reserve(studentIdentityRateKey(request), now);
+    if (identity === undefined) return undefined;
+    const classIp = this.classIps.reserve(studentClassIpRateKey(address, request.classId), now);
+    if (classIp === undefined) { identity.release(); return undefined; }
+    let completed = false;
+    return {
+      release: () => { if (!completed) { completed = true; identity.release(); classIp.release(); } },
+      // Pending and denied joins consume a bounded budget. This prevents either
+      // public endpoint from growing pending rows without limit.
+      fail: () => { if (!completed) { completed = true; identity.fail(); classIp.fail(); } },
+      // A roster match consumes neither identity nor classroom/NAT capacity.
+      succeed: () => { if (!completed) { completed = true; identity.release(); classIp.release(); } }
+    };
   }
 }
 
@@ -90,8 +171,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
   // Identity failures protect a particular pupil without allowing five valid
   // joins behind one NAT address to lock out the rest of a class. A much higher
   // IP-only failure budget still limits broad credential spraying.
-  const studentJoinRateLimiter = options.studentJoinRateLimiter ?? new LoginRateLimiter();
-  const studentIpRateLimiter = options.studentIpRateLimiter ?? new LoginRateLimiter(50);
+  const studentJoinRateLimiter = options.studentJoinRateLimiter ?? new StudentJoinRateLimiter();
   const verifyPassword = options.passwordVerifier ?? verifyTeacherPassword;
   return async (request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://auth.local').pathname;
@@ -107,12 +187,20 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         if (typeof body.password !== 'string') { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
         const now = new Date();
         const rateKey = `teacher:${remoteAddress(request)}`;
-        if (!rateLimiter.allow(rateKey, now)) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
-        if (!await verifyPassword(body.password, options.sessionRepository.teacherPasswordHash())) {
-          rateLimiter.recordFailure(rateKey, now);
+        const reservation = rateLimiter.reserve(rateKey, now);
+        if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        let verified: boolean;
+        const releaseOnAbort = () => reservation.release();
+        request.once('aborted', releaseOnAbort);
+        try { verified = await verifyPassword(body.password, options.sessionRepository.teacherPasswordHash()); }
+        catch (error) { reservation.release(); throw error; }
+        finally { request.removeListener('aborted', releaseOnAbort); }
+        if (request.aborted) return;
+        if (!verified) {
+          reservation.fail();
           json(response, 401, { error: 'INVALID_CREDENTIALS' }); return;
         }
-        rateLimiter.clear(rateKey);
+        reservation.succeed();
         const login = options.sessions.createTeacherSession();
         setSessionCookie(response, TEACHER_SESSION_COOKIE, login.token);
         json(response, 200, { actor: 'teacher', csrfToken: csrfToken(login.token, options.csrfSecret) }); return;
@@ -123,16 +211,20 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         if (!isStudentJoinBody(body)) { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
         const now = new Date();
         const address = remoteAddress(request);
-        const identityKey = studentIdentityRateKey(address, body);
-        const ipKey = `student-ip:${address}`;
-        if (!studentJoinRateLimiter.allow(identityKey, now) || !studentIpRateLimiter.allow(ipKey, now)) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        const reservation = studentJoinRateLimiter.reserve(address, body, now);
+        if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
         const denyStudentJoin = (code: 'STUDENT_JOIN_NOT_APPROVED' | 'STUDENT_SESSION_ALREADY_ACTIVE') => {
-          studentJoinRateLimiter.recordFailure(identityKey, now);
-          studentIpRateLimiter.recordFailure(ipKey, now);
+          reservation.fail();
           options.auditStudentJoinDenial?.({ code, remoteAddress: address, classId: body.classId as ClassId });
           json(response, 403, { error: 'STUDENT_ACCESS_DENIED' });
         };
-        const student = await options.studentJoin.join({ classId: body.classId as ClassId, displayName: body.displayName, studentNumber: body.studentNumber });
+        let student: Student | undefined;
+        const releaseOnAbort = () => reservation.release();
+        request.once('aborted', releaseOnAbort);
+        try { student = await options.studentJoin.join({ classId: body.classId as ClassId, displayName: body.displayName, studentNumber: body.studentNumber }); }
+        catch (error) { reservation.release(); throw error; }
+        finally { request.removeListener('aborted', releaseOnAbort); }
+        if (request.aborted) return;
         if (student === undefined) { denyStudentJoin('STUDENT_JOIN_NOT_APPROVED'); return; }
         let login;
         try { login = options.sessions.createStudentSession(student); }
@@ -140,7 +232,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
           if (error instanceof Error && error.message === 'STUDENT_SESSION_ALREADY_ACTIVE') { denyStudentJoin('STUDENT_SESSION_ALREADY_ACTIVE'); return; }
           throw error;
         }
-        studentJoinRateLimiter.clear(identityKey);
+        reservation.succeed();
         setSessionCookie(response, STUDENT_SESSION_COOKIE, login.token);
         json(response, 200, { actor: 'student', csrfToken: csrfToken(login.token, options.csrfSecret) }); return;
       }
@@ -187,10 +279,11 @@ export function isValidCsrfToken(header: string | string[] | undefined, sessionT
 
 function hasAllowedOrigin(request: IncomingMessage, allowedOrigin: string): boolean { return allowedOrigin.length > 0 && request.headers.origin === allowedOrigin; }
 function remoteAddress(request: IncomingMessage): string { return request.socket.remoteAddress ?? 'unknown'; }
-function studentIdentityRateKey(address: string, body: Readonly<{ classId: string; displayName: string; studentNumber: string }>): string {
+function studentIdentityRateKey(body: Readonly<{ classId: string; displayName: string; studentNumber: string }>): string {
   const normalize = (value: string) => value.normalize('NFKC').trim().toUpperCase();
-  return `student:${address}:${normalize(body.classId)}:${normalize(body.displayName)}:${normalize(body.studentNumber)}`;
+  return `student:${normalize(body.classId)}:${normalize(body.displayName)}:${normalize(body.studentNumber)}`;
 }
+function studentClassIpRateKey(address: string, classId: string): string { return `student-ip:${address}:${classId.normalize('NFKC').trim().toUpperCase()}`; }
 function isStudentJoinBody(body: StudentJoinBody): body is Readonly<{ classId: string; displayName: string; studentNumber: string }> {
   return typeof body.classId === 'string' && body.classId.length > 0 && typeof body.displayName === 'string' && body.displayName.trim().length > 0 && typeof body.studentNumber === 'string' && body.studentNumber.trim().length > 0;
 }

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApplication, FirstRunSetupRequiredError } from '../../apps/server/src/application.js';
+import { StudentJoinRateLimiter } from '../../apps/server/src/auth/http.js';
 import type { Clock } from '../../apps/server/src/auth/session.js';
 import { openSqlite, type SqliteDatabase } from '../../apps/server/src/db/connection.js';
 import { migrate } from '../../apps/server/src/db/migrator.js';
@@ -35,8 +36,8 @@ function databaseWithTeacherHash(): SqliteDatabase {
   return database;
 }
 
-async function applicationBase(clock?: Clock): Promise<string> {
-  const app = createApplication({ database: databaseWithTeacherHash(), allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async (password) => password === 'correct', ...(clock === undefined ? {} : { clock }) });
+async function applicationBase(clock?: Clock, studentJoinRateLimiter?: StudentJoinRateLimiter): Promise<string> {
+  const app = createApplication({ database: databaseWithTeacherHash(), allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async (password) => password === 'correct', ...(clock === undefined ? {} : { clock }), ...(studentJoinRateLimiter === undefined ? {} : { studentJoinRateLimiter }) });
   server = await startServer({ host: '127.0.0.1', port: 0, apiHandler: app.apiHandler });
   return `http://${server.host}:${server.port}`;
 }
@@ -125,5 +126,27 @@ describe('Task 3 composed API routes', () => {
     const secondDevice = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
     expect(secondDevice.status).toBe(403);
     expect(await secondDevice.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
+  });
+
+  it('shares a bounded pending-join budget between public join routes', async () => {
+    const base = await applicationBase(undefined, new StudentJoinRateLimiter(1, 20, 60_000));
+    const login = await teacherLogin(base);
+    const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(login), body: JSON.stringify({ name: '1A' }) });
+    const classroom = await created.json() as { id: string };
+    const imported = await fetch(`${base}/api/classes/${classroom.id}/roster/import`, { method: 'POST', headers: teacherHeaders(login), body: JSON.stringify({ csv: 'name,studentNumber\nAda,A1' }) });
+    expect(imported.status).toBe(200);
+
+    // Exact roster matches release their reservations, so the same identity can
+    // immediately use the session-producing route.
+    const publicMatch = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Ada', studentNumber: 'A1' }) });
+    expect(publicMatch.status).toBe(200);
+    const authMatch = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Ada', studentNumber: 'A1' }) });
+    expect(authMatch.status).toBe(200);
+
+    const publicPending = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Unapproved', studentNumber: 'S2' }) });
+    expect(publicPending.status).toBe(202);
+    const bypassAttempt = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unapproved', studentNumber: 'S2' }) });
+    expect(bypassAttempt.status).toBe(429);
+    expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 1 });
   });
 });

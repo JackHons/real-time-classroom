@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createAuthHttpHandler, isValidCsrfToken, type PasswordVerifier, type StudentJoinPort } from './auth/http.js';
+import { createAuthHttpHandler, isValidCsrfToken, StudentJoinRateLimiter, type PasswordVerifier, type StudentJoinPort } from './auth/http.js';
 import { AuthSessions, type Clock, systemClock } from './auth/session.js';
 import { ClassService } from './classes/class-service.js';
 import { createClassRoutes } from './classes/http-routes.js';
@@ -16,6 +16,8 @@ export type ApplicationOptions = Readonly<{
   csrfSecret: string;
   clock?: Clock;
   passwordVerifier?: PasswordVerifier;
+  /** Allows focused tests and composition to set shared public join budgets. */
+  studentJoinRateLimiter?: StudentJoinRateLimiter;
 }>;
 
 export type Application = Readonly<{ apiHandler: HttpRouteHandler }>;
@@ -37,6 +39,7 @@ export function createApplication(options: ApplicationOptions): Application {
   if (authRepository.teacherPasswordHash() === undefined) throw new FirstRunSetupRequiredError();
 
   const sessions = new AuthSessions(authRepository, options.clock ?? systemClock);
+  const studentJoinRateLimiter = options.studentJoinRateLimiter ?? new StudentJoinRateLimiter();
   const classService = new ClassService({
     repository: new SqliteClassRosterRepository(options.database),
     teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
@@ -74,9 +77,10 @@ export function createApplication(options: ApplicationOptions): Application {
     studentJoin,
     allowedOrigin: options.allowedOrigin,
     csrfSecret: options.csrfSecret,
+    studentJoinRateLimiter,
     ...(options.passwordVerifier === undefined ? {} : { passwordVerifier: options.passwordVerifier })
   });
-  const classHandler = createClassRoutes({ service: classService, teacherContext: authenticateTeacherMutation });
+  const classHandler = createClassRoutes({ service: classService, teacherContext: authenticateTeacherMutation, studentJoinRateLimiter });
 
   return {
     apiHandler: async (request, response) => {

@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createAuthHttpHandler, LoginRateLimiter, type StudentJoinPort } from '../../../apps/server/src/auth/http.js';
+import { createAuthHttpHandler, LoginRateLimiter, type PasswordVerifier, type StudentJoinPort } from '../../../apps/server/src/auth/http.js';
 import { AuthSessions, type Clock, type SessionToken } from '../../../apps/server/src/auth/session.js';
 import type { AuthSessionRepository } from '../../../apps/server/src/db/auth-session-repository.js';
 import type { ClassId, IsoUtc, Student, StudentId, StudentSession, TeacherSession } from '../../../apps/server/src/domain/types.js';
@@ -22,11 +23,11 @@ let server: Server | undefined;
 let auditCodes: string[];
 afterEach(async () => { await new Promise<void>((resolve) => server?.close(() => resolve()) ?? resolve()); server = undefined; });
 
-async function authServer(join: StudentJoinPort): Promise<string> {
+async function authServer(join: StudentJoinPort, overrides: Readonly<{ passwordVerifier?: PasswordVerifier; loginRateLimiter?: LoginRateLimiter }> = {}): Promise<string> {
   const repository = new TestRepository();
   auditCodes = [];
   let nextToken = 0;
-  const handler = createAuthHttpHandler({ sessions: new AuthSessions(repository, new FixedClock(), () => `${nextToken === 0 ? 'teacher' : 'session'}-token-${nextToken++}` as SessionToken), sessionRepository: repository, studentJoin: join, allowedOrigin: 'http://classroom.test', csrfSecret: 'test-secret', passwordVerifier: async (password) => password === 'correct', loginRateLimiter: new LoginRateLimiter(2, 60_000), auditStudentJoinDenial: (entry) => { auditCodes.push(entry.code); } });
+  const handler = createAuthHttpHandler({ sessions: new AuthSessions(repository, new FixedClock(), () => `${nextToken === 0 ? 'teacher' : 'session'}-token-${nextToken++}` as SessionToken), sessionRepository: repository, studentJoin: join, allowedOrigin: 'http://classroom.test', csrfSecret: 'test-secret', passwordVerifier: overrides.passwordVerifier ?? (async (password) => password === 'correct'), loginRateLimiter: overrides.loginRateLimiter ?? new LoginRateLimiter(2, 60_000), auditStudentJoinDenial: (entry) => { auditCodes.push(entry.code); } });
   server = createServer((request, response) => { void handler(request, response); });
   await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (address === null || typeof address === 'string') throw new Error('missing address'); return `http://127.0.0.1:${address.port}`;
@@ -53,6 +54,26 @@ describe('auth HTTP listener', () => {
     expect((await invalid()).status).toBe(401);
     expect((await invalid()).status).toBe(401);
     expect((await invalid()).status).toBe(429);
+  });
+
+  it('reserves teacher capacity before concurrent password verification', async () => {
+    let verifierCalls = 0;
+    const base = await authServer(
+      { join: () => undefined },
+      {
+        loginRateLimiter: new LoginRateLimiter(2, 60_000),
+        passwordVerifier: async () => {
+          verifierCalls += 1;
+          await delay(25);
+          return false;
+        }
+      }
+    );
+    const request = () => fetch(`${base}/api/auth/teacher/login`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ password: 'wrong' }) });
+    const responses = await Promise.all(Array.from({ length: 20 }, request));
+    expect(verifierCalls).toBe(2);
+    expect(responses.filter((response) => response.status === 401)).toHaveLength(2);
+    expect(responses.filter((response) => response.status === 429)).toHaveLength(18);
   });
 
   it('keeps failure buckets bounded and expires old identities', () => {
