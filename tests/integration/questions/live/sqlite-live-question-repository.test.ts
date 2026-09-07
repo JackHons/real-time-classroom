@@ -54,8 +54,11 @@ describe('SQLite live question adapter', () => {
     domain.createClass({ id: 'class-legacy' as ClassId, name: 'Legacy', createdAtUtc: '2026-09-07T00:00:00.000Z' as never, updatedAtUtc: '2026-09-07T00:00:00.000Z' as never });
     domain.createStudent({ id: 'student-legacy' as StudentId, classId: 'class-legacy' as ClassId, displayName: 'Old name', rawStudentNumber: 'OLD-1', normalizedStudentNumber: 'OLD-1', isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never });
     domain.createQuestion({ id: 'q-legacy' as never, classId: 'class-legacy' as ClassId, kind: 'short_text', prompt: 'Legacy?', options: [] });
-    domain.transitionQuestion('q-legacy' as never, 'open');
-    domain.closeQuestion('q-legacy' as never);
+    // This represents a durable 0001 close row created before the 0002
+    // snapshot columns and before the current write adapter existed.
+    database.prepare("UPDATE questions SET state='closed', opened_at_utc=?, closed_at_utc=? WHERE id=?").run('2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.000Z', 'q-legacy');
+    database.prepare('INSERT INTO answer_at_close (question_id,student_id,revision,submitted_at_utc,payload_json,no_answer,closed_at_utc) VALUES (?,?,?,?,?,?,?)')
+      .run('q-legacy', 'student-legacy', null, null, null, 1, '2026-09-07T00:00:00.000Z');
     migrate(database);
     database.prepare("UPDATE students SET display_name='Changed' WHERE id='student-legacy'").run();
     const live = new SqliteLiveQuestionRepository(database, domain);
