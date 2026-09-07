@@ -8,7 +8,7 @@ const student: AuthorizedStudentContext = { studentSessionId: 'session' as never
 
 function service(repository: Partial<LiveQuestionRepository>, context = student): LiveQuestionService {
   return new LiveQuestionService({
-    repository: { question: () => question, open: () => undefined, submit: () => answer(), close: () => snapshot(), currentAnswer: () => undefined, answerAtClose: () => undefined, openAggregate: () => ({ eligibleStudentCount: 2, answeredStudentCount: 1, counts: { a: 1 }, shortTextResponseCount: 0 }), closedAnswers: () => [{ studentId: 'student-a' as StudentId, answer: atClose() }], snapshot: () => snapshot(), deleteAnswer: () => undefined, ...repository },
+    repository: { question: () => question, open: () => undefined, submit: () => answer(), close: () => snapshot(), currentAnswer: () => undefined, answerAtClose: () => undefined, openAggregate: () => ({ eligibleStudentCount: 2, answeredStudentCount: 1, counts: { a: 1 }, shortTextResponseCount: 0 }), closedAnswers: () => [{ studentId: 'student-a' as StudentId, displayName: 'Ada', studentNumber: 'A1', answer: atClose() }], snapshot: () => snapshot(), deleteAnswer: () => undefined, ...repository },
     teacherAuthorization: { assertAuthorized: () => undefined }, studentAuthorization: { assertAuthorized: () => context }
   });
 }
@@ -30,11 +30,21 @@ describe('live question service', () => {
     expect(() => target.answer(student, question.id, { revision: 0, idempotencyKey: 'x', payload: { kind: 'single_choice', selectedOptions: ['missing'] } })).toThrow('ANSWER_OPTIONS_INVALID');
   });
 
-  it('prevents a student from another class from reading or writing', () => {
+  it('makes another-class, missing, and draft questions indistinguishable to students', () => {
     const other = { ...student, classId: 'class-b' as never };
     const target = service({}, other);
-    expect(() => target.readForStudent(other, question.id)).toThrow('QUESTION_CLASS_FORBIDDEN');
-    expect(() => target.answer(other, question.id, { revision: 1, idempotencyKey: 'x', payload: { kind: 'single_choice', selectedOptions: ['a'] } })).toThrow('QUESTION_CLASS_FORBIDDEN');
+    expect(() => target.readForStudent(other, question.id)).toThrow('QUESTION_NOT_FOUND');
+    expect(() => target.answer(other, question.id, { revision: 1, idempotencyKey: 'x', payload: { kind: 'single_choice', selectedOptions: ['a'] } })).toThrow('QUESTION_NOT_FOUND');
+    expect(() => service({ question: () => { throw new Error('QUESTION_NOT_FOUND'); } }).readForStudent(student, 'missing' as never)).toThrow('QUESTION_NOT_FOUND');
+    expect(() => service({ question: () => ({ ...question, state: 'draft' }) }).readForStudent(student, question.id)).toThrow('QUESTION_NOT_FOUND');
+  });
+
+  it('never returns the teacher reference answer to a student', () => {
+    const target = service({ question: () => ({ ...question, referenceAnswer: 'teacher-secret' }) });
+    const result = target.readForStudent(student, question.id);
+    expect(result.question).not.toHaveProperty('referenceAnswer');
+    expect(JSON.stringify(result)).not.toContain('referenceAnswer');
+    expect(JSON.stringify(result)).not.toContain('teacher-secret');
   });
 
   it('shows teachers only anonymous aggregates while open, and named answers only after close', () => {

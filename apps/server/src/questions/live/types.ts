@@ -24,6 +24,9 @@ export type OpenQuestionView = Readonly<{
 
 export type ClosedNamedAnswer = Readonly<{
   studentId: StudentId;
+  /** Immutable roster values captured by the close transaction. */
+  displayName: string;
+  studentNumber: string;
   answer: AnswerAtClose | undefined;
 }>;
 
@@ -33,8 +36,11 @@ export type ClosedQuestionView = Readonly<{
   answers: readonly ClosedNamedAnswer[];
 }>;
 
+/** This is intentionally not a Question: referenceAnswer is teacher-only. */
+export type StudentSafeQuestion = Readonly<Omit<Question, 'referenceAnswer'>>;
+
 export type StudentQuestionView = Readonly<{
-  question: Question;
+  question: StudentSafeQuestion;
   answer: AnswerCurrent | undefined;
   answerAtClose: AnswerAtClose | undefined;
 }>;

@@ -21,8 +21,7 @@ export class LiveQuestionService {
 
   answer(studentContext: unknown, questionId: QuestionId, input: AnswerInput): AnswerCurrent {
     const student = this.dependencies.studentAuthorization.assertAuthorized(studentContext);
-    const question = this.dependencies.repository.question(questionId);
-    this.assertStudentClass(question, student);
+    const question = this.studentQuestion(questionId, student);
     const normalized = normalizeAndValidateAnswer(question, input);
     const answer = this.dependencies.repository.submit(student.studentId, {
       questionId,
@@ -62,10 +61,9 @@ export class LiveQuestionService {
 
   readForStudent(studentContext: unknown, questionId: QuestionId): StudentQuestionView {
     const student = this.dependencies.studentAuthorization.assertAuthorized(studentContext);
-    const question = this.dependencies.repository.question(questionId);
-    this.assertStudentClass(question, student);
+    const question = this.studentQuestion(questionId, student);
     return {
-      question,
+      question: withoutReferenceAnswer(question),
       answer: this.dependencies.repository.currentAnswer(questionId, student.studentId),
       answerAtClose: question.state === 'closed' ? this.dependencies.repository.answerAtClose(questionId, student.studentId) : undefined
     };
@@ -83,9 +81,30 @@ export class LiveQuestionService {
     catch { /* Socket delivery must not roll back a durable REST write. */ }
   }
 
-  private assertStudentClass(question: Question, student: AuthorizedStudentContext): void {
-    if (question.classId !== student.classId) throw new Error('QUESTION_CLASS_FORBIDDEN');
+  /**
+   * Students receive one indistinguishable outcome for a missing, draft, or
+   * other-class question. This prevents the question id endpoint becoming an
+   * existence oracle across classes or before publication.
+   */
+  private studentQuestion(questionId: QuestionId, student: AuthorizedStudentContext): Question {
+    const question = this.dependencies.repository.question(questionId);
+    if (question.classId !== student.classId || question.state === 'draft') throw new Error('QUESTION_NOT_FOUND');
+    return question;
   }
+}
+
+function withoutReferenceAnswer(question: Question): StudentQuestionView['question'] {
+  return {
+    id: question.id,
+    classId: question.classId,
+    templateId: question.templateId,
+    kind: question.kind,
+    prompt: question.prompt,
+    options: question.options,
+    state: question.state,
+    openedAtUtc: question.openedAtUtc,
+    closedAtUtc: question.closedAtUtc
+  };
 }
 
 function normalizeAndValidateAnswer(question: Question, input: AnswerInput): AnswerInput {

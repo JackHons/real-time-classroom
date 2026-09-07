@@ -92,17 +92,17 @@ export class SqliteDomainRepository implements DomainRepository {
       const closedAtUtc = this.now() as IsoUtc;
       const closed = this.database.prepare("UPDATE questions SET state='closed',closed_at_utc=?,updated_at_utc=? WHERE id=? AND state='open'").run(closedAtUtc, closedAtUtc, questionId);
       if (closed.changes !== 1) this.assertTransitionFailure(questionId, 'closed');
-      const students = this.database.prepare('SELECT id FROM students WHERE class_id=?').all(question.class_id) as readonly { id: string }[];
+      const students = this.database.prepare('SELECT id,display_name,raw_student_number FROM students WHERE class_id=?').all(question.class_id) as readonly { id: string; display_name: string; raw_student_number: string }[];
       const answers = this.database.prepare('SELECT id,student_id,revision,idempotency_key,payload_json,submitted_at_utc,late FROM answer_current WHERE question_id=?').all(questionId) as readonly AnswerRow[];
       const byStudent = new Map(answers.map((answer) => [answer.student_id, answer]));
-      const insertClose = this.database.prepare('INSERT INTO answer_at_close (question_id,student_id,revision,submitted_at_utc,payload_json,no_answer,closed_at_utc) VALUES (?,?,?,?,?,?,?)');
+      const insertClose = this.database.prepare('INSERT INTO answer_at_close (question_id,student_id,display_name,student_number,revision,submitted_at_utc,payload_json,no_answer,closed_at_utc) VALUES (?,?,?,?,?,?,?,?,?)');
       const counts: Record<string, number> = {};
       let shortTextResponseCount = 0;
       for (const student of students) {
         const answer = byStudent.get(student.id);
-        if (answer === undefined) { insertClose.run(questionId, student.id, null, null, null, 1, closedAtUtc); continue; }
+        if (answer === undefined) { insertClose.run(questionId, student.id, student.display_name, student.raw_student_number, null, null, null, 1, closedAtUtc); continue; }
         const payload = JSON.parse(answer.payload_json) as AnswerPayload;
-        insertClose.run(questionId, student.id, answer.revision, answer.submitted_at_utc, answer.payload_json, 0, closedAtUtc);
+        insertClose.run(questionId, student.id, student.display_name, student.raw_student_number, answer.revision, answer.submitted_at_utc, answer.payload_json, 0, closedAtUtc);
         if (payload.kind === 'short_text') shortTextResponseCount += 1;
         else for (const option of payload.selectedOptions ?? []) counts[option] = (counts[option] ?? 0) + 1;
       }

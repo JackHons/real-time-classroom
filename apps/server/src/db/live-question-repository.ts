@@ -62,9 +62,26 @@ export class SqliteLiveQuestionRepository implements LiveQuestionRepository {
   }
 
   closedAnswers(questionId: QuestionId): readonly ClosedNamedAnswer[] {
-    const question = this.question(questionId);
-    const students = this.database.prepare('SELECT id FROM students WHERE class_id=? ORDER BY id').all(question.classId) as readonly { id: string }[];
-    return students.map((student) => ({ studentId: student.id as StudentId, answer: this.answerAtClose(questionId, student.id as StudentId) }));
+    // Do not join the mutable roster here. The close rows remain the historic
+    // class list even when a student is renamed, added, or removed afterwards.
+    const rows = this.database.prepare('SELECT student_id,display_name,student_number,revision,submitted_at_utc,payload_json,no_answer,closed_at_utc FROM answer_at_close WHERE question_id=? ORDER BY student_id').all(questionId) as readonly ClosedAnswerRow[];
+    return rows.map((row) => ({
+      studentId: row.student_id as StudentId,
+      // Existing databases gain NULL snapshot columns in 0002. Never consult
+      // today's roster as a fallback; a neutral legacy label preserves privacy
+      // and does not rewrite history.
+      displayName: row.display_name ?? 'Unknown student',
+      studentNumber: row.student_number ?? 'Unknown',
+      answer: {
+        questionId,
+        studentId: row.student_id as StudentId,
+        revision: row.revision,
+        submittedAtUtc: row.submitted_at_utc as IsoUtc | null,
+        payload: row.payload_json === null ? null : JSON.parse(row.payload_json) as AnswerAtClose['payload'],
+        noAnswer: row.no_answer === 1,
+        closedAtUtc: row.closed_at_utc as IsoUtc
+      }
+    }));
   }
 
   snapshot(questionId: QuestionId): QuestionResultSnapshot | undefined {
@@ -78,3 +95,4 @@ type OptionRow = Readonly<{ option_key: string; label: string; ordinal: number }
 type AnswerCurrentRow = Readonly<{ id: string; revision: number; idempotency_key: string; payload_json: string; submitted_at_utc: string; late: number }>;
 type CountRow = Readonly<{ count: number }>;
 type SnapshotRow = Readonly<{ closed_at_utc: string; counts_json: string; short_text_response_count: number }>;
+type ClosedAnswerRow = Readonly<{ student_id: string; display_name: string | null; student_number: string | null; revision: number | null; submitted_at_utc: string | null; payload_json: string | null; no_answer: number; closed_at_utc: string }>;

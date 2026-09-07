@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import type { SqliteDatabase } from './connection.js';
 
 const migrations = [
-  { id: '0001_initial', sql: readFileSync(new URL('./migrations/0001_initial.sql', import.meta.url), 'utf8') }
+  { id: '0001_initial', sql: readFileSync(new URL('./migrations/0001_initial.sql', import.meta.url), 'utf8') },
+  { id: '0002_answer_at_close_roster_snapshot', sql: readFileSync(new URL('./migrations/0002_answer_at_close_roster_snapshot.sql', import.meta.url), 'utf8') }
 ] as const;
 
 export function migrate(database: SqliteDatabase): void {

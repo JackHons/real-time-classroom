@@ -71,10 +71,16 @@ describe('Task 4 composed question API', () => {
     const drafted = await fetch(`${base}/api/classes/${classA}/question-drafts`, { method: 'POST', headers: headers(teacher), body: JSON.stringify({ templateId: template.id }) });
     expect(drafted.status).toBe(201);
     const question = await drafted.json() as { id: string };
+    const draftRead = await fetch(`${base}/api/questions/${question.id}?as=student`, { headers: { cookie: ada.cookie } });
+    const missingRead = await fetch(`${base}/api/questions/not-a-question?as=student`, { headers: { cookie: ada.cookie } });
+    expect(draftRead.status).toBe(404);
+    expect(await draftRead.json()).toEqual(await missingRead.json());
     expect((await fetch(`${base}/api/questions/${question.id}/open`, { method: 'POST', headers: headers(teacher) })).status).toBe(204);
 
     const crossClass = await fetch(`${base}/api/questions/${question.id}/answers`, { method: 'POST', headers: headers(bea), body: JSON.stringify({ revision: 0, idempotencyKey: 'bea-0', payload: { kind: 'single_choice', selectedOptions: [template.options[0]?.id] } }) });
-    expect(crossClass.status).toBe(403);
+    const missingAnswer = await fetch(`${base}/api/questions/not-a-question/answers`, { method: 'POST', headers: headers(bea), body: JSON.stringify({ revision: 0, idempotencyKey: 'missing-0', payload: { kind: 'single_choice', selectedOptions: [template.options[0]?.id] } }) });
+    expect(crossClass.status).toBe(404);
+    expect(await crossClass.json()).toEqual(await missingAnswer.json());
     const studentCsrfRejected = await fetch(`${base}/api/questions/${question.id}/answers`, { method: 'POST', headers: { origin, cookie: ada.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ revision: 0, idempotencyKey: 'ada-0', payload: { kind: 'single_choice', selectedOptions: [template.options[0]?.id] } }) });
     expect(studentCsrfRejected.status).toBe(403);
 
@@ -106,9 +112,13 @@ describe('Task 4 composed question API', () => {
     const closedView = await closedTeacherView.json() as { snapshot: { counts: Record<string, number> }; answers: Array<{ studentId: string }> };
     expect(closedView.snapshot.counts).toEqual({ [template.options[1]?.id ?? 'missing']: 1 });
     expect(closedView.answers).toHaveLength(1);
+    database?.prepare("UPDATE questions SET reference_answer='teacher-secret' WHERE id=?").run(question.id);
     const studentRead = await fetch(`${base}/api/questions/${question.id}?as=student`, { headers: { cookie: ada.cookie } });
     expect(studentRead.status).toBe(200);
-    expect(await studentRead.json()).toMatchObject({ answer: { revision: 2, late: true }, answerAtClose: { revision: 1 } });
+    const studentView = await studentRead.json() as { question: Record<string, unknown>; answer: { revision: number; late: boolean }; answerAtClose: { revision: number } };
+    expect(studentView).toMatchObject({ answer: { revision: 2, late: true }, answerAtClose: { revision: 1 } });
+    expect(studentView.question).not.toHaveProperty('referenceAnswer');
+    expect(JSON.stringify(studentView)).not.toContain('teacher-secret');
 
     const deletion = { confirmed: true, impactAcknowledged: true };
     const deleted = await fetch(`${base}/api/questions/${question.id}/answers/${firstAnswer.id}`, { method: 'DELETE', headers: headers(teacher), body: JSON.stringify(deletion) });
