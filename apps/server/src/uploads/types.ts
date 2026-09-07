@@ -1,0 +1,64 @@
+import type { FileSubmissionTaskId, StudentId, UploadSessionId, UploadState } from '../domain/types.js';
+
+/** The product-level hard limit. Tests may configure a lower limit only. */
+export const MAX_UPLOAD_BYTES = 100_000_000;
+
+export type UploadStart = Readonly<{
+  uploadSessionId: UploadSessionId;
+  taskId: FileSubmissionTaskId;
+  studentId: StudentId;
+  stagingKey: string;
+  originalFilename: string;
+  displayFilename: string;
+  declaredMimeType: string | null;
+}>;
+
+export type UploadTaskPolicy = Readonly<{ deadlineAtUtc: string; maxBytes: number }>;
+
+export type ReconciliationRecord = Readonly<{
+  uploadSessionId: UploadSessionId;
+  state: UploadState;
+  stagingKey: string | null;
+  finalStorageKey: string | null;
+  bytesReceived: number;
+  sha256: string | null;
+}>;
+
+/**
+ * Persistence boundary for byte ingestion. Authentication and task-route
+ * ownership stay outside this port; this adapter still verifies membership and
+ * task state so a caller cannot manufacture a cross-class upload.
+ */
+export interface UploadPipelineRepository {
+  begin(input: UploadStart): UploadTaskPolicy;
+  recordVerified(input: Readonly<{ uploadSessionId: UploadSessionId; bytesReceived: number; sha256: string; receivedCompleteAtUtc: string }>): void;
+  prepareFileCommit(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
+  commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
+  markRecoveryPending(uploadSessionId: UploadSessionId, errorCode: string): void;
+  markFailed(uploadSessionId: UploadSessionId, errorCode: string): void;
+  listForReconciliation(): readonly ReconciliationRecord[];
+}
+
+export type UploadInput = Readonly<{
+  taskId: FileSubmissionTaskId;
+  studentId: StudentId;
+  bytes: AsyncIterable<Uint8Array>;
+  originalFilename?: string;
+  declaredMimeType?: string | null;
+  expectedBytes?: number;
+  expectedSha256?: string;
+  /** Structural on purpose: HTTP adapters can pass request-abort state without a DOM global. */
+  signal?: Readonly<{ aborted: boolean }>;
+}>;
+
+export type StoredUpload = Readonly<{
+  uploadSessionId: UploadSessionId;
+  storageKey: string;
+  byteLength: number;
+  sha256: string;
+  receivedCompleteAtUtc: string;
+}>;
+
+export class UploadPipelineError extends Error {
+  constructor(readonly code: string, cause?: unknown) { super(code, { cause }); this.name = 'UploadPipelineError'; }
+}
