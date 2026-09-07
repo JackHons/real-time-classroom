@@ -17,4 +17,5 @@ test-results/
 # Runtime data never belongs in the repository. The default production location
 # is %LOCALAPPDATA%\LanClassroomPlatform.
 runtime-data/
-uploads/
+/runtime/
+/uploads/

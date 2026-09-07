@@ -86,5 +86,25 @@ describe('upload byte pipeline', () => {
     expect(() => perStudent.reserve('task', 'student')).toThrow('UPLOAD_ALREADY_ACTIVE_FOR_STUDENT_TASK'); release();
     const gate = new UploadReservationGate(1); const globalRelease = gate.reserve('task', 'student');
     expect(() => gate.reserve('other-task', 'other-student')).toThrow('UPLOAD_STREAM_LIMIT_REACHED'); globalRelease();
+
+    // Fifty simultaneous admission attempts cannot overrun the global cap.
+    const concurrent = new UploadReservationGate(10); const releases: Array<() => void> = [];
+    for (let index = 0; index < 50; index += 1) {
+      if (index < 10) releases.push(concurrent.reserve(`task-${index}`, `student-${index}`));
+      else expect(() => concurrent.reserve(`task-${index}`, `student-${index}`)).toThrow('UPLOAD_STREAM_LIMIT_REACHED');
+    }
+    for (const release of releases) release();
+  });
+
+  it('uses reversible filesystem deletion for committed opaque objects', async () => {
+    const { pipeline, storage } = await setup();
+    const result = await pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('abc') });
+    const rollback = storage.stageDeletion([{ storageKey: result.storageKey, submissionId: result.uploadSessionId }]);
+    expect(await storage.existsFinal(result.storageKey)).toBe(false);
+    rollback.rollback();
+    expect(await storage.existsFinal(result.storageKey)).toBe(true);
+    const commit = storage.stageDeletion([{ storageKey: result.storageKey, submissionId: result.uploadSessionId }]);
+    commit.commit();
+    expect(await storage.existsFinal(result.storageKey)).toBe(false);
   });
 });

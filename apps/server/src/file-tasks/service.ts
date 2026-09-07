@@ -42,7 +42,7 @@ export class FileTaskService {
     this.teacher(context);
     const task = required(this.dependencies.repository.task(taskId));
     if (task.state !== 'draft') fail('FILE_TASK_TRANSITION_CONFLICT');
-    if (Date.parse(task.deadlineAtUtc) <= this.now().valueOf()) fail('FILE_TASK_DEADLINE_PASSED');
+    if (Date.parse(task.deadlineAtUtc) < this.now().valueOf()) fail('FILE_TASK_DEADLINE_PASSED');
     return this.dependencies.repository.openTask(taskId, iso(this.now())) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
   }
 
@@ -119,7 +119,7 @@ export class FileTaskService {
   }
   private reconcile(taskId: FileSubmissionTaskId): FileSubmissionTask {
     const task = required(this.dependencies.repository.task(taskId));
-    if (task.state === 'open' && Date.parse(task.deadlineAtUtc) <= this.now().valueOf()) {
+    if (task.state === 'open' && Date.parse(task.deadlineAtUtc) < this.now().valueOf()) {
       return this.dependencies.repository.closeTask(taskId, iso(this.now())) ?? required(this.dependencies.repository.task(taskId));
     }
     return task;
@@ -140,7 +140,7 @@ function validateCommittedSubmission(input: Omit<NewFileSubmission, 'studentId'>
   if (normalized(input.originalFilename, 512, 'FILE_SUBMISSION_FILENAME').length === 0 || normalized(input.displayFilename, 512, 'FILE_SUBMISSION_FILENAME').length === 0 || normalized(input.storageKey, 1_000, 'FILE_SUBMISSION_STORAGE_KEY').length === 0) fail('FILE_SUBMISSION_INVALID');
   if (input.declaredMimeType !== null && (typeof input.declaredMimeType !== 'string' || input.declaredMimeType.length > 255)) fail('FILE_SUBMISSION_MIME_INVALID');
   // Completion, not client upload start, is authoritative: no last-byte race past close.
-  if (task.state !== 'open' || Date.parse(task.deadlineAtUtc) <= Date.parse(input.receivedCompleteAtUtc)) fail('FILE_TASK_CLOSED');
+  if (task.state !== 'open' || Date.parse(task.deadlineAtUtc) < Date.parse(input.receivedCompleteAtUtc)) fail('FILE_TASK_CLOSED');
 }
 function normalized(value: unknown, maximum: number, code: string, allowEmpty = false): string { if (typeof value !== 'string') fail(`${code}_REQUIRED`); const result = value.normalize('NFKC').trim(); if ((!allowEmpty && result.length === 0) || result.length > maximum) fail(`${code}_INVALID`); return result; }
 function required(value: FileSubmissionTask | undefined): FileSubmissionTask { return value ?? fail('FILE_TASK_NOT_FOUND'); }

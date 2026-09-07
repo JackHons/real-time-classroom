@@ -6,16 +6,23 @@ import { createClassRoutes } from './classes/http-routes.js';
 import { SqliteAuthSessionRepository } from './db/auth-session-repository.js';
 import { SqliteClassRosterRepository } from './db/class-roster-repository.js';
 import type { SqliteDatabase } from './db/connection.js';
+import { SqliteFileSubmissionTaskRepository } from './db/file-submission-task-repository.js';
 import { SqliteLiveQuestionRepository } from './db/live-question-repository.js';
 import { migrate } from './db/migrator.js';
 import { SqliteQuestionBankRepository } from './db/question-bank-repository.js';
 import { SqliteDomainRepository } from './db/sqlite-repositories.js';
+import { SqliteUploadPipelineRepository } from './db/upload-pipeline-repository.js';
 import type { AuthorizedStudentContext, AuthorizedTeacherContext } from './domain/types.js';
+import { createFileTaskRoutes } from './file-tasks/http-routes.js';
+import { FileTaskService } from './file-tasks/service.js';
 import { createQuestionBankRoutes } from './questions/bank/http-routes.js';
 import { QuestionBankService } from './questions/bank/service.js';
 import { createLiveQuestionRoutes } from './questions/live/http-routes.js';
 import { LiveQuestionService } from './questions/live/live-question-service.js';
 import type { HttpRouteHandler } from './server.js';
+import { createUploadRoutes } from './uploads/http-routes.js';
+import { UploadPipeline } from './uploads/pipeline.js';
+import { UploadStorage } from './uploads/storage.js';
 
 export type ApplicationOptions = Readonly<{
   database: SqliteDatabase;
@@ -25,9 +32,11 @@ export type ApplicationOptions = Readonly<{
   passwordVerifier?: PasswordVerifier;
   /** Allows focused tests and composition to set shared public join budgets. */
   studentJoinRateLimiter?: StudentJoinRateLimiter;
+  /** Private, runtime-owned directory.  It is never taken from an HTTP request. */
+  uploadStorageRoot?: string;
 }>;
 
-export type Application = Readonly<{ apiHandler: HttpRouteHandler }>;
+export type Application = Readonly<{ apiHandler: HttpRouteHandler; reconcileUploads: () => Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number }>> }>;
 
 /** Thrown instead of exposing partially configured application routes. */
 export class FirstRunSetupRequiredError extends Error {
@@ -122,8 +131,28 @@ export function createApplication(options: ApplicationOptions): Application {
     teacherContext: authenticateTeacher,
     studentContext: authenticateStudent
   });
+  const fileRepository = new SqliteFileSubmissionTaskRepository(options.database, () => clock.now().toISOString());
+  const storage = new UploadStorage(options.uploadStorageRoot ?? 'runtime-data/uploads');
+  const fileTaskService = new FileTaskService({
+    repository: fileRepository,
+    storage,
+    teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
+    studentAuthorization: { assertAuthorized: (context) => assertStudentContext(context) },
+    classExists: (classId) => rosterRepository.classExists(classId),
+    now: () => clock.now()
+  });
+  const fileTaskHandler = createFileTaskRoutes({ service: fileTaskService, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
+  const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now() });
+  const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, service: fileTaskService, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher });
+  let uploadsReady = false;
 
   return {
+    reconcileUploads: async () => {
+      await storage.ensureReady();
+      const result = await uploadPipeline.reconcile();
+      uploadsReady = true;
+      return result;
+    },
     apiHandler: async (request, response) => {
       const pathname = new URL(request.url ?? '/', 'http://lan-classroom.local').pathname;
       if (pathname.startsWith('/api/auth/')) { await authHandler(request, response); return true; }
@@ -134,7 +163,8 @@ export function createApplication(options: ApplicationOptions): Application {
           try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(response, error); return true; }
         }
         try {
-          const handled = await classHandler(request, response) || await questionBankHandler(request, response);
+          if (pathname.includes('/file-tasks/') && !uploadsReady) { sendJson(response, 503, { error: 'UPLOADS_INITIALIZING' }); return true; }
+          const handled = await classHandler(request, response) || await questionBankHandler(request, response) || await fileTaskHandler(request, response) || await uploadHandler(request, response);
           if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
         } catch (error) { sendError(response, error); }
         return true;
@@ -201,10 +231,11 @@ function sendError(response: ServerResponse, error: unknown): void {
   if (error instanceof HttpError) { sendJson(response, error.status, { error: error.code }); return; }
   const code = error instanceof Error ? error.message : 'INVALID_REQUEST';
   if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED' || code.endsWith('_NOT_FOUND') || code === 'ANSWER_NOT_FOUND') { sendJson(response, 404, { error: code }); return; }
-  if (code === 'REQUEST_BODY_TOO_LARGE') { sendJson(response, 413, { error: code }); return; }
+  if (code === 'REQUEST_BODY_TOO_LARGE' || code === 'UPLOAD_TOO_LARGE') { sendJson(response, 413, { error: code }); return; }
   if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(response, 403, { error: code }); return; }
-  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT') { sendJson(response, 409, { error: code }); return; }
-  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(response, 400, { error: code }); return; }
+  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT' || code === 'FILE_SUBMISSION_ALREADY_EXISTS' || code === 'FILE_TASK_TRANSITION_CONFLICT') { sendJson(response, 409, { error: code }); return; }
+  if (code === 'UPLOAD_STREAM_LIMIT_REACHED') { sendJson(response, 429, { error: 'UPLOAD_REJECTED' }); return; }
+  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
   sendJson(response, 500, { error: 'CLASS_INTERNAL_ERROR' });
 }
 

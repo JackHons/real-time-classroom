@@ -11,11 +11,16 @@ const config = readRuntimeConfig();
 const database = openSqlite(config.databasePath);
 let apiHandler;
 try {
-  apiHandler = createApplication({
+  const application = createApplication({
     database,
     allowedOrigin: config.allowedOrigin,
-    csrfSecret: config.csrfSecret
-  }).apiHandler;
+    csrfSecret: config.csrfSecret,
+    uploadStorageRoot: config.uploadStoragePath
+  });
+  // Do not accept upload requests until durable intents and private storage
+  // agree; startup is deliberately fail-closed when reconciliation fails.
+  await application.reconcileUploads();
+  apiHandler = application.apiHandler;
 } catch (error) {
   if (!(error instanceof FirstRunSetupRequiredError)) throw error;
   // The first-run setup flow is intentionally not implemented in this task.

@@ -35,6 +35,13 @@ describe('file task service', () => {
     const late = setup(new Date('2026-09-08T02:00:00.000Z'));
     const lateDraft = late.service.createDraft('teacher', 'class-1' as never, { title: 'x', description: '', deadlineAtUtc: deadline });
     expect(() => late.service.open('teacher', lateDraft.id)).toThrow('FILE_TASK_DEADLINE_PASSED');
+
+    // The same server-authoritative boundary is inclusive: completion at the
+    // advertised deadline is valid, while any later completion is rejected.
+    const exact = setup(new Date(deadline));
+    const exactDraft = exact.service.createDraft('teacher', 'class-1' as never, { title: 'exact', description: '', deadlineAtUtc: deadline });
+    exact.service.open('teacher', exactDraft.id);
+    expect(exact.service.commitSubmission('student', { taskId: exactDraft.id, originalFilename: 'x.txt', displayFilename: 'x.txt', storageKey: 'object/exact', declaredMimeType: null, byteLength: 1, sha256: 'b'.repeat(64), receivedCompleteAtUtc: deadline })).toMatchObject({ taskId: exactDraft.id });
   });
 
   it('blocks duplicate successful metadata and rolls a failed storage delete back to live metadata', () => {

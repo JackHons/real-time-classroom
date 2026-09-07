@@ -37,7 +37,8 @@ function databaseWithTeacherHash(): SqliteDatabase {
 }
 
 async function applicationBase(clock?: Clock, studentJoinRateLimiter?: StudentJoinRateLimiter): Promise<string> {
-  const app = createApplication({ database: databaseWithTeacherHash(), allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async (password) => password === 'correct', ...(clock === undefined ? {} : { clock }), ...(studentJoinRateLimiter === undefined ? {} : { studentJoinRateLimiter }) });
+  const app = createApplication({ database: databaseWithTeacherHash(), allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async (password) => password === 'correct', uploadStorageRoot: join(directory as string, 'uploads'), ...(clock === undefined ? {} : { clock }), ...(studentJoinRateLimiter === undefined ? {} : { studentJoinRateLimiter }) });
+  await app.reconcileUploads();
   server = await startServer({ host: '127.0.0.1', port: 0, apiHandler: app.apiHandler });
   return `http://${server.host}:${server.port}`;
 }
@@ -148,5 +149,32 @@ describe('Task 3 composed API routes', () => {
     const bypassAttempt = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unapproved', studentNumber: 'S2' }) });
     expect(bypassAttempt.status).toBe(429);
     expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 1 });
+  });
+
+  it('streams a CSRF-protected student upload and exposes it only to a teacher download', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name: '1A' }) });
+    const classroom = await created.json() as { id: string };
+    await fetch(`${base}/api/classes/${classroom.id}/roster/import`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ csv: 'name,studentNumber\nAda,A1' }) });
+    const join = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Ada', studentNumber: 'A1' }) });
+    const studentCookie = join.headers.get('set-cookie')?.split(';')[0];
+    const studentCsrf = (await join.json() as { csrfToken: string }).csrfToken;
+    if (studentCookie === undefined) throw new Error('test setup missing student cookie');
+    const drafted = await fetch(`${base}/api/classes/${classroom.id}/file-tasks`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ title: 'Upload', description: '', deadlineAtUtc: '2099-01-01T00:00:00.000Z' }) });
+    const task = await drafted.json() as { id: string };
+    expect((await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/open`, { method: 'POST', headers: teacherHeaders(teacher), body: '{}' })).status).toBe(200);
+    const studentHeaders = { origin, cookie: studentCookie, 'x-csrf-token': studentCsrf, 'content-type': 'application/octet-stream', 'x-upload-filename': '../answer.txt' };
+    const uploaded = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/upload`, { method: 'POST', headers: studentHeaders, body: 'answer' });
+    expect(uploaded.status).toBe(201);
+    expect(database?.prepare('SELECT original_filename,storage_key FROM file_submissions').get()).toMatchObject({ original_filename: 'answer.txt' });
+    const denied = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/upload`, { method: 'POST', headers: { ...studentHeaders, 'x-csrf-token': 'wrong' }, body: 'different' });
+    expect(denied.status).toBe(403);
+    const stored = database?.prepare('SELECT student_id FROM file_submissions').get() as { student_id: string };
+    const download = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/submissions/${stored.student_id}/download`, { headers: { cookie: teacher.cookie } });
+    expect(download.status).toBe(200);
+    expect(download.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(download.headers.get('content-disposition')).toContain('answer.txt');
+    expect(await download.text()).toBe('answer');
   });
 });
