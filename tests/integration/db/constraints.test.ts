@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { openSqlite, type SqliteDatabase } from '../../../apps/server/src/db/connection.js';
 import { migrate } from '../../../apps/server/src/db/migrator.js';
 import { SqliteDomainRepository, SqliteFileMetadataRepository } from '../../../apps/server/src/db/sqlite-repositories.js';
+import { SqliteFileSubmissionTaskRepository } from '../../../apps/server/src/db/file-submission-task-repository.js';
 import type { ClassId, StudentId } from '../../../apps/server/src/domain/types.js';
 let database: SqliteDatabase | undefined;
 
@@ -122,5 +123,20 @@ describe('SQLite migration and repository transactions', () => {
     metadata.commitAfterFileRename({ uploadSessionId: 'upload-1' as never, finalStorageKey: 'final-1' });
     expect(database?.prepare('SELECT state FROM upload_sessions WHERE id=?').get('upload-1')).toMatchObject({ state: 'metadata_committed' });
     expect(() => insertUpload?.run('upload-2', 'task-1', 'student-1', 'upload-key-2', 'metadata_committed', null, 'final-2', 1, 'b'.repeat(64), '2026-09-07T00:00:00.000Z', null, '2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.000Z')).toThrow();
+  });
+
+  it('refuses task deletion while any durable upload intent can still own a file', () => {
+    setup();
+    database?.prepare("INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES ('task-pending','class-1','Pending','', 'draft',100000000,'2099-01-01T00:00:00.000Z',NULL,NULL,'now','now')").run();
+    const upload = database?.prepare("INSERT INTO upload_sessions (id,task_id,student_id,idempotency_key,state,staging_key,final_storage_key,bytes_received,sha256,received_complete_at_utc,error_code,created_at_utc,updated_at_utc,original_filename,display_filename,declared_mime_type) VALUES (?,?,?,?, 'staging',?,NULL,0,NULL,NULL,NULL,'now','now',NULL,NULL,NULL)");
+    const fileTasks = new SqliteFileSubmissionTaskRepository(database!);
+    upload?.run('pending-upload', 'task-pending', 'student-1', 'key', 'staging/pending.part');
+    for (const state of ['queued', 'staging', 'validating', 'file_committed', 'metadata_committed', 'recovery_pending'] as const) {
+      database?.prepare('UPDATE upload_sessions SET state=?, final_storage_key=? WHERE id=?').run(state, state === 'queued' || state === 'staging' || state === 'validating' ? null : 'a'.repeat(36), 'pending-upload');
+      expect(fileTasks.deleteEmptyTask('task-pending' as never)).toBe(false);
+      expect(database?.prepare('SELECT id FROM file_submission_tasks WHERE id=?').get('task-pending')).toBeDefined();
+    }
+    database?.prepare("UPDATE upload_sessions SET state='failed' WHERE id='pending-upload'").run();
+    expect(fileTasks.deleteEmptyTask('task-pending' as never)).toBe(true);
   });
 });

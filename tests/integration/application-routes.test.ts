@@ -171,6 +171,10 @@ describe('Task 3 composed API routes', () => {
     const denied = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/upload`, { method: 'POST', headers: { ...studentHeaders, 'x-csrf-token': 'wrong' }, body: 'different' });
     expect(denied.status).toBe(403);
     const stored = database?.prepare('SELECT student_id FROM file_submissions').get() as { student_id: string };
+    const openDownload = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/submissions/${stored.student_id}/download`, { headers: { cookie: teacher.cookie } });
+    expect(openDownload.status).toBe(404);
+    expect(await openDownload.json()).toEqual({ error: 'FILE_TASK_NOT_FOUND' });
+    expect((await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/close`, { method: 'POST', headers: teacherHeaders(teacher), body: '{}' })).status).toBe(200);
     const download = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/submissions/${stored.student_id}/download`, { headers: { cookie: teacher.cookie } });
     expect(download.status).toBe(200);
     expect(download.headers.get('x-content-type-options')).toBe('nosniff');

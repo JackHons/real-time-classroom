@@ -36,6 +36,9 @@ export type ApplicationOptions = Readonly<{
   uploadStorageRoot?: string;
   /** Deployment reserve; production configuration may only raise the safe default. */
   uploadStorageOptions?: UploadStorageOptions;
+  /** Focused tests may shorten these; production uses the conservative route defaults. */
+  uploadIdleTimeoutMs?: number;
+  uploadAbsoluteRequestTimeoutMs?: number;
 }>;
 
 export type Application = Readonly<{ apiHandler: HttpRouteHandler; reconcileUploads: () => Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number }>> }>;
@@ -143,9 +146,9 @@ export function createApplication(options: ApplicationOptions): Application {
     classExists: (classId) => rosterRepository.classExists(classId),
     now: () => clock.now()
   });
-  const fileTaskHandler = createFileTaskRoutes({ service: fileTaskService, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
+  const fileTaskHandler = createFileTaskRoutes({ service: fileTaskService, repository: fileRepository, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now() });
-  const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, service: fileTaskService, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher });
+  const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher, ...(options.uploadIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.uploadIdleTimeoutMs }), ...(options.uploadAbsoluteRequestTimeoutMs === undefined ? {} : { absoluteRequestTimeoutMs: options.uploadAbsoluteRequestTimeoutMs }) });
   let uploadsReady = false;
 
   return {

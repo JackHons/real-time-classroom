@@ -54,6 +54,8 @@ export interface FileStudentAuthorization { assertAuthorized(context: unknown): 
 
 export type FileTaskRouteDependencies = Readonly<{
   service: FileTaskServicePort;
+  /** The route verifies path class/task agreement before it dispatches a command. */
+  repository: Pick<FileTaskRepository, 'task'>;
   teacherContext: (request: IncomingMessage) => unknown;
   studentContext: (request: IncomingMessage) => unknown;
 }>;
