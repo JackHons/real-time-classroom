@@ -1,11 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openSqlite, type SqliteDatabase } from '../../../apps/server/src/db/connection.js';
 import { migrate } from '../../../apps/server/src/db/migrator.js';
-import { SqliteDomainRepository } from '../../../apps/server/src/db/sqlite-repositories.js';
-import type { AuthorizedStudentContext, AuthorizedTeacherContext, ClassId, StudentId } from '../../../apps/server/src/domain/types.js';
-
-const teacher = { teacherSessionId: 'teacher-session' as AuthorizedTeacherContext['teacherSessionId'], csrfValidated: true } as const;
-const studentContext = (studentId: string): AuthorizedStudentContext => ({ studentSessionId: `${studentId}-session` as AuthorizedStudentContext['studentSessionId'], studentId: studentId as StudentId, classId: 'class-1' as ClassId, csrfValidated: true });
+import { SqliteDomainRepository, SqliteFileMetadataRepository } from '../../../apps/server/src/db/sqlite-repositories.js';
+import type { ClassId, StudentId } from '../../../apps/server/src/domain/types.js';
 let database: SqliteDatabase | undefined;
 
 function setup(): SqliteDomainRepository {
@@ -42,6 +42,8 @@ describe('SQLite migration and repository transactions', () => {
     expect(() => database?.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run('duplicate', 'class-1', 'Other', 'A1', 'A1', 0, '2026-09-07T00:00:00.000Z')).toThrow();
     database?.prepare('INSERT INTO student_sessions VALUES (?,?,?,?,?,?,?,?,?)').run('s1', 'student-1', 'class-1', 'token-1', 'now', 'now', 'later', 'later', null);
     expect(() => database?.prepare('INSERT INTO student_sessions VALUES (?,?,?,?,?,?,?,?,?)').run('s2', 'student-1', 'class-1', 'token-2', 'now', 'now', 'later', 'later', null)).toThrow();
+    expect(() => database?.prepare('INSERT INTO student_sessions VALUES (?,?,?,?,?,?,?,?,?)').run('cross-class', 'student-1', 'wrong-class', 'token-3', 'now', 'now', 'later', 'later', null)).toThrow();
+    expect(() => database?.prepare('INSERT INTO app_settings VALUES (?,?,?,?)').run('invalid_setting', 'x', 'now', 'now')).toThrow();
   });
 
   it('revokes an expired session in the same transaction before allowing a replacement', () => {
@@ -53,59 +55,72 @@ describe('SQLite migration and repository transactions', () => {
 
   it('persists template options and only permits an exact template-backed draft snapshot', () => {
     const repository = setup();
-    const template = repository.createQuestionTemplate(teacher, { id: 'template-1' as never, kind: 'single_choice', prompt: 'Pick a letter', options: [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }], referenceAnswer: 'a' });
-    expect(repository.listQuestionTemplates(teacher)).toEqual([template]);
+    const template = repository.createQuestionTemplate({ id: 'template-1' as never, kind: 'single_choice', prompt: 'Pick a letter', options: [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }], referenceAnswer: 'a' });
+    expect(repository.listQuestionTemplates()).toEqual([template]);
 
-    const draft = repository.createQuestion(teacher, { id: 'template-draft' as never, classId: 'class-1' as ClassId, templateId: template.id, kind: template.kind, prompt: template.prompt, options: template.options.map(({ key, label }) => ({ key, label })), referenceAnswer: template.referenceAnswer });
+    const draft = repository.createQuestion({ id: 'template-draft' as never, classId: 'class-1' as ClassId, templateId: template.id, kind: template.kind, prompt: template.prompt, options: template.options.map(({ key, label }) => ({ key, label })), referenceAnswer: template.referenceAnswer });
     expect(draft).toMatchObject({ templateId: template.id, options: template.options });
-    expect(() => repository.createQuestion(teacher, { id: 'mismatched-template-draft' as never, classId: 'class-1' as ClassId, templateId: template.id, kind: template.kind, prompt: template.prompt, options: [{ key: 'a', label: 'Changed' }, { key: 'b', label: 'B' }], referenceAnswer: template.referenceAnswer })).toThrow('QUESTION_TEMPLATE_SNAPSHOT_MISMATCH');
+    expect(() => repository.createQuestion({ id: 'mismatched-template-draft' as never, classId: 'class-1' as ClassId, templateId: template.id, kind: template.kind, prompt: template.prompt, options: [{ key: 'a', label: 'Changed' }, { key: 'b', label: 'B' }], referenceAnswer: template.referenceAnswer })).toThrow('QUESTION_TEMPLATE_SNAPSHOT_MISMATCH');
     expect(database?.prepare('SELECT id FROM questions WHERE id=?').get('mismatched-template-draft')).toBeUndefined();
-    expect(() => repository.createQuestion(teacher, { id: 'missing-template-draft' as never, classId: 'class-1' as ClassId, templateId: 'missing-template' as never, kind: 'short_text', prompt: 'Missing', options: [] })).toThrow('QUESTION_TEMPLATE_NOT_FOUND');
+    expect(() => repository.createQuestion({ id: 'missing-template-draft' as never, classId: 'class-1' as ClassId, templateId: 'missing-template' as never, kind: 'short_text', prompt: 'Missing', options: [] })).toThrow('QUESTION_TEMPLATE_NOT_FOUND');
     expect(database?.prepare('SELECT id FROM questions WHERE id=?').get('missing-template-draft')).toBeUndefined();
   });
 
   it('closes atomically, snapshots no-answer rows, and rejects reopen', () => {
     const repository = setup();
-    repository.createQuestion(teacher, { id: 'q1' as never, classId: 'class-1' as ClassId, kind: 'single_choice', prompt: 'Pick', options: [{ key: 'a', label: 'A' }] });
-    repository.transitionQuestion(teacher, 'q1' as never, 'open');
-    repository.submitAnswer(studentContext('student-1'), { questionId: 'q1' as never, revision: 1, idempotencyKey: 'key-1', requestFingerprint: 'request-1', payload: { kind: 'single_choice', selectedOptions: ['a'] } });
-    const snapshot = repository.closeQuestion(teacher, 'q1' as never);
+    repository.createQuestion({ id: 'q1' as never, classId: 'class-1' as ClassId, kind: 'single_choice', prompt: 'Pick', options: [{ key: 'a', label: 'A' }] });
+    repository.transitionQuestion('q1' as never, 'open');
+    repository.submitAnswer('student-1' as StudentId, { questionId: 'q1' as never, revision: 1, idempotencyKey: 'key-1', requestFingerprint: 'request-1', payload: { kind: 'single_choice', selectedOptions: ['a'] } });
+    const snapshot = repository.closeQuestion('q1' as never);
     expect(snapshot.counts).toEqual({ a: 1 });
     expect(repository.answerAtClose('q1' as never, 'student-2' as never)?.noAnswer).toBe(true);
-    expect(() => repository.transitionQuestion(teacher, 'q1' as never, 'open')).toThrow('Invalid lifecycle transition');
+    expect(() => repository.transitionQuestion('q1' as never, 'open')).toThrow('Invalid lifecycle transition');
+    expect(() => repository.transitionQuestion('q1' as never, 'draft')).toThrow('Invalid lifecycle transition');
   });
 
   it('rolls back a multi-row question insert when an option constraint fails', () => {
     const repository = setup();
-    expect(() => repository.createQuestion(teacher, { id: 'rolled-back' as never, classId: 'class-1' as ClassId, kind: 'single_choice', prompt: 'Pick', options: [{ key: 'same', label: 'A' }, { key: 'same', label: 'B' }] })).toThrow();
+    expect(() => repository.createQuestion({ id: 'rolled-back' as never, classId: 'class-1' as ClassId, kind: 'single_choice', prompt: 'Pick', options: [{ key: 'same', label: 'A' }, { key: 'same', label: 'B' }] })).toThrow();
     expect(database?.prepare('SELECT id FROM questions WHERE id=?').get('rolled-back')).toBeUndefined();
   });
 
   it('keeps late answers separate and replays an idempotent result immutably', () => {
     const repository = setup();
-    repository.createQuestion(teacher, { id: 'q2' as never, classId: 'class-1' as ClassId, kind: 'short_text', prompt: 'Why?', options: [] });
-    repository.transitionQuestion(teacher, 'q2' as never, 'open');
+    repository.createQuestion({ id: 'q2' as never, classId: 'class-1' as ClassId, kind: 'short_text', prompt: 'Why?', options: [] });
+    repository.transitionQuestion('q2' as never, 'open');
     const input = { questionId: 'q2' as never, revision: 1, idempotencyKey: 'same-key', requestFingerprint: 'same-request', payload: { kind: 'short_text' as const, text: 'on time' } };
-    const first = repository.submitAnswer(studentContext('student-1'), input);
-    expect(repository.submitAnswer(studentContext('student-1'), input)).toEqual(first);
-    repository.closeQuestion(teacher, 'q2' as never);
-    repository.submitAnswer(studentContext('student-1'), { ...input, revision: 2, idempotencyKey: 'late-key', requestFingerprint: 'late-request', payload: { kind: 'short_text', text: 'late' } });
+    const first = repository.submitAnswer('student-1' as StudentId, input);
+    expect(repository.submitAnswer('student-1' as StudentId, input)).toEqual(first);
+    repository.closeQuestion('q2' as never);
+    repository.submitAnswer('student-1' as StudentId, { ...input, revision: 2, idempotencyKey: 'late-key', requestFingerprint: 'late-request', payload: { kind: 'short_text', text: 'late' } });
     expect(repository.answerAtClose('q2' as never, 'student-1' as never)?.payload).toEqual({ kind: 'short_text', text: 'on time' });
-    expect(() => repository.submitAnswer(studentContext('student-1'), { ...input, requestFingerprint: 'different' })).toThrow('IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST');
+    expect(() => repository.submitAnswer('student-1' as StudentId, { ...input, requestFingerprint: 'different' })).toThrow('IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST');
   });
 
   it('physically deletes answer payloads while preserving the anonymous snapshot and audit marker', () => {
     const repository = setup();
-    repository.createQuestion(teacher, { id: 'q3' as never, classId: 'class-1' as ClassId, kind: 'single_choice', prompt: 'Pick', options: [{ key: 'a', label: 'A' }] });
-    repository.transitionQuestion(teacher, 'q3' as never, 'open');
-    repository.submitAnswer(studentContext('student-1'), { questionId: 'q3' as never, revision: 1, idempotencyKey: 'delete-key', requestFingerprint: 'delete-request', payload: { kind: 'single_choice', selectedOptions: ['a'] } });
-    const snapshot = repository.closeQuestion(teacher, 'q3' as never);
-    repository.deleteAnswer(teacher, 'q3' as never, 'student-1' as never, { confirmed: true, impactAcknowledged: true });
+    repository.createQuestion({ id: 'q3' as never, classId: 'class-1' as ClassId, kind: 'single_choice', prompt: 'Pick', options: [{ key: 'a', label: 'A' }] });
+    repository.transitionQuestion('q3' as never, 'open');
+    repository.submitAnswer('student-1' as StudentId, { questionId: 'q3' as never, revision: 1, idempotencyKey: 'delete-key', requestFingerprint: 'delete-request', payload: { kind: 'single_choice', selectedOptions: ['a'] } });
+    const snapshot = repository.closeQuestion('q3' as never);
+    repository.deleteAnswer('q3' as never, 'student-1' as never, { confirmed: true, impactAcknowledged: true });
     expect(repository.answerAtClose('q3' as never, 'student-1' as never)).toBeUndefined();
     expect(snapshot.counts).toEqual({ a: 1 });
     expect(database?.prepare('SELECT deleted_at_utc FROM answer_deletion_markers WHERE question_id=? AND student_id=?').get('q3', 'student-1')).toBeDefined();
+    expect(database?.prepare('SELECT response_json FROM answer_submission_idempotency WHERE question_id=? AND student_id=?').get('q3', 'student-1')).toBeUndefined();
+    const resubmitted = repository.submitAnswer('student-1' as StudentId, { questionId: 'q3' as never, revision: 2, idempotencyKey: 'delete-key', requestFingerprint: 'new-request', payload: { kind: 'single_choice', selectedOptions: [] } });
+    expect(resubmitted.payload).toEqual({ kind: 'single_choice', selectedOptions: [] });
+  });
+
+  it('enforces one metadata-committed upload and defensive final-key metadata commits', () => {
+    const repository = setup();
+    repository.createFileTask({ id: 'task-1' as never, classId: 'class-1' as ClassId, title: 'Exit file', description: '', deadlineAtUtc: '2026-09-07T01:00:00.000Z' });
+    const insertUpload = database?.prepare('INSERT INTO upload_sessions (id,task_id,student_id,idempotency_key,state,staging_key,final_storage_key,bytes_received,sha256,received_complete_at_utc,error_code,created_at_utc,updated_at_utc) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    insertUpload?.run('upload-1', 'task-1', 'student-1', 'upload-key', 'file_committed', 'staging-1', 'final-1', 1, 'a'.repeat(64), '2026-09-07T00:00:00.000Z', null, '2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.000Z');
+    const metadata = new SqliteFileMetadataRepository(database!, () => '2026-09-07T00:00:01.000Z');
+    expect(() => metadata.commitAfterFileRename({ uploadSessionId: 'upload-1' as never, finalStorageKey: 'wrong-key' })).toThrow('FILE_METADATA_COMMIT_PRECONDITION_FAILED');
+    metadata.commitAfterFileRename({ uploadSessionId: 'upload-1' as never, finalStorageKey: 'final-1' });
+    expect(database?.prepare('SELECT state FROM upload_sessions WHERE id=?').get('upload-1')).toMatchObject({ state: 'metadata_committed' });
+    expect(() => insertUpload?.run('upload-2', 'task-1', 'student-1', 'upload-key-2', 'metadata_committed', null, 'final-2', 1, 'b'.repeat(64), '2026-09-07T00:00:00.000Z', null, '2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.000Z')).toThrow();
   });
 });
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';

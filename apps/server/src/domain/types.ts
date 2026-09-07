@@ -3,6 +3,7 @@ export type ClassId = Brand<string, 'ClassId'>;
 export type StudentId = Brand<string, 'StudentId'>;
 export type StudentSessionId = Brand<string, 'StudentSessionId'>;
 export type TeacherSessionId = Brand<string, 'TeacherSessionId'>;
+export type PendingStudentRequestId = Brand<string, 'PendingStudentRequestId'>;
 export type QuestionId = Brand<string, 'QuestionId'>;
 export type QuestionTemplateId = Brand<string, 'QuestionTemplateId'>;
 export type AnswerId = Brand<string, 'AnswerId'>;
@@ -28,7 +29,9 @@ export type SessionTimes = Readonly<{
 }>;
 
 export type Student = Readonly<{ id: StudentId; classId: ClassId; displayName: string; rawStudentNumber: string; normalizedStudentNumber: string; isTemporary: boolean; approvedAtUtc: IsoUtc }>;
-export type PendingStudentRequest = Readonly<{ id: string; classId: ClassId; displayName: string; rawStudentNumber: string; normalizedStudentNumber: string; requestedAtUtc: IsoUtc; status: 'pending' | 'approved' | 'rejected' }>;
+export type PendingStudentRequest = Readonly<{ id: PendingStudentRequestId; classId: ClassId; displayName: string; rawStudentNumber: string; normalizedStudentNumber: string; requestedAtUtc: IsoUtc; status: 'pending' | 'approved' | 'rejected' }>;
+export type AppSettingKey = 'teacher_shared_password_hash';
+export type AppSetting = Readonly<{ key: AppSettingKey; value: string }>;
 export type StudentSession = Readonly<{ id: StudentSessionId; studentId: StudentId; classId: ClassId; tokenHash: string } & SessionTimes>;
 export type TeacherSession = Readonly<{ id: TeacherSessionId; tokenHash: string } & SessionTimes>;
 export type Class = Readonly<{ id: ClassId; name: string; createdAtUtc: IsoUtc; updatedAtUtc: IsoUtc }>;

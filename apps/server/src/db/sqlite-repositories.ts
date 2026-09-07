@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { assertLifecycleTransition } from '../domain/state-machine.js';
 import { assertTemplateSnapshotMatches } from '../domain/template-consistency.js';
-import type { AnswerAtClose, AnswerCurrent, AnswerPayload, AuthorizedStudentContext, AuthorizedTeacherContext, Class, FileSubmissionTaskId, IsoUtc, LifecycleState, Question, QuestionId, QuestionResultSnapshot, QuestionTemplate, QuestionTemplateId, Student, StudentId, StudentSession, UploadSessionId } from '../domain/types.js';
+import type { AnswerAtClose, AnswerCurrent, AnswerPayload, Class, FileSubmissionTaskId, IsoUtc, LifecycleState, Question, QuestionId, QuestionResultSnapshot, QuestionTemplate, QuestionTemplateId, Student, StudentId, StudentSession, UploadSessionId } from '../domain/types.js';
 import type { SqliteDatabase } from './connection.js';
 import type { CreateQuestion, CreateQuestionTemplate, DomainRepository, FileMetadataRepository, SubmitAnswer } from './repositories.js';
 
@@ -29,8 +29,7 @@ export class SqliteDomainRepository implements DomainRepository {
     })();
   }
 
-  createQuestionTemplate(context: AuthorizedTeacherContext, input: CreateQuestionTemplate): QuestionTemplate {
-    void context;
+  createQuestionTemplate(input: CreateQuestionTemplate): QuestionTemplate {
     const now = this.now();
     this.database.transaction(() => {
       this.database.prepare('INSERT INTO question_templates (id,kind,prompt,reference_answer,created_at_utc,updated_at_utc) VALUES (?,?,?,?,?,?)').run(input.id, input.kind, input.prompt, input.referenceAnswer ?? null, now, now);
@@ -40,14 +39,12 @@ export class SqliteDomainRepository implements DomainRepository {
     return this.getQuestionTemplate(input.id);
   }
 
-  listQuestionTemplates(context: AuthorizedTeacherContext): readonly QuestionTemplate[] {
-    void context;
+  listQuestionTemplates(): readonly QuestionTemplate[] {
     const rows = this.database.prepare('SELECT id FROM question_templates ORDER BY created_at_utc,id').all() as readonly { id: string }[];
     return rows.map((row) => this.getQuestionTemplate(row.id as QuestionTemplateId));
   }
 
-  createQuestion(context: AuthorizedTeacherContext, input: CreateQuestion): Question {
-    void context;
+  createQuestion(input: CreateQuestion): Question {
     const now = this.now();
     this.database.transaction(() => {
       const templateId = input.templateId ?? null;
@@ -59,43 +56,42 @@ export class SqliteDomainRepository implements DomainRepository {
     return this.getQuestion(input.id);
   }
 
-  transitionQuestion(context: AuthorizedTeacherContext, questionId: QuestionId, to: LifecycleState): void {
-    void context;
-    if (to === 'closed') { this.closeQuestion(context, questionId); return; }
-    const question = this.row(questionId);
-    assertLifecycleTransition(question.state, to);
+  transitionQuestion(questionId: QuestionId, to: LifecycleState): void {
+    if (to === 'closed') { this.closeQuestion(questionId); return; }
+    if (to !== 'open') this.assertTransitionFailure(questionId, to);
     const now = this.now();
-    this.database.prepare('UPDATE questions SET state=?, opened_at_utc=?, updated_at_utc=? WHERE id=?').run(to, now, now, questionId);
+    const result = this.database.prepare("UPDATE questions SET state='open', opened_at_utc=?, updated_at_utc=? WHERE id=? AND state='draft'").run(now, now, questionId);
+    if (result.changes !== 1) this.assertTransitionFailure(questionId, to);
   }
 
-  submitAnswer(context: AuthorizedStudentContext, input: SubmitAnswer): AnswerCurrent {
+  submitAnswer(studentId: StudentId, input: SubmitAnswer): AnswerCurrent {
     const transaction = this.database.transaction(() => {
-      const prior = this.database.prepare('SELECT request_fingerprint,response_json FROM answer_submission_idempotency WHERE student_id=? AND question_id=? AND idempotency_key=?').get(context.studentId, input.questionId, input.idempotencyKey) as { request_fingerprint: string; response_json: string } | undefined;
+      const prior = this.database.prepare('SELECT request_fingerprint,response_json FROM answer_submission_idempotency WHERE student_id=? AND question_id=? AND idempotency_key=?').get(studentId, input.questionId, input.idempotencyKey) as { request_fingerprint: string; response_json: string } | undefined;
       if (prior !== undefined) {
         if (prior.request_fingerprint !== input.requestFingerprint) throw new Error('IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST');
         return JSON.parse(prior.response_json) as AnswerCurrent;
       }
       const question = this.row(input.questionId);
-      if (question.class_id !== context.classId || question.state === 'draft') throw new Error('QUESTION_NOT_ANSWERABLE');
-      const existing = this.database.prepare('SELECT id,student_id,revision,idempotency_key,payload_json,submitted_at_utc,late FROM answer_current WHERE question_id=? AND student_id=?').get(input.questionId, context.studentId) as AnswerRow | undefined;
+      const membership = this.database.prepare('SELECT id FROM students WHERE id=? AND class_id=?').get(studentId, question.class_id);
+      if (membership === undefined || question.state === 'draft') throw new Error('QUESTION_NOT_ANSWERABLE');
+      const existing = this.database.prepare('SELECT id,student_id,revision,idempotency_key,payload_json,submitted_at_utc,late FROM answer_current WHERE question_id=? AND student_id=?').get(input.questionId, studentId) as AnswerRow | undefined;
       if (existing !== undefined && input.revision <= existing.revision) throw new Error('STALE_ANSWER_REVISION');
       const now = this.now() as IsoUtc;
-      const answer: AnswerCurrent = { id: (existing?.id ?? randomUUID()) as AnswerCurrent['id'], questionId: input.questionId, studentId: context.studentId, revision: input.revision, idempotencyKey: input.idempotencyKey, payload: input.payload, submittedAtUtc: now, late: question.state === 'closed' };
+      const answer: AnswerCurrent = { id: (existing?.id ?? randomUUID()) as AnswerCurrent['id'], questionId: input.questionId, studentId, revision: input.revision, idempotencyKey: input.idempotencyKey, payload: input.payload, submittedAtUtc: now, late: question.state === 'closed' };
       if (existing === undefined) this.database.prepare('INSERT INTO answer_current (id,question_id,student_id,revision,idempotency_key,payload_json,submitted_at_utc,late) VALUES (?,?,?,?,?,?,?,?)').run(answer.id, answer.questionId, answer.studentId, answer.revision, answer.idempotencyKey, JSON.stringify(answer.payload), answer.submittedAtUtc, Number(answer.late));
       else this.database.prepare('UPDATE answer_current SET revision=?,idempotency_key=?,payload_json=?,submitted_at_utc=?,late=? WHERE id=?').run(answer.revision, answer.idempotencyKey, JSON.stringify(answer.payload), answer.submittedAtUtc, Number(answer.late), answer.id);
-      this.database.prepare('INSERT INTO answer_submission_idempotency (student_id,question_id,idempotency_key,request_fingerprint,answer_id,response_json,outcome_code,created_at_utc,expires_at_utc) VALUES (?,?,?,?,?,?,?,?,?)').run(context.studentId, input.questionId, input.idempotencyKey, input.requestFingerprint, answer.id, JSON.stringify(answer), 'ACCEPTED', now, new Date(new Date(now).getTime() + 86_400_000).toISOString());
+      this.database.prepare('INSERT INTO answer_submission_idempotency (student_id,question_id,idempotency_key,request_fingerprint,answer_id,response_json,outcome_code,created_at_utc,expires_at_utc) VALUES (?,?,?,?,?,?,?,?,?)').run(studentId, input.questionId, input.idempotencyKey, input.requestFingerprint, answer.id, JSON.stringify(answer), 'ACCEPTED', now, new Date(new Date(now).getTime() + 86_400_000).toISOString());
       return answer;
     });
     return transaction();
   }
 
-  closeQuestion(context: AuthorizedTeacherContext, questionId: QuestionId): QuestionResultSnapshot {
-    void context;
+  closeQuestion(questionId: QuestionId): QuestionResultSnapshot {
     return this.database.transaction(() => {
       const question = this.row(questionId);
-      if (question.state !== 'open') throw new Error('QUESTION_NOT_OPEN');
       const closedAtUtc = this.now() as IsoUtc;
-      this.database.prepare('UPDATE questions SET state=\'closed\',closed_at_utc=?,updated_at_utc=? WHERE id=?').run(closedAtUtc, closedAtUtc, questionId);
+      const closed = this.database.prepare("UPDATE questions SET state='closed',closed_at_utc=?,updated_at_utc=? WHERE id=? AND state='open'").run(closedAtUtc, closedAtUtc, questionId);
+      if (closed.changes !== 1) this.assertTransitionFailure(questionId, 'closed');
       const students = this.database.prepare('SELECT id FROM students WHERE class_id=?').all(question.class_id) as readonly { id: string }[];
       const answers = this.database.prepare('SELECT id,student_id,revision,idempotency_key,payload_json,submitted_at_utc,late FROM answer_current WHERE question_id=?').all(questionId) as readonly AnswerRow[];
       const byStudent = new Map(answers.map((answer) => [answer.student_id, answer]));
@@ -121,18 +117,17 @@ export class SqliteDomainRepository implements DomainRepository {
     return row === undefined ? undefined : { questionId, studentId, revision: row.revision, submittedAtUtc: row.submitted_at_utc as IsoUtc | null, payload: row.payload_json === null ? null : JSON.parse(row.payload_json) as AnswerPayload, noAnswer: row.no_answer === 1, closedAtUtc: row.closed_at_utc as IsoUtc };
   }
 
-  deleteAnswer(context: AuthorizedTeacherContext, questionId: QuestionId, studentId: StudentId, confirmation: { confirmed: true; impactAcknowledged: true }): void {
-    void context;
+  deleteAnswer(questionId: QuestionId, studentId: StudentId, confirmation: { confirmed: true; impactAcknowledged: true }): void {
     if (!confirmation.confirmed || !confirmation.impactAcknowledged) throw new Error('DELETE_CONFIRMATION_REQUIRED');
     this.database.transaction(() => {
+      this.database.prepare('DELETE FROM answer_submission_idempotency WHERE question_id=? AND student_id=?').run(questionId, studentId);
       this.database.prepare('DELETE FROM answer_current WHERE question_id=? AND student_id=?').run(questionId, studentId);
       this.database.prepare('DELETE FROM answer_at_close WHERE question_id=? AND student_id=?').run(questionId, studentId);
       this.database.prepare('INSERT INTO answer_deletion_markers (question_id,student_id,deleted_at_utc) VALUES (?,?,?) ON CONFLICT(question_id,student_id) DO UPDATE SET deleted_at_utc=excluded.deleted_at_utc').run(questionId, studentId, this.now());
     })();
   }
 
-  createFileTask(context: AuthorizedTeacherContext, input: Readonly<{ id: FileSubmissionTaskId; classId: Question['classId']; title: string; description: string; deadlineAtUtc: string }>): void {
-    void context;
+  createFileTask(input: Readonly<{ id: FileSubmissionTaskId; classId: Question['classId']; title: string; description: string; deadlineAtUtc: string }>): void {
     const now = this.now();
     this.database.prepare('INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,?,?,\'draft\',100000000,?,NULL,NULL,?,?)').run(input.id, input.classId, input.title, input.description, input.deadlineAtUtc, now, now);
   }
@@ -150,6 +145,12 @@ export class SqliteDomainRepository implements DomainRepository {
     return { id: row.id as QuestionTemplateId, kind: row.kind, prompt: row.prompt, options: options.map((option) => ({ key: option.option_key, label: option.label, ordinal: option.ordinal })), referenceAnswer: row.reference_answer };
   }
 
+  private assertTransitionFailure(questionId: QuestionId, to: LifecycleState): never {
+    const question = this.row(questionId);
+    assertLifecycleTransition(question.state, to);
+    throw new Error('QUESTION_TRANSITION_CONFLICT');
+  }
+
   private getQuestion(questionId: QuestionId): Question {
     const row = this.row(questionId);
     const options = this.database.prepare('SELECT option_key,label,ordinal FROM question_options WHERE question_id=? ORDER BY ordinal').all(questionId) as readonly { option_key: string; label: string; ordinal: number }[];
@@ -160,11 +161,13 @@ export class SqliteDomainRepository implements DomainRepository {
 export class SqliteFileMetadataRepository implements FileMetadataRepository {
   constructor(private readonly database: SqliteDatabase, private readonly now: () => string = () => new Date().toISOString()) {}
 
-  commitAfterFileRename(uploadSessionId: UploadSessionId): void {
-    this.database.prepare("UPDATE upload_sessions SET state='metadata_committed',updated_at_utc=? WHERE id=? AND state='file_committed'").run(this.now(), uploadSessionId);
+  commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void {
+    const result = this.database.prepare("UPDATE upload_sessions SET state='metadata_committed',updated_at_utc=? WHERE id=? AND state='file_committed' AND final_storage_key=?").run(this.now(), input.uploadSessionId, input.finalStorageKey);
+    if (result.changes !== 1) throw new Error('FILE_METADATA_COMMIT_PRECONDITION_FAILED');
   }
 
   markRecoveryPending(uploadSessionId: UploadSessionId, errorCode: string): void {
-    this.database.prepare("UPDATE upload_sessions SET state='recovery_pending',error_code=?,updated_at_utc=? WHERE id=? AND state='file_committed'").run(errorCode, this.now(), uploadSessionId);
+    const result = this.database.prepare("UPDATE upload_sessions SET state='recovery_pending',error_code=?,updated_at_utc=? WHERE id=? AND state='file_committed' AND final_storage_key IS NOT NULL").run(errorCode, this.now(), uploadSessionId);
+    if (result.changes !== 1) throw new Error('FILE_RECOVERY_PRECONDITION_FAILED');
   }
 }

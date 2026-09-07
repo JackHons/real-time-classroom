@@ -10,9 +10,9 @@
 - `Student.isTemporary` distinguishes teacher-approved temporary students from roster imports; normalized student number is unique per class.
 - Questions and file tasks are persisted with only `draft → open → closed`. `closeQuestion()` obtains its time from the repository clock inside one transaction, snapshots every eligible student (including `noAnswer`), persists one anonymous result snapshot, then returns.
 - Answer idempotency is a separate immutable response record. It stores a request fingerprint and response JSON so a later mutable current answer cannot change a replay result.
-- File metadata tables model the complete upload state machine, SHA-256, byte count, staged/final keys, server completion time, errors, idempotency, submission integrity metadata, and deletion markers. The filesystem upload/rename implementation remains intentionally deferred to Task 5.
+- File metadata tables model the complete upload state machine, SHA-256, byte count, staged/final keys, server completion time, errors, idempotency, submission integrity metadata, and deletion markers. `metadata_committed` is unique per task/student. The Task 5 boundary must pass the final storage key to `commitAfterFileRename`; a missing/mismatched key or unexpected state throws a defensive failure instead of claiming metadata success. The filesystem upload/rename implementation remains intentionally deferred to Task 5.
 - Teacher-confirmed answer deletion physically removes answer payload rows, writes `answer_deletion_markers`, and never rewrites an anonymous close snapshot.
 
 ## Deferred work
 
-This task creates no real authentication, password handling, HTTP routes, UI, Socket.IO, upload streams, filesystem rename, reconciliation worker, CSV/ZIP export, or runtime service database. The `FileMetadataRepository` is only the transaction-boundary contract for Task 5's verified-file rename and recovery logic.
+This task creates no real authentication, password handling, HTTP routes, UI, Socket.IO, upload streams, filesystem rename, reconciliation worker, CSV/ZIP export, or runtime service database. `SqliteDomainRepository` is a trusted-internal persistence API, not an authorization boundary: Task 3 must authenticate and authorize before calling it. The `FileMetadataRepository` is only the transaction-boundary contract for Task 5's verified-file rename and recovery logic.
