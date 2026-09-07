@@ -22,4 +22,16 @@ describe('bootstrap host', () => {
       service: 'lan-classroom-platform'
     });
   });
+
+  it('reports a fail-closed bootstrap as explicitly not ready', async () => {
+    running = await startServer({ host: '127.0.0.1', port: 0, health: { status: 503, state: 'not_ready', reason: 'UPLOAD_STORAGE_NOT_READY' } });
+    const response = await fetch(`http://${running.host}:${running.port}/health`);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      status: 'not_ready',
+      service: 'lan-classroom-platform',
+      reason: 'UPLOAD_STORAGE_NOT_READY'
+    });
+  });
 });

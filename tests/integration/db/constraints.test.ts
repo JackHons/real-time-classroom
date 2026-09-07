@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -23,6 +23,37 @@ function setup(): SqliteDomainRepository {
 afterEach(() => database?.close());
 
 describe('SQLite migration and repository transactions', () => {
+  it('upgrades retained upload data from every predecessor schema to the integrity-record schema', () => {
+    const predecessorMigrations = [
+      '0001_initial',
+      '0002_answer_at_close_roster_snapshot',
+      '0003_upload_session_recovery_metadata'
+    ] as const;
+    const sqlFor = (id: string) => readFileSync(new URL(`../../../apps/server/src/db/migrations/${id}.sql`, import.meta.url), 'utf8');
+
+    for (let predecessor = 0; predecessor < predecessorMigrations.length; predecessor += 1) {
+      const legacy = openSqlite(':memory:');
+      try {
+        legacy.exec('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at_utc TEXT NOT NULL)');
+        for (let index = 0; index <= predecessor; index += 1) {
+          const id = predecessorMigrations[index]!;
+          legacy.exec(sqlFor(id));
+          legacy.prepare('INSERT INTO schema_migrations (id,applied_at_utc) VALUES (?,?)').run(id, '2026-09-08T00:00:00.000Z');
+        }
+        legacy.prepare('INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES (?,?,?,?)').run(`class-${predecessor}`, `Class ${predecessor}`, 'now', 'now');
+        legacy.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run(`student-${predecessor}`, `class-${predecessor}`, 'Student', '1', `S${predecessor}`, 0, 'now');
+        legacy.prepare("INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,?,'','open',100000000,'2099-01-01T00:00:00.000Z','now',NULL,'now','now')").run(`task-${predecessor}`, `class-${predecessor}`, 'Task');
+        legacy.prepare('INSERT INTO upload_sessions (id,task_id,student_id,idempotency_key,state,staging_key,final_storage_key,bytes_received,sha256,received_complete_at_utc,error_code,created_at_utc,updated_at_utc) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').run(`upload-${predecessor}`, `task-${predecessor}`, `student-${predecessor}`, 'key', 'failed', null, null, 0, null, null, 'legacy', 'now', 'now');
+
+        migrate(legacy);
+
+        expect(legacy.prepare('SELECT state,error_code FROM upload_sessions WHERE id=?').get(`upload-${predecessor}`)).toEqual({ state: 'failed', error_code: 'legacy' });
+        expect(legacy.prepare("SELECT id FROM schema_migrations WHERE id='0004_upload_storage_integrity'").get()).toBeDefined();
+        expect(legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_integrity_records'").get()).toBeDefined();
+      } finally { legacy.close(); }
+    }
+  });
+
   it('enables WAL for a file-backed database', () => {
     const directory = mkdtempSync(join(tmpdir(), 'lan-classroom-sqlite-'));
     const persistent = openSqlite(join(directory, 'test.sqlite'));

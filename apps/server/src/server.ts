@@ -11,6 +11,8 @@ export type HttpRouteHandler = (request: IncomingMessage, response: ServerRespon
 export type ServerOptions = Readonly<{
   host?: string;
   port?: number;
+  /** Bootstrap may expose a health-only, explicitly non-ready host. */
+  health?: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string }>;
   /** API routes share this host and take precedence over the SvelteKit handler. */
   apiHandler?: HttpRouteHandler;
   webHandler?: HttpRequestListener;
@@ -48,8 +50,9 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
 async function dispatch(request: IncomingMessage, response: ServerResponse, options: ServerOptions): Promise<void> {
   try {
     if (request.method === 'GET' && request.url === '/health') {
-      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify({ status: 'ok', service: 'lan-classroom-platform' }));
+      const health = options.health ?? { status: 200, state: 'ready' };
+      response.writeHead(health.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      response.end(JSON.stringify({ status: health.state === 'ready' ? 'ok' : 'not_ready', service: 'lan-classroom-platform', ...(health.reason === undefined ? {} : { reason: health.reason }) }));
       return;
     }
 
