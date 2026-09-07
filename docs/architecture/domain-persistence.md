@@ -15,4 +15,4 @@
 
 ## Deferred work
 
-This task creates no real authentication, password handling, HTTP routes, UI, Socket.IO, upload streams, filesystem rename, reconciliation worker, CSV/ZIP export, or runtime service database. `SqliteDomainRepository` is a trusted-internal persistence API, not an authorization boundary: Task 3 must authenticate and authorize before calling it. The `FileMetadataRepository` is only the transaction-boundary contract for Task 5's verified-file rename and recovery logic.
+This task creates no real authentication, password handling, HTTP routes, UI, Socket.IO, upload streams, filesystem rename, reconciliation worker, CSV/ZIP export, or runtime service database. Any future CSV export must neutralize spreadsheet formula-injection prefixes (for example `=`, `+`, `-`, and `@`) in every user-controlled cell before writing the file. `SqliteDomainRepository` is a trusted-internal persistence API, not an authorization boundary: Task 3 must authenticate and authorize before calling it. The `FileMetadataRepository` is only the transaction-boundary contract for Task 5's verified-file rename and recovery logic.

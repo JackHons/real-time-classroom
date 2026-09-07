@@ -60,6 +60,21 @@ describe('ClassService', () => {
     expect(subject.previewRosterCsv('姓名,學號\n, A1\nB, a1')).toEqual({ rows: [{ displayName: '', rawStudentNumber: 'A1', normalizedStudentNumber: 'A1' }, { displayName: 'B', rawStudentNumber: 'a1', normalizedStudentNumber: 'A1' }], issues: [{ line: 2, message: '姓名不可為空白' }, { line: 3, message: 'CSV 內學號重複' }] });
   });
 
+  it('keeps physical CSV line numbers when blank rows are ignored', () => {
+    const repo = repository();
+    const subject = service(repo);
+    expect(subject.previewRosterCsv('姓名,學號\n\n\n,A1\nB,a1')).toEqual({
+      rows: [{ displayName: '', rawStudentNumber: 'A1', normalizedStudentNumber: 'A1' }, { displayName: 'B', rawStudentNumber: 'a1', normalizedStudentNumber: 'A1' }],
+      issues: [{ line: 4, message: '姓名不可為空白' }, { line: 5, message: 'CSV 內學號重複' }]
+    });
+    subject.createClass('teacher', '1A');
+    subject.importRosterCsv('teacher', ids.class, '姓名,學號\nAda,A1');
+    expect(subject.importRosterCsv('teacher', ids.class, '姓名,學號\n\n\nBen,a1')).toEqual({
+      rows: [{ displayName: 'Ben', rawStudentNumber: 'a1', normalizedStudentNumber: 'A1' }],
+      issues: [{ line: 4, message: '學號已存在於班級名單' }]
+    });
+  });
+
   it('matches an exact roster name and number, otherwise creates/reuses a pending request that is not a student', () => {
     const repo = repository();
     const subject = service(repo);

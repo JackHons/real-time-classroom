@@ -68,20 +68,52 @@ function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let raw = '';
     let size = 0;
-    request.setEncoding('utf8');
-    request.on('data', (chunk: string) => {
+    let settled = false;
+
+    const stopReading = (): void => {
+      request.removeListener('data', onData);
+      request.removeListener('end', onEnd);
+    };
+    const rejectOnce = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      stopReading();
+      // Continue draining without retaining chunks so an oversized keep-alive
+      // request cannot keep this route's data handler consuming CPU/memory.
+      request.resume();
+      reject(error);
+    };
+    const resolveOnce = (body: Record<string, unknown>): void => {
+      if (settled) return;
+      settled = true;
+      stopReading();
+      resolve(body);
+    };
+    const onData = (chunk: string): void => {
+      if (settled) return;
       size += Buffer.byteLength(chunk);
-      if (size > MAX_BODY_BYTES) { reject(new Error('REQUEST_BODY_TOO_LARGE')); return; }
+      if (size > MAX_BODY_BYTES) { rejectOnce(new Error('REQUEST_BODY_TOO_LARGE')); return; }
       raw += chunk;
-    });
-    request.on('end', () => {
+    };
+    const onEnd = (): void => {
+      if (settled) return;
       try {
         const parsed: unknown = raw.length === 0 ? {} : JSON.parse(raw);
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('REQUEST_BODY_OBJECT_REQUIRED');
-        resolve(parsed as Record<string, unknown>);
-      } catch (error) { reject(error); }
-    });
-    request.on('error', reject);
+        resolveOnce(parsed as Record<string, unknown>);
+      } catch (error) { rejectOnce(error instanceof Error ? error : new Error('REQUEST_BODY_INVALID')); }
+    };
+    // Keep these listeners installed after an early rejection. A stream error or
+    // abort may race with the oversized chunk, but must neither double-settle the
+    // promise nor become an unhandled EventEmitter error.
+    const onError = (error: Error): void => { rejectOnce(error); };
+    const onAborted = (): void => { rejectOnce(new Error('REQUEST_ABORTED')); };
+
+    request.setEncoding('utf8');
+    request.on('data', onData);
+    request.on('end', onEnd);
+    request.on('error', onError);
+    request.on('aborted', onAborted);
   });
 }
 
