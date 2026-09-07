@@ -8,14 +8,16 @@
   },
   "scripts": {
     "dev": "pnpm --filter @lan-classroom/web build && tsx src/main.ts",
-    "build": "tsc --project tsconfig.json",
+    "build": "tsc --project tsconfig.json && node ../../scripts/copy-server-migrations.mjs",
     "start": "node dist/main.js",
     "check": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "better-sqlite3": "13.0.3",
     "socket.io": "4.8.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
     "tsx": "4.23.13"
   }
 }
