@@ -68,6 +68,19 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
     if (result.changes !== 1) throw new Error('FILE_UPLOAD_FAILURE_PRECONDITION_FAILED');
   }
 
+  markIntegrityFailure(uploadSessionId: UploadSessionId, errorCode: string): void {
+    this.database.transaction(() => {
+      const row = this.database.prepare("SELECT final_storage_key FROM upload_sessions WHERE id=? AND state='metadata_committed'").get(uploadSessionId) as Readonly<{ final_storage_key: string | null }> | undefined;
+      if (row === undefined) throw new Error('FILE_INTEGRITY_PRECONDITION_FAILED');
+      // The submission ID is intentionally the durable upload-session ID. This
+      // makes the compensation transaction exact and allows a new submission.
+      this.database.prepare('UPDATE file_submissions SET deleted_at_utc=? WHERE id=? AND storage_key=? AND deleted_at_utc IS NULL').run(this.now(), uploadSessionId, row.final_storage_key);
+      const changed = this.database.prepare("UPDATE upload_sessions SET state='failed',error_code=?,updated_at_utc=? WHERE id=? AND state='metadata_committed'").run(errorCode, this.now(), uploadSessionId).changes;
+      if (changed !== 1) throw new Error('FILE_INTEGRITY_PRECONDITION_FAILED');
+      this.database.prepare('INSERT INTO upload_integrity_records (upload_session_id,integrity_code,detected_at_utc,resolved_at_utc) VALUES (?,?,?,NULL) ON CONFLICT(upload_session_id) DO UPDATE SET integrity_code=excluded.integrity_code,detected_at_utc=excluded.detected_at_utc,resolved_at_utc=NULL').run(uploadSessionId, errorCode, this.now());
+    })();
+  }
+
   listForReconciliation(): readonly ReconciliationRecord[] {
     const rows = this.database.prepare("SELECT id,state,staging_key,final_storage_key,bytes_received,sha256 FROM upload_sessions WHERE state IN ('staging','validating','file_committed','recovery_pending','metadata_committed')").all() as readonly RecoveryRow[];
     return rows.map((row) => ({ uploadSessionId: row.id as UploadSessionId, state: row.state, stagingKey: row.staging_key, finalStorageKey: row.final_storage_key, bytesReceived: row.bytes_received, sha256: row.sha256 }));

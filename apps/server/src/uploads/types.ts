@@ -36,6 +36,8 @@ export interface UploadPipelineRepository {
   commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
   markRecoveryPending(uploadSessionId: UploadSessionId, errorCode: string): void;
   markFailed(uploadSessionId: UploadSessionId, errorCode: string): void;
+  /** A committed metadata row without its opaque final object is not a success. */
+  markIntegrityFailure(uploadSessionId: UploadSessionId, errorCode: string): void;
   listForReconciliation(): readonly ReconciliationRecord[];
 }
 

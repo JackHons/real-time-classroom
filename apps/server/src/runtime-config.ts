@@ -1,12 +1,14 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { env as processEnvironment } from 'node:process';
+import { DEFAULT_MINIMUM_FREE_BYTES } from './uploads/storage.js';
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
 export type RuntimeConfig = Readonly<{
   databasePath: string;
   uploadStoragePath: string;
+  uploadStorageMinimumFreeBytes: number;
   allowedOrigin: string;
   csrfSecret: string;
   host: string;
@@ -22,7 +24,11 @@ export function readRuntimeConfig(environment: Environment = processEnvironment)
   const port = environment.LAN_CLASSROOM_PORT === undefined ? 4173 : Number(environment.LAN_CLASSROOM_PORT);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('RUNTIME_PORT_INVALID');
   const uploadStoragePath = environment.LAN_CLASSROOM_UPLOAD_STORAGE_PATH ?? join(dirname(databasePath), 'uploads');
-  return { databasePath, uploadStoragePath, allowedOrigin, csrfSecret, host: environment.LAN_CLASSROOM_HOST ?? '0.0.0.0', port };
+  const uploadStorageMinimumFreeBytes = environment.LAN_CLASSROOM_UPLOAD_MINIMUM_FREE_BYTES === undefined
+    ? DEFAULT_MINIMUM_FREE_BYTES
+    : Number(environment.LAN_CLASSROOM_UPLOAD_MINIMUM_FREE_BYTES);
+  if (!Number.isSafeInteger(uploadStorageMinimumFreeBytes) || uploadStorageMinimumFreeBytes < DEFAULT_MINIMUM_FREE_BYTES) throw new Error('RUNTIME_UPLOAD_STORAGE_RESERVE_INVALID');
+  return { databasePath, uploadStoragePath, uploadStorageMinimumFreeBytes, allowedOrigin, csrfSecret, host: environment.LAN_CLASSROOM_HOST ?? '0.0.0.0', port };
 }
 
 function defaultDatabasePath(environment: Environment): string {

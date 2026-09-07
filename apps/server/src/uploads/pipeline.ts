@@ -94,7 +94,12 @@ export class UploadPipeline {
       }
       if (record.state === 'metadata_committed') {
         if (record.stagingKey !== null) await this.options.storage.removeStaging(record.stagingKey).catch(() => undefined);
-        if (record.finalStorageKey === null || !await this.options.storage.existsFinal(record.finalStorageKey)) metadataMissing += 1;
+        if (record.finalStorageKey === null || !await this.options.storage.existsFinal(record.finalStorageKey)) {
+          // Do not leave a missing final looking like a successful submission:
+          // retire the live metadata, record a payload-free integrity marker,
+          // and permit the student to submit again under the normal policy.
+          this.markIntegrityFailure(record.uploadSessionId, 'METADATA_FINAL_FILE_MISSING'); metadataMissing += 1;
+        }
         continue;
       }
       if (await this.recoverCommittedIntent(record)) recovered += 1;
@@ -120,6 +125,7 @@ export class UploadPipeline {
 
   private markFailed(id: UploadSessionId, code: string): void { try { this.options.repository.markFailed(id, code); } catch { /* preserve the original failure */ } }
   private markRecovery(id: UploadSessionId, error: unknown): void { try { this.options.repository.markRecoveryPending(id, codeFor(error)); } catch { /* startup reconciliation will retry the durable intent */ } }
+  private markIntegrityFailure(id: UploadSessionId, code: string): void { try { this.options.repository.markIntegrityFailure(id, code); } catch { /* a later startup must retry the visible inconsistency */ } }
 }
 
 async function writeAndHash(handle: FileHandle, chunks: AsyncIterable<Uint8Array>, maximum: number, signal: Readonly<{ aborted: boolean }> | undefined): Promise<Readonly<{ byteLength: number; sha256: string }>> {

@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { ClassId, FileSubmission, FileSubmissionId, FileSubmissionTask, FileSubmissionTaskId, IsoUtc, StudentId } from '../domain/types.js';
 import type { FileTaskRepository, NewFileSubmission, TeacherClosedTaskView, TeacherOpenTaskView } from '../file-tasks/types.js';
+import type { DeletionTombstone, UploadStorage } from '../uploads/storage.js';
 import type { SqliteDatabase } from './connection.js';
 
 type TaskRow = Readonly<{ id: string; class_id: string; title: string; description: string; state: FileSubmissionTask['state']; max_bytes: number; deadline_at_utc: string; opened_at_utc: string | null; closed_at_utc: string | null }>;
 type SubmissionRow = Readonly<{ id: string; task_id: string; student_id: string; original_filename: string; display_filename: string; storage_key: string; declared_mime_type: string | null; byte_length: number; sha256: string; received_complete_at_utc: string; deleted_at_utc: string | null }>;
+type DeletionRecoveryRow = Readonly<{ id: string; task_id: string; student_id: string; storage_key: string; deleted_at_utc: string | null }>;
 
 /** SQLite adapter for Task 5's metadata tables. It has no byte-stream knowledge. */
 export class SqliteFileSubmissionTaskRepository implements FileTaskRepository {
@@ -70,6 +72,43 @@ export class SqliteFileSubmissionTaskRepository implements FileTaskRepository {
   }
   deleteEmptyTask(taskId: FileSubmissionTaskId): boolean {
     return this.database.prepare("DELETE FROM file_submission_tasks WHERE id=? AND NOT EXISTS (SELECT 1 FROM file_submissions WHERE task_id=? AND deleted_at_utc IS NULL)").run(taskId, taskId).changes === 1;
+  }
+
+  /**
+   * Completes the filesystem half of interrupted deletions at startup. A live
+   * metadata row wins (the object is restored); soft-deleted metadata wins only
+   * after its tombstone is actually removed. Errors remain in the marker table
+   * and leave the opaque tombstone in place for a later retry/manual recovery.
+   */
+  async reconcileDeletionTombstones(storage: Pick<UploadStorage, 'listDeletionTombstones' | 'restoreDeletionTombstone' | 'completeDeletionTombstone'>): Promise<Readonly<{ restored: number; completed: number; failed: number }>> {
+    let restored = 0; let completed = 0; let failed = 0;
+    for (const entry of await storage.listDeletionTombstones()) {
+      const row = this.database.prepare('SELECT id,task_id,student_id,storage_key,deleted_at_utc FROM file_submissions WHERE id=?').get(entry.submissionId) as DeletionRecoveryRow | undefined;
+      if (row === undefined || row.storage_key !== entry.storageKey) {
+        this.recordDeletionFailure(entry, row, 'DELETION_TOMBSTONE_INTEGRITY_FAILED'); failed += 1; continue;
+      }
+      try {
+        if (row.deleted_at_utc === null) {
+          await storage.restoreDeletionTombstone(entry);
+          this.clearDeletionFailure(row.id);
+          restored += 1;
+        } else {
+          await storage.completeDeletionTombstone(entry);
+          this.clearDeletionFailure(row.id);
+          completed += 1;
+        }
+      } catch {
+        this.recordDeletionFailure(entry, row, 'DELETION_PHYSICAL_DELETE_FAILED'); failed += 1;
+      }
+    }
+    return { restored, completed, failed };
+  }
+
+  private clearDeletionFailure(submissionId: string): void { this.database.prepare('UPDATE file_deletion_markers SET deletion_error_code=NULL WHERE submission_id=?').run(submissionId); }
+  private recordDeletionFailure(entry: DeletionTombstone, row: DeletionRecoveryRow | undefined, code: string): void {
+    if (row === undefined) return; // Keep the opaque marker on disk; no trustworthy foreign key remains for a DB record.
+    this.database.prepare('INSERT INTO file_deletion_markers (submission_id,task_id,student_id,deleted_at_utc,deletion_error_code) VALUES (?,?,?,?,?) ON CONFLICT(submission_id) DO UPDATE SET deletion_error_code=excluded.deletion_error_code')
+      .run(row.id, row.task_id, row.student_id, this.now(), code);
   }
 }
 function task(row: TaskRow): FileSubmissionTask { return { id: row.id as FileSubmissionTaskId, classId: row.class_id as ClassId, title: row.title, description: row.description, state: row.state, maxBytes: row.max_bytes as 100000000, deadlineAtUtc: row.deadline_at_utc as IsoUtc, openedAtUtc: row.opened_at_utc as IsoUtc | null, closedAtUtc: row.closed_at_utc as IsoUtc | null }; }

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { openSqlite, type SqliteDatabase } from '../../../apps/server/src/db/connection.js';
 import { migrate } from '../../../apps/server/src/db/migrator.js';
 import { SqliteUploadPipelineRepository } from '../../../apps/server/src/db/upload-pipeline-repository.js';
+import { SqliteFileSubmissionTaskRepository } from '../../../apps/server/src/db/file-submission-task-repository.js';
 import { UploadPipeline, UploadReservationGate } from '../../../apps/server/src/uploads/pipeline.js';
 import { UploadStorage } from '../../../apps/server/src/uploads/storage.js';
 import type { UploadPipelineRepository } from '../../../apps/server/src/uploads/types.js';
@@ -63,7 +64,7 @@ describe('upload byte pipeline', () => {
     const failing: UploadPipelineRepository = {
       begin: (input) => repository.begin(input), recordVerified: (input) => repository.recordVerified(input), prepareFileCommit: (input) => repository.prepareFileCommit(input),
       commitAfterFileRename: (input) => { if (failOnce) { failOnce = false; throw new Error('simulated DB outage'); } repository.commitAfterFileRename(input); },
-      markRecoveryPending: (id, code) => repository.markRecoveryPending(id, code), markFailed: (id, code) => repository.markFailed(id, code), listForReconciliation: () => repository.listForReconciliation()
+      markRecoveryPending: (id, code) => repository.markRecoveryPending(id, code), markFailed: (id, code) => repository.markFailed(id, code), markIntegrityFailure: (id, code) => repository.markIntegrityFailure(id, code), listForReconciliation: () => repository.listForReconciliation()
     };
     const interrupted = new UploadPipeline({ repository: failing, storage, maxBytes: 8, now: () => instant });
     await expect(interrupted.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('abc') })).rejects.toMatchObject({ code: 'UPLOAD_METADATA_RECOVERY_PENDING' });
@@ -106,5 +107,52 @@ describe('upload byte pipeline', () => {
     const commit = storage.stageDeletion([{ storageKey: result.storageKey, submissionId: result.uploadSessionId }]);
     commit.commit();
     expect(await storage.existsFinal(result.storageKey)).toBe(false);
+  });
+
+  it('fails closed and permits resubmission when committed metadata has no final object', async () => {
+    const { pipeline, storage } = await setup();
+    const result = await pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('abc') });
+    await rm(storage.finalPath(result.storageKey));
+    expect(await pipeline.reconcile()).toMatchObject({ metadataMissing: 1 });
+    expect(database?.prepare('SELECT state,error_code FROM upload_sessions WHERE id=?').get(result.uploadSessionId)).toEqual({ state: 'failed', error_code: 'METADATA_FINAL_FILE_MISSING' });
+    expect(database?.prepare('SELECT deleted_at_utc FROM file_submissions WHERE id=?').get(result.uploadSessionId)).toMatchObject({ deleted_at_utc: instant.toISOString() });
+    expect(database?.prepare('SELECT integrity_code FROM upload_integrity_records WHERE upload_session_id=?').get(result.uploadSessionId)).toEqual({ integrity_code: 'METADATA_FINAL_FILE_MISSING' });
+    await expect(pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('next') })).resolves.toMatchObject({ byteLength: 4 });
+  });
+
+  it('reconciles deletion tombstones across both sides of the metadata transaction', async () => {
+    const { pipeline, storage } = await setup();
+    const fileRepository = new SqliteFileSubmissionTaskRepository(database!, () => instant.toISOString());
+    const first = await pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('abc') });
+    // Crash after the atomic rename but before the DB soft delete: restore.
+    storage.stageDeletion([{ storageKey: first.storageKey, submissionId: first.uploadSessionId }]);
+    await expect(fileRepository.reconcileDeletionTombstones(storage)).resolves.toEqual({ restored: 1, completed: 0, failed: 0 });
+    expect(await storage.existsFinal(first.storageKey)).toBe(true);
+
+    const staged = storage.stageDeletion([{ storageKey: first.storageKey, submissionId: first.uploadSessionId }]);
+    fileRepository.markSubmissionDeleted('task-1' as never, 'student-1' as never, instant.toISOString() as never);
+    // Crash after DB commit but before physical removal: complete, without a false success.
+    await expect(fileRepository.reconcileDeletionTombstones(storage)).resolves.toEqual({ restored: 0, completed: 1, failed: 0 });
+    expect(await storage.existsFinal(first.storageKey)).toBe(false);
+    expect(() => staged.commit()).toThrow(); // the restart already consumed its durable tombstone
+  });
+
+  it('keeps an explicit deletion failure record when restart cleanup cannot remove a tombstone', async () => {
+    const { pipeline, storage } = await setup();
+    const fileRepository = new SqliteFileSubmissionTaskRepository(database!, () => instant.toISOString());
+    const result = await pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('abc') });
+    storage.stageDeletion([{ storageKey: result.storageKey, submissionId: result.uploadSessionId }]);
+    fileRepository.markSubmissionDeleted('task-1' as never, 'student-1' as never, instant.toISOString() as never);
+    const failingStorage = { listDeletionTombstones: () => storage.listDeletionTombstones(), restoreDeletionTombstone: (entry: { submissionId: string; storageKey: string }) => storage.restoreDeletionTombstone(entry), completeDeletionTombstone: async () => { throw new Error('simulated disk failure'); } };
+    await expect(fileRepository.reconcileDeletionTombstones(failingStorage)).resolves.toEqual({ restored: 0, completed: 0, failed: 1 });
+    expect(database?.prepare('SELECT deletion_error_code FROM file_deletion_markers WHERE submission_id=?').get(result.uploadSessionId)).toEqual({ deletion_error_code: 'DELETION_PHYSICAL_DELETE_FAILED' });
+  });
+
+  it('refuses startup when the private disk reservation is below the configured threshold', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lan-upload-capacity-')); directories.push(directory);
+    const insufficient = new UploadStorage(directory, { minimumFreeBytes: 10, freeSpaceBytes: async () => 9 });
+    await expect(insufficient.ensureReady()).rejects.toThrow('UPLOAD_STORAGE_INSUFFICIENT_SPACE');
+    const ready = new UploadStorage(directory, { minimumFreeBytes: 10, freeSpaceBytes: async () => 10 });
+    await expect(ready.ensureReady()).resolves.toBeUndefined();
   });
 });

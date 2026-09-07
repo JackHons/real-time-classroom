@@ -22,7 +22,7 @@ import { LiveQuestionService } from './questions/live/live-question-service.js';
 import type { HttpRouteHandler } from './server.js';
 import { createUploadRoutes } from './uploads/http-routes.js';
 import { UploadPipeline } from './uploads/pipeline.js';
-import { UploadStorage } from './uploads/storage.js';
+import { UploadStorage, type UploadStorageOptions } from './uploads/storage.js';
 
 export type ApplicationOptions = Readonly<{
   database: SqliteDatabase;
@@ -34,6 +34,8 @@ export type ApplicationOptions = Readonly<{
   studentJoinRateLimiter?: StudentJoinRateLimiter;
   /** Private, runtime-owned directory.  It is never taken from an HTTP request. */
   uploadStorageRoot?: string;
+  /** Deployment reserve; production configuration may only raise the safe default. */
+  uploadStorageOptions?: UploadStorageOptions;
 }>;
 
 export type Application = Readonly<{ apiHandler: HttpRouteHandler; reconcileUploads: () => Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number }>> }>;
@@ -132,7 +134,7 @@ export function createApplication(options: ApplicationOptions): Application {
     studentContext: authenticateStudent
   });
   const fileRepository = new SqliteFileSubmissionTaskRepository(options.database, () => clock.now().toISOString());
-  const storage = new UploadStorage(options.uploadStorageRoot ?? 'runtime-data/uploads');
+  const storage = new UploadStorage(options.uploadStorageRoot ?? 'runtime-data/uploads', options.uploadStorageOptions);
   const fileTaskService = new FileTaskService({
     repository: fileRepository,
     storage,
@@ -150,6 +152,11 @@ export function createApplication(options: ApplicationOptions): Application {
     reconcileUploads: async () => {
       await storage.ensureReady();
       const result = await uploadPipeline.reconcile();
+      const deletions = await fileRepository.reconcileDeletionTombstones(storage);
+      // A missing committed object or an undecidable tombstone must never make
+      // the file API look healthy. main keeps the process fail-closed until an
+      // operator has restored/removed the private object and reconciled again.
+      if (result.metadataMissing > 0 || deletions.failed > 0) throw new Error('UPLOAD_STORAGE_INTEGRITY_FAILED');
       uploadsReady = true;
       return result;
     },

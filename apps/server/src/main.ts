@@ -15,7 +15,8 @@ try {
     database,
     allowedOrigin: config.allowedOrigin,
     csrfSecret: config.csrfSecret,
-    uploadStorageRoot: config.uploadStoragePath
+    uploadStorageRoot: config.uploadStoragePath,
+    uploadStorageOptions: { minimumFreeBytes: config.uploadStorageMinimumFreeBytes }
   });
   // Do not accept upload requests until durable intents and private storage
   // agree; startup is deliberately fail-closed when reconciliation fails.
