@@ -6,8 +6,15 @@ import { createClassRoutes } from './classes/http-routes.js';
 import { SqliteAuthSessionRepository } from './db/auth-session-repository.js';
 import { SqliteClassRosterRepository } from './db/class-roster-repository.js';
 import type { SqliteDatabase } from './db/connection.js';
+import { SqliteLiveQuestionRepository } from './db/live-question-repository.js';
 import { migrate } from './db/migrator.js';
-import type { AuthorizedTeacherContext } from './domain/types.js';
+import { SqliteQuestionBankRepository } from './db/question-bank-repository.js';
+import { SqliteDomainRepository } from './db/sqlite-repositories.js';
+import type { AuthorizedStudentContext, AuthorizedTeacherContext } from './domain/types.js';
+import { createQuestionBankRoutes } from './questions/bank/http-routes.js';
+import { QuestionBankService } from './questions/bank/service.js';
+import { createLiveQuestionRoutes } from './questions/live/http-routes.js';
+import { LiveQuestionService } from './questions/live/live-question-service.js';
 import type { HttpRouteHandler } from './server.js';
 
 export type ApplicationOptions = Readonly<{
@@ -38,12 +45,14 @@ export function createApplication(options: ApplicationOptions): Application {
   const authRepository = new SqliteAuthSessionRepository(options.database);
   if (authRepository.teacherPasswordHash() === undefined) throw new FirstRunSetupRequiredError();
 
-  const sessions = new AuthSessions(authRepository, options.clock ?? systemClock);
+  const clock = options.clock ?? systemClock;
+  const sessions = new AuthSessions(authRepository, clock);
   const studentJoinRateLimiter = options.studentJoinRateLimiter ?? new StudentJoinRateLimiter();
+  const rosterRepository = new SqliteClassRosterRepository(options.database);
   const classService = new ClassService({
-    repository: new SqliteClassRosterRepository(options.database),
+    repository: rosterRepository,
     teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
-    now: () => (options.clock ?? systemClock).now().toISOString()
+    now: () => clock.now().toISOString()
   });
   const studentJoin: StudentJoinPort = {
     join: (request) => {
@@ -58,18 +67,30 @@ export function createApplication(options: ApplicationOptions): Application {
       }
     }
   };
-  const authenticateTeacherMutation = (request: IncomingMessage): AuthorizedTeacherContext => {
-    requireAllowedOrigin(request, options.allowedOrigin);
+  const authenticateTeacher = (request: IncomingMessage): AuthorizedTeacherContext => {
+    if (request.method !== 'GET') requireAllowedOrigin(request, options.allowedOrigin);
     const token = cookie(request, 'teacher_session');
     if (token === undefined) throw new HttpError(401, 'TEACHER_AUTH_REQUIRED');
-    if (!isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) {
+    if (request.method !== 'GET' && !isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) {
       throw new HttpError(403, 'CSRF_REQUIRED');
     }
     // authenticateTeacher refreshes idle expiry. Validate every non-touching
     // request property first so a rejected CSRF request cannot keep a session alive.
     const teacher = sessions.authenticateTeacher(token);
     if (teacher === undefined) throw new HttpError(401, 'TEACHER_AUTH_REQUIRED');
+    // Read routes are authorized too; only mutation routes claim CSRF validation.
     return { teacherSessionId: teacher.teacherSessionId, csrfValidated: true };
+  };
+  const authenticateStudent = (request: IncomingMessage) => {
+    if (request.method !== 'GET') requireAllowedOrigin(request, options.allowedOrigin);
+    const token = cookie(request, 'student_session');
+    if (token === undefined) throw new HttpError(401, 'STUDENT_AUTH_REQUIRED');
+    if (request.method !== 'GET' && !isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) {
+      throw new HttpError(403, 'CSRF_REQUIRED');
+    }
+    const student = sessions.authenticateStudent(token);
+    if (student === undefined) throw new HttpError(401, 'STUDENT_AUTH_REQUIRED');
+    return { studentSessionId: student.studentSessionId, studentId: student.studentId, classId: student.classId, csrfValidated: true };
   };
   const authHandler = createAuthHttpHandler({
     sessions,
@@ -80,7 +101,27 @@ export function createApplication(options: ApplicationOptions): Application {
     studentJoinRateLimiter,
     ...(options.passwordVerifier === undefined ? {} : { passwordVerifier: options.passwordVerifier })
   });
-  const classHandler = createClassRoutes({ service: classService, teacherContext: authenticateTeacherMutation, studentJoinRateLimiter });
+  const classHandler = createClassRoutes({ service: classService, teacherContext: authenticateTeacher, studentJoinRateLimiter });
+  const domainRepository = new SqliteDomainRepository(options.database, () => clock.now().toISOString());
+  const questionBankHandler = createQuestionBankRoutes({
+    service: new QuestionBankService({
+      repository: new SqliteQuestionBankRepository(options.database, () => clock.now().toISOString()),
+      teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
+      classExists: (classId) => rosterRepository.classExists(classId)
+    }),
+    teacherContext: authenticateTeacher
+  });
+  const liveQuestionHandler = createLiveQuestionRoutes({
+    service: new LiveQuestionService({
+      repository: new SqliteLiveQuestionRepository(options.database, domainRepository),
+      teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
+      studentAuthorization: { assertAuthorized: (context) => assertStudentContext(context) }
+      // Deliberately no notifier: Task 5 owns Socket delivery. REST persistence
+      // has no per-student payload side channel in this composition.
+    }),
+    teacherContext: authenticateTeacher,
+    studentContext: authenticateStudent
+  });
 
   return {
     apiHandler: async (request, response) => {
@@ -93,7 +134,22 @@ export function createApplication(options: ApplicationOptions): Application {
           try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(response, error); return true; }
         }
         try {
-          const handled = await classHandler(request, response);
+          const handled = await classHandler(request, response) || await questionBankHandler(request, response);
+          if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
+        } catch (error) { sendError(response, error); }
+        return true;
+      }
+      if (pathname.startsWith('/api/question-templates') || pathname.startsWith('/api/questions/')) {
+        // Route handlers validate the cookie/CSRF context immediately before a
+        // service call. Origin is checked here before an untrusted mutation body
+        // is parsed, consistently with the existing public class boundary.
+        if (request.method !== 'GET') {
+          try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(response, error); return true; }
+        }
+        try {
+          const handled = pathname.startsWith('/api/question-templates')
+            ? await questionBankHandler(request, response)
+            : await liveQuestionHandler(request, response);
           if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
         } catch (error) { sendError(response, error); }
         return true;
@@ -117,6 +173,13 @@ function assertTeacherContext(context: unknown): asserts context is AuthorizedTe
   }
 }
 
+function assertStudentContext(context: unknown): AuthorizedStudentContext {
+  if (typeof context !== 'object' || context === null || (context as Partial<AuthorizedStudentContext>).csrfValidated !== true) {
+    throw new HttpError(401, 'STUDENT_AUTH_REQUIRED');
+  }
+  return context as AuthorizedStudentContext;
+}
+
 function requireAllowedOrigin(request: IncomingMessage, allowedOrigin: string): void {
   if (request.headers.origin !== allowedOrigin) throw new HttpError(403, 'ORIGIN_REQUIRED');
 }
@@ -137,10 +200,11 @@ class HttpError extends Error {
 function sendError(response: ServerResponse, error: unknown): void {
   if (error instanceof HttpError) { sendJson(response, error.status, { error: error.code }); return; }
   const code = error instanceof Error ? error.message : 'INVALID_REQUEST';
-  if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED') { sendJson(response, 404, { error: code }); return; }
+  if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED' || code.endsWith('_NOT_FOUND') || code === 'ANSWER_NOT_FOUND') { sendJson(response, 404, { error: code }); return; }
   if (code === 'REQUEST_BODY_TOO_LARGE') { sendJson(response, 413, { error: code }); return; }
-  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code === 'JOIN_IDENTITY_REQUIRED') { sendJson(response, 400, { error: code }); return; }
-  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT') { sendJson(response, 409, { error: code }); return; }
+  if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(response, 403, { error: code }); return; }
+  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT') { sendJson(response, 409, { error: code }); return; }
+  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(response, 400, { error: code }); return; }
   sendJson(response, 500, { error: 'CLASS_INTERNAL_ERROR' });
 }
 

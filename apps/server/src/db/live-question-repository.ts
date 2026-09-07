@@ -26,7 +26,16 @@ export class SqliteLiveQuestionRepository implements LiveQuestionRepository {
   open(questionId: QuestionId): void { this.domain.transitionQuestion(questionId, 'open'); }
   submit(studentId: StudentId, input: Parameters<LiveQuestionRepository['submit']>[1]): AnswerCurrent { return this.domain.submitAnswer(studentId, input); }
   close(questionId: QuestionId): QuestionResultSnapshot { return this.domain.closeQuestion(questionId); }
-  deleteAnswer(questionId: QuestionId, studentId: StudentId, confirmation: DeleteConfirmation): void { this.domain.deleteAnswer(questionId, studentId, confirmation); }
+  deleteAnswer(questionId: QuestionId, studentId: StudentId, confirmation: DeleteConfirmation): void {
+    // A teacher may manage every class, but the student component of this
+    // resource must still belong to the question's class. Besides preventing a
+    // misleading cross-class deletion marker, this avoids turning a bad URL
+    // into an unclassified SQLite foreign-key failure.
+    const question = this.question(questionId);
+    const member = this.database.prepare('SELECT 1 FROM students WHERE id=? AND class_id=?').get(studentId, question.classId);
+    if (member === undefined) throw new Error('ANSWER_NOT_FOUND');
+    this.domain.deleteAnswer(questionId, studentId, confirmation);
+  }
 
   currentAnswer(questionId: QuestionId, studentId: StudentId): AnswerCurrent | undefined {
     const row = this.database.prepare('SELECT id,revision,idempotency_key,payload_json,submitted_at_utc,late FROM answer_current WHERE question_id=? AND student_id=?').get(questionId, studentId) as AnswerCurrentRow | undefined;

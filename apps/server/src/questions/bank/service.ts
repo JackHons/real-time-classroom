@@ -10,6 +10,9 @@ const MAX_OPTIONS = 20;
 export type QuestionBankServiceDependencies = Readonly<{
   repository: QuestionBankRepository;
   teacherAuthorization: TeacherAuthorizationPort;
+  /** Composition supplies class existence so an invalid draft target is a 404,
+   * not a persistence-layer foreign-key error. */
+  classExists?: (classId: ClassId) => boolean;
   createTemplateId?: () => QuestionTemplateId;
   createQuestionId?: () => QuestionId;
   createOptionId?: () => string;
@@ -50,6 +53,7 @@ export class QuestionBankService {
   }
   createDraft(context: unknown, classId: ClassId, input: Readonly<{ templateId?: string; question?: TemplateInput }>): QuestionDraftRecord {
     this.authorize(context);
+    if (this.dependencies.classExists !== undefined && !this.dependencies.classExists(classId)) fail('CLASS_NOT_FOUND');
     if (input.templateId !== undefined && input.question !== undefined) fail('QUESTION_DRAFT_INVALID');
     const source = input.templateId === undefined
       ? this.validate(requireValue(input.question, 'QUESTION_DRAFT_REQUIRED'))
