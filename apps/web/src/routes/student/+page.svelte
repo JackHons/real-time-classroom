@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { studentApi } from '$lib/student/api';
+  import { isSessionExpired, studentApi } from '$lib/student/api';
   import type { PublicClass, StudentActivities } from '$lib/student/types';
 
   let classes: readonly PublicClass[] = [];
   let classId = '';
   let displayName = '';
   let studentNumber = '';
-  let state: 'loading' | 'form' | 'joining' | 'pending' | 'denied' | 'active' | 'error' = 'loading';
+  let state: 'loading' | 'form' | 'joining' | 'pending' | 'denied' | 'active' | 'session-expired' | 'error' = 'loading';
   let message = '';
   let activities: StudentActivities | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -17,6 +17,15 @@
   let mounted = false;
   let activitiesError = '';
   let loadingMore = false;
+
+  async function expireSession(): Promise<void> {
+    if (refreshTimer !== undefined) clearInterval(refreshTimer);
+    refreshTimer = undefined;
+    refreshController?.abort();
+    await studentApi.endSession();
+    state = 'session-expired';
+    message = '登入已失效，為保護你的資料，本機未同步答案已捨棄。請重新加入課堂。';
+  }
 
   async function refreshActivities(): Promise<void> {
     if (refreshInFlight) return;
@@ -29,6 +38,7 @@
       const next = await studentApi.activities(fetch, controller.signal);
       if (mounted && generation === refreshGeneration) activities = next;
     } catch (error) {
+      if (isSessionExpired(error)) { await expireSession(); return; }
       if (!(error instanceof DOMException && error.name === 'AbortError') && mounted && generation === refreshGeneration) {
         activitiesError = '活動清單暫時無法更新，請檢查網路後重新整理。';
       }
@@ -52,10 +62,13 @@
       const next = await studentApi.activities(fetch, undefined, questionCursor, fileTaskCursor);
       if (!mounted) return;
       activities = {
-        questions: { items: [...currentActivities.questions.items, ...next.questions.items], ...(next.questions.nextCursor === undefined ? {} : { nextCursor: next.questions.nextCursor }) },
-        fileTasks: { items: [...currentActivities.fileTasks.items, ...next.fileTasks.items], ...(next.fileTasks.nextCursor === undefined ? {} : { nextCursor: next.fileTasks.nextCursor }) }
+        // The endpoint returns both collections. Only append the collection for
+        // which this click supplied its original cursor; the completed side is
+        // intentionally preserved without re-fetching/re-appending page one.
+        questions: questionCursor === undefined ? currentActivities.questions : { items: [...currentActivities.questions.items, ...next.questions.items], ...(next.questions.nextCursor === undefined ? {} : { nextCursor: next.questions.nextCursor }) },
+        fileTasks: fileTaskCursor === undefined ? currentActivities.fileTasks : { items: [...currentActivities.fileTasks.items, ...next.fileTasks.items], ...(next.fileTasks.nextCursor === undefined ? {} : { nextCursor: next.fileTasks.nextCursor }) }
       };
-    } catch { activitiesError = '無法載入更多活動，請稍後再試。'; }
+    } catch (error) { if (isSessionExpired(error)) await expireSession(); else activitiesError = '無法載入更多活動，請稍後再試。'; }
     finally { loadingMore = false; }
   }
 

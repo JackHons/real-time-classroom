@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createAnswerQueue, flushAnswers } from '../../../apps/web/src/lib/student/answer-queue.js';
+import { IDBFactory } from 'fake-indexeddb';
+import { cleanupAnswerQueues, createAnswerQueue, discardOtherAnswerQueueOwners, flushAnswers } from '../../../apps/web/src/lib/student/answer-queue.js';
 import type { QueuedAnswer } from '../../../apps/web/src/lib/student/types.js';
 
 const answer: QueuedAnswer = {
@@ -36,5 +37,68 @@ describe('student answer queue', () => {
     expect(await previous.list()).toEqual([answer]);
     await previous.discard();
     expect(await previous.list()).toEqual([]);
+  });
+
+  it('allows different owners to retain answers with the same id, without cross-owner removal', async () => {
+    const indexedDb = new IDBFactory();
+    const first = createAnswerQueue('student-a', indexedDb);
+    const second = createAnswerQueue('student-b', indexedDb);
+    const firstAnswer = { ...answer, createdAt: Date.now(), payload: { kind: 'short_text' as const, text: 'A' } };
+    const secondAnswer = { ...firstAnswer, payload: { kind: 'short_text' as const, text: 'B' } };
+    await first.put(firstAnswer);
+    await second.put(secondAnswer);
+    await second.remove(answer.id);
+    expect(await first.list()).toEqual([firstAnswer]);
+    expect(await second.list()).toEqual([]);
+  });
+
+  it('keeps another owner safe while a discard and write race', async () => {
+    const indexedDb = new IDBFactory();
+    const first = createAnswerQueue('student-a', indexedDb);
+    const second = createAnswerQueue('student-b', indexedDb);
+    const firstAnswer = { ...answer, createdAt: Date.now() };
+    const secondAnswer = { ...firstAnswer, payload: { kind: 'short_text' as const, text: 'other session' } };
+    await first.put(firstAnswer);
+    await Promise.all([first.discard(), second.put(secondAnswer)]);
+    expect(await first.list()).toEqual([]);
+    expect(await second.list()).toEqual([secondAnswer]);
+  });
+
+  it('deletes v1 ownerless-key records during migration instead of replaying them', async () => {
+    const indexedDb = new IDBFactory();
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDb.open('lan-classroom-student', 1);
+      open.onupgradeneeded = () => open.result.createObjectStore('unsynced-answers', { keyPath: 'id' }).put({ ...answer, owner: 'student-a' });
+      open.onsuccess = () => { open.result.close(); resolve(); };
+      open.onerror = () => reject(open.error);
+    });
+    const migrated = createAnswerQueue('student-a', indexedDb);
+    expect(await migrated.list()).toEqual([]);
+  });
+
+  it('removes expired orphan owners but preserves the active owner', async () => {
+    const indexedDb = new IDBFactory();
+    const now = Date.now();
+    const expired = createAnswerQueue('old-session', indexedDb);
+    const active = createAnswerQueue('active-session', indexedDb);
+    const oldAnswer = { ...answer, id: 'old', createdAt: now - 8 * 24 * 60 * 60 * 1000 };
+    const activeAnswer = { ...answer, id: 'active', createdAt: oldAnswer.createdAt };
+    await expired.put(oldAnswer);
+    await active.put(activeAnswer);
+    await cleanupAnswerQueues(indexedDb, 'active-session', now);
+    expect(await expired.list()).toEqual([]);
+    expect(await active.list()).toEqual([activeAnswer]);
+  });
+
+  it('clears prior-owner answer JSON when a server-confirmed new owner starts', async () => {
+    const indexedDb = new IDBFactory();
+    const previous = createAnswerQueue('previous-session', indexedDb);
+    const current = createAnswerQueue('current-session', indexedDb);
+    const currentAnswer = { ...answer, id: 'current', createdAt: Date.now() };
+    await previous.put({ ...answer, id: 'previous', createdAt: Date.now() });
+    await current.put(currentAnswer);
+    await discardOtherAnswerQueueOwners('current-session', indexedDb);
+    expect(await previous.list()).toEqual([]);
+    expect(await current.list()).toEqual([currentAnswer]);
   });
 });

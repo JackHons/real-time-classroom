@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { studentApi } from '$lib/student/api';
+  import { isSessionExpired, studentApi } from '$lib/student/api';
   import type { StudentFileTask } from '$lib/student/types';
 
   let view: StudentFileTask | undefined;
@@ -11,13 +11,17 @@
   let uploading = false;
   let uploadController: AbortController | undefined;
   let deadlinePassed = false;
+  let sessionExpired = false;
   const taskId = page.params.id ?? '';
   const classId = page.url.searchParams.get('class') ?? '';
   $: deadlinePassed = view ? new Date(view.task.deadlineAtUtc).getTime() <= Date.now() : false;
   async function load(): Promise<void> {
     if (!classId) { notice = '缺少課堂資訊；請使用老師提供的作業連結。'; return; }
     try { view = await studentApi.readFileTask(fetch, classId, taskId); }
-    catch { notice = '無法讀取作業。請確認登入與連線。'; }
+    catch (error) {
+      if (isSessionExpired(error)) { await studentApi.endSession(); sessionExpired = true; notice = '登入已失效；請回到學生首頁重新加入課堂。'; }
+      else notice = '無法讀取作業。請確認登入與連線。';
+    }
   }
   onMount(() => { void load(); return () => uploadController?.abort(); });
   function selectFile(event: Event): void {
@@ -36,7 +40,10 @@
     uploading = true; notice = '';
     uploadController = new AbortController();
     try { await studentApi.uploadFile(fetch, classId, taskId, file, (value) => progress = value, uploadController.signal); await load(); notice = '檔案已成功繳交，不能再替換。'; }
-    catch (error) { notice = error instanceof Error && error.message === 'UPLOAD_ABORTED' ? '已取消上傳；未儲存檔案內容。' : '上傳失敗；未儲存檔案內容，請在期限內重新選擇後上傳。'; }
+    catch (error) {
+      if (isSessionExpired(error)) { await studentApi.endSession(); sessionExpired = true; notice = '登入已失效；未儲存檔案內容，請回到學生首頁重新加入課堂。'; }
+      else notice = error instanceof Error && error.message === 'UPLOAD_ABORTED' ? '已取消上傳；未儲存檔案內容。' : '上傳失敗；未儲存檔案內容，請在期限內重新選擇後上傳。';
+    }
     finally { uploadController = undefined; uploading = false; }
   }
 </script>
@@ -44,7 +51,7 @@
 <svelte:head><title>繳交作業｜LAN 課堂互動平台</title></svelte:head>
 <main>
   <a class="skip" href="#content">跳到主要內容</a>
-  {#if view}
+  {#if view && !sessionExpired}
     <section id="content" aria-labelledby="task-title">
       <h1 id="task-title">{view.task.title}</h1>
       <p>{view.task.description}</p>

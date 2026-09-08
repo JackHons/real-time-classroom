@@ -1,5 +1,6 @@
 /* global RequestInit, Headers, File, XMLHttpRequest, AbortSignal, URLSearchParams */
 import { ApiError, type AnswerPayload, type PublicClass, type StudentActivities, type StudentFileTask, type StudentQuestion } from './types';
+import { discardAnswerQueueOwner, discardOtherAnswerQueueOwners } from './answer-queue';
 
 type Fetcher = typeof fetch;
 let csrfToken: string | undefined;
@@ -9,9 +10,28 @@ function rememberCsrf(token: string | undefined): void {
   csrfToken = token;
 }
 
-function rememberQueueOwner(sessionId: string): string { queueOwner = `student-session:${sessionId}`; return queueOwner; }
-/** Clear only current in-memory authority. IndexedDB records remain owner-scoped. */
-function forgetSession(): void { csrfToken = undefined; queueOwner = undefined; }
+async function rememberQueueOwner(sessionId: string): Promise<string> {
+  const nextOwner = `student-session:${sessionId}`;
+  // A successful authentication replaces the former browser session, not its
+  // pending answers.
+  if (queueOwner !== undefined && queueOwner !== nextOwner) await discardAnswerQueueOwner(queueOwner);
+  // A browser cookie identifies one active student; all other queue namespaces
+  // are orphaned and contain only answer JSON, never tokens or uploads.
+  await discardOtherAnswerQueueOwners(nextOwner);
+  queueOwner = nextOwner;
+  return queueOwner;
+}
+async function forgetSession(): Promise<void> {
+  const formerOwner = queueOwner;
+  csrfToken = undefined;
+  queueOwner = undefined;
+  if (formerOwner === undefined) await discardOtherAnswerQueueOwners(undefined);
+  else await discardAnswerQueueOwner(formerOwner);
+}
+
+export function isSessionExpired(error: unknown): error is ApiError {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
+}
 
 function idempotencyKey(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -51,7 +71,7 @@ export const studentApi = {
       rememberCsrf(session.csrfToken);
       // New authentication must never inherit a previous student's queue.
       if (typeof session.sessionId !== 'string') throw new ApiError(500, 'SESSION_ID_REQUIRED');
-      rememberQueueOwner(session.sessionId);
+      await rememberQueueOwner(session.sessionId);
       return 'active';
     } catch (error) {
       // Approval state and another active session intentionally use one public message.
@@ -62,15 +82,17 @@ export const studentApi = {
   async restoreSession(fetcher: Fetcher = fetch): Promise<{ classId: string; queueOwner: string } | undefined> {
     try {
       const result = await request<{ actor: string; classId?: string; sessionId?: string }>(fetcher, '/api/auth/session');
-      if (result.actor !== 'student' || typeof result.classId !== 'string' || typeof result.sessionId !== 'string') { forgetSession(); return undefined; }
+      if (result.actor !== 'student' || typeof result.classId !== 'string' || typeof result.sessionId !== 'string') { await forgetSession(); return undefined; }
       // Tokens never persist in IndexedDB/sessionStorage. A fresh, derived token
       // is requested only after the cookie-authenticated session is restored.
       const csrf = await request<{ csrfToken: string }>(fetcher, '/api/auth/student/csrf', { method: 'POST', headers: { 'x-csrf-bootstrap': '1' } });
       rememberCsrf(csrf.csrfToken);
-      return { classId: result.classId, queueOwner: rememberQueueOwner(result.sessionId) };
-    } catch (error) { if (error instanceof ApiError && error.status === 401) { forgetSession(); return undefined; } throw error; }
+      return { classId: result.classId, queueOwner: await rememberQueueOwner(result.sessionId) };
+    } catch (error) { if (isSessionExpired(error)) { await forgetSession(); return undefined; } throw error; }
   },
   queueOwner(): string | undefined { return queueOwner; },
+  /** Session expiry/logout drops only the current owner's local answer JSON. */
+  endSession(): Promise<void> { return forgetSession(); },
   readQuestion(fetcher: Fetcher, id: string, signal?: AbortSignal): Promise<StudentQuestion> {
     return request(fetcher, `/api/questions/${encodeURIComponent(id)}?as=student`, signal === undefined ? {} : { signal });
   },
