@@ -181,12 +181,12 @@ describe('Task 3 composed API routes', () => {
 
     const join = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Ada', studentNumber: 'A1' }) });
     const studentCookie = join.headers.get('set-cookie')?.split(';')[0] as string;
-    const csrf = await fetch(`${base}/api/auth/student/csrf`, { headers: { origin, cookie: studentCookie } });
+    const csrf = await fetch(`${base}/api/auth/student/csrf`, { method: 'POST', headers: { origin, cookie: studentCookie, 'x-csrf-bootstrap': '1', 'sec-fetch-site': 'same-origin' } });
     expect(csrf.status).toBe(200);
     const csrfBody = await csrf.json() as { csrfToken: string };
     expect(csrfBody.csrfToken).not.toContain('teacher_shared_password_hash');
-    expect((await fetch(`${base}/api/auth/student/csrf`, { headers: { cookie: studentCookie } })).status).toBe(403);
-    expect((await fetch(`${base}/api/auth/student/csrf`, { headers: { origin: 'http://wrong-origin.test', cookie: studentCookie, 'sec-fetch-site': 'same-origin' } })).status).toBe(403);
+    expect((await fetch(`${base}/api/auth/student/csrf`, { method: 'POST', headers: { cookie: studentCookie } })).status).toBe(403);
+    expect((await fetch(`${base}/api/auth/student/csrf`, { method: 'POST', headers: { origin: 'http://wrong-origin.test', cookie: studentCookie, 'x-csrf-bootstrap': '1', 'sec-fetch-site': 'same-origin' } })).status).toBe(403);
     const activities = await fetch(`${base}/api/student/activities`, { headers: { cookie: studentCookie } });
     expect(activities.headers.get('cache-control')).toBe('no-store');
     expect(await activities.json()).toEqual({ questions: { items: [expect.objectContaining({ id: question.id, prompt: 'Explain', state: 'open' })] }, fileTasks: { items: [expect.objectContaining({ id: task.id, title: 'Upload', state: 'open' })] } });

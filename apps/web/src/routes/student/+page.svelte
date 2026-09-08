@@ -42,18 +42,18 @@
     refreshTimer = setInterval(() => { void refreshActivities(); }, 15_000);
   }
   async function loadMoreActivities(): Promise<void> {
-    const cursor = activities?.nextCursor;
-    if (cursor === undefined || loadingMore) return;
+    const questionCursor = activities?.questions.nextCursor;
+    const fileTaskCursor = activities?.fileTasks.nextCursor;
+    if ((questionCursor === undefined && fileTaskCursor === undefined) || loadingMore) return;
     const currentActivities = activities;
     if (currentActivities === undefined) return;
     loadingMore = true;
     try {
-      const next = await studentApi.activities(fetch, undefined, cursor);
+      const next = await studentApi.activities(fetch, undefined, questionCursor, fileTaskCursor);
       if (!mounted) return;
       activities = {
-        questions: [...currentActivities.questions, ...next.questions],
-        fileTasks: [...currentActivities.fileTasks, ...next.fileTasks],
-        ...(next.nextCursor === undefined ? {} : { nextCursor: next.nextCursor })
+        questions: { items: [...currentActivities.questions.items, ...next.questions.items], ...(next.questions.nextCursor === undefined ? {} : { nextCursor: next.questions.nextCursor }) },
+        fileTasks: { items: [...currentActivities.fileTasks.items, ...next.fileTasks.items], ...(next.fileTasks.nextCursor === undefined ? {} : { nextCursor: next.fileTasks.nextCursor }) }
       };
     } catch { activitiesError = '無法載入更多活動，請稍後再試。'; }
     finally { loadingMore = false; }
@@ -102,10 +102,10 @@
       {#if state === 'active'}
         <section aria-labelledby="activities-title"><h2 id="activities-title">目前活動</h2><button onclick={() => void refreshActivities()} disabled={refreshInFlight}>{refreshInFlight ? '更新中…' : '重新整理'}</button>
           {#if activitiesError}<p class="error" role="status">{activitiesError}</p>{/if}
-          {#if activities?.questions.length === 0 && activities?.fileTasks.length === 0}<p>目前沒有已開放或已結束的活動。</p>{/if}
-          {#if activities && activities.questions.length > 0}<h3>即時題</h3><ul>{#each activities.questions as question}<li><a href={`/student/question/${encodeURIComponent(question.id)}`}>{question.state === 'open' ? '進行中' : '已結束'}｜{question.prompt}</a></li>{/each}</ul>{/if}
-          {#if activities && activities.fileTasks.length > 0}<h3>檔案作業</h3><ul>{#each activities.fileTasks as task}<li><a href={`/student/task/${encodeURIComponent(task.id)}?class=${encodeURIComponent(classId)}`}>{task.state === 'open' ? '開放中' : '已結束'}｜{task.title}</a></li>{/each}</ul>{/if}
-          {#if activities?.nextCursor}<button onclick={() => void loadMoreActivities()} disabled={loadingMore}>{loadingMore ? '載入中…' : '載入更多活動'}</button>{/if}
+          {#if activities?.questions.items.length === 0 && activities?.fileTasks.items.length === 0}<p>目前沒有已開放或已結束的活動。</p>{/if}
+          {#if activities && activities.questions.items.length > 0}<h3>即時題</h3><ul>{#each activities.questions.items as question}<li><a href={`/student/question/${encodeURIComponent(question.id)}`}>{question.state === 'open' ? '進行中' : '已結束'}｜{question.prompt}</a></li>{/each}</ul>{/if}
+          {#if activities && activities.fileTasks.items.length > 0}<h3>檔案作業</h3><ul>{#each activities.fileTasks.items as task}<li><a href={`/student/task/${encodeURIComponent(task.id)}?class=${encodeURIComponent(classId)}`}>{task.state === 'open' ? '開放中' : '已結束'}｜{task.title}</a></li>{/each}</ul>{/if}
+          {#if activities?.questions.nextCursor || activities?.fileTasks.nextCursor}<button onclick={() => void loadMoreActivities()} disabled={loadingMore}>{loadingMore ? '載入中…' : '載入更多活動'}</button>{/if}
         </section>
       {:else}<button onclick={() => state = 'form'}>重新嘗試</button>{/if}
     {/if}

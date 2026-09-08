@@ -1,4 +1,5 @@
 export type ClassRoom = Readonly<{ id: string; name: string; createdAtUtc: string; updatedAtUtc: string }>;
+export type Page<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
 export type CsvIssue = Readonly<{ line: number; message: string }>;
 export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: string; rawStudentNumber: string; normalizedStudentNumber: string }>[]; issues: readonly CsvIssue[] }>;
 export type PendingApproval = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string }>;
@@ -30,11 +31,11 @@ export class TeacherApi {
     this.csrfToken = result.csrfToken;
   }
   async logout(): Promise<void> { await this.request('/api/auth/logout', { method: 'POST', body: {} }); this.csrfToken = undefined; }
-  async classes(): Promise<readonly ClassRoom[]> { return this.request('/api/teacher/classes', { method: 'GET' }); }
-  async roster(classId: string): Promise<readonly RosterStudent[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/roster`, { method: 'GET' }); }
-  async pending(classId: string): Promise<readonly PendingApproval[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/pending-student-requests`, { method: 'GET' }); }
-  async questions(classId: string): Promise<readonly QuestionSummary[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/questions`, { method: 'GET' }); }
-  async fileTasks(classId: string): Promise<readonly FileTask[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/file-tasks`, { method: 'GET' }); }
+  async classes(cursor?: string): Promise<Page<ClassRoom>> { return this.request(`/api/teacher/classes${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
+  async roster(classId: string, cursor?: string): Promise<Page<RosterStudent>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/roster${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
+  async pending(classId: string, cursor?: string): Promise<Page<PendingApproval>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/pending-student-requests${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
+  async questions(classId: string, cursor?: string): Promise<Page<QuestionSummary>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/questions${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
+  async fileTasks(classId: string, cursor?: string): Promise<Page<FileTask>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/file-tasks${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async createClass(name: string): Promise<ClassRoom> { return this.request('/api/classes', { method: 'POST', body: { name } }); }
   async deleteClass(id: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(id)}`, { method: 'DELETE', body: { confirmed: true, impactAcknowledged: true } }); }
   async previewRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/preview`, { method: 'POST', body: { csv } }); }
