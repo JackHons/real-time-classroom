@@ -36,6 +36,10 @@ export interface UploadPipelineRepository {
   commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
   markRecoveryPending(uploadSessionId: UploadSessionId, errorCode: string): void;
   markFailed(uploadSessionId: UploadSessionId, errorCode: string): void;
+  /** Retains the durable staging key when physical cleanup has not happened. */
+  markStagingCleanupFailed(uploadSessionId: UploadSessionId, errorCode: string): void;
+  /** Clears a staging key only after its private object was removed, with a payload-free audit record. */
+  completeStagingCleanup(uploadSessionId: UploadSessionId, cleanupCode: string): void;
   /** A committed metadata row without its opaque final object is not a success. */
   markIntegrityFailure(uploadSessionId: UploadSessionId, errorCode: string): void;
   listForReconciliation(): readonly ReconciliationRecord[];

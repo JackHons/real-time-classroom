@@ -71,9 +71,9 @@ export class SqliteFileSubmissionTaskRepository implements FileTaskRepository {
     })();
   }
   deleteEmptyTask(taskId: FileSubmissionTaskId): boolean {
-    // Staging/validated/rename-intent sessions may still own a private object.
-    // Do not cascade their durable recovery records away and orphan the file.
-    return this.database.prepare("DELETE FROM file_submission_tasks WHERE id=? AND NOT EXISTS (SELECT 1 FROM file_submissions WHERE task_id=? AND deleted_at_utc IS NULL) AND NOT EXISTS (SELECT 1 FROM upload_sessions WHERE task_id=? AND state IN ('queued','staging','validating','file_committed','metadata_committed','recovery_pending'))").run(taskId, taskId, taskId).changes === 1;
+    // Every non-finalized session can own durable bytes.  A failed session is
+    // only safe to cascade after reconciliation has cleared its staging key.
+    return this.database.prepare("DELETE FROM file_submission_tasks WHERE id=? AND NOT EXISTS (SELECT 1 FROM file_submissions WHERE task_id=? AND deleted_at_utc IS NULL) AND NOT EXISTS (SELECT 1 FROM upload_sessions WHERE task_id=? AND (state IN ('queued','staging','validating','file_committed','metadata_committed','recovery_pending') OR staging_key IS NOT NULL OR final_storage_key IS NOT NULL))").run(taskId, taskId, taskId).changes === 1;
   }
 
   /**

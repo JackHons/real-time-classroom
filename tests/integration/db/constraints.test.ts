@@ -27,7 +27,8 @@ describe('SQLite migration and repository transactions', () => {
     const predecessorMigrations = [
       '0001_initial',
       '0002_answer_at_close_roster_snapshot',
-      '0003_upload_session_recovery_metadata'
+      '0003_upload_session_recovery_metadata',
+      '0004_upload_storage_integrity'
     ] as const;
     const sqlFor = (id: string) => readFileSync(new URL(`../../../apps/server/src/db/migrations/${id}.sql`, import.meta.url), 'utf8');
 
@@ -50,6 +51,8 @@ describe('SQLite migration and repository transactions', () => {
         expect(legacy.prepare('SELECT state,error_code FROM upload_sessions WHERE id=?').get(`upload-${predecessor}`)).toEqual({ state: 'failed', error_code: 'legacy' });
         expect(legacy.prepare("SELECT id FROM schema_migrations WHERE id='0004_upload_storage_integrity'").get()).toBeDefined();
         expect(legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_integrity_records'").get()).toBeDefined();
+        expect(legacy.prepare("SELECT id FROM schema_migrations WHERE id='0005_upload_staging_cleanup_audit'").get()).toBeDefined();
+        expect(legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_staging_cleanup_records'").get()).toBeDefined();
       } finally { legacy.close(); }
     }
   });
@@ -168,6 +171,8 @@ describe('SQLite migration and repository transactions', () => {
       expect(database?.prepare('SELECT id FROM file_submission_tasks WHERE id=?').get('task-pending')).toBeDefined();
     }
     database?.prepare("UPDATE upload_sessions SET state='failed' WHERE id='pending-upload'").run();
+    expect(fileTasks.deleteEmptyTask('task-pending' as never)).toBe(false);
+    database?.prepare("UPDATE upload_sessions SET staging_key=NULL,final_storage_key=NULL WHERE id='pending-upload'").run();
     expect(fileTasks.deleteEmptyTask('task-pending' as never)).toBe(true);
   });
 });

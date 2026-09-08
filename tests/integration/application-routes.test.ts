@@ -1,13 +1,18 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApplication, FirstRunSetupRequiredError } from '../../apps/server/src/application.js';
 import { StudentJoinRateLimiter } from '../../apps/server/src/auth/http.js';
 import type { Clock } from '../../apps/server/src/auth/session.js';
 import { openSqlite, type SqliteDatabase } from '../../apps/server/src/db/connection.js';
 import { migrate } from '../../apps/server/src/db/migrator.js';
+import { SqliteFileSubmissionTaskRepository } from '../../apps/server/src/db/file-submission-task-repository.js';
+import { SqliteUploadPipelineRepository } from '../../apps/server/src/db/upload-pipeline-repository.js';
 import { startServer, type RunningServer } from '../../apps/server/src/server.js';
+import { UploadStorage } from '../../apps/server/src/uploads/storage.js';
 
 const origin = 'http://classroom.test';
 let database: SqliteDatabase | undefined;
@@ -149,6 +154,32 @@ describe('Task 3 composed API routes', () => {
     const bypassAttempt = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unapproved', studentNumber: 'S2' }) });
     expect(bypassAttempt.status).toBe(429);
     expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 1 });
+  });
+
+  it('keeps the application not-ready for a persistent staging cleanup failure and retries it after restart', async () => {
+    const db = databaseWithTeacherHash();
+    db.prepare("INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES ('class-1','1A','now','now')").run();
+    db.prepare("INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES ('student-1','class-1','Ada','A1','A1',0,'now')").run();
+    db.prepare("INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES ('task-1','class-1','Upload','', 'open',100000000,'2099-01-01T00:00:00.000Z','now',NULL,'now','now')").run();
+    const storage = new UploadStorage(join(directory as string, 'uploads'));
+    const repository = new SqliteUploadPipelineRepository(db);
+    const session = randomUUID() as never;
+    const stagingKey = storage.stagingKey(session);
+    repository.begin({ uploadSessionId: session, taskId: 'task-1' as never, studentId: 'student-1' as never, stagingKey, originalFilename: 'partial.txt', displayFilename: 'partial.txt', declaredMimeType: null });
+    const handle = await storage.openExclusiveStaging(stagingKey); await handle.write(Buffer.from('partial')); await handle.close();
+    const physicalRemove = storage.removeStaging.bind(storage);
+    const remove = vi.spyOn(storage, 'removeStaging').mockRejectedValue(new Error('simulated permission failure'));
+    const app = createApplication({ database: db, allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async () => true, uploadStorage: storage });
+
+    await expect(app.reconcileUploads()).rejects.toThrow('UPLOAD_STORAGE_INTEGRITY_FAILED');
+    expect(new SqliteFileSubmissionTaskRepository(db).deleteEmptyTask('task-1' as never)).toBe(false);
+    expect(db.prepare('SELECT state,staging_key FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'failed', staging_key: stagingKey });
+
+    remove.mockImplementation(physicalRemove);
+    const restarted = createApplication({ database: db, allowedOrigin: origin, csrfSecret: 'a'.repeat(32), passwordVerifier: async () => true, uploadStorage: storage });
+    await expect(restarted.reconcileUploads()).resolves.toMatchObject({ cleanupFailed: 0, cleaned: 1 });
+    expect(db.prepare('SELECT state,staging_key FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'failed', staging_key: null });
+    expect(db.prepare('SELECT cleanup_code FROM upload_staging_cleanup_records WHERE upload_session_id=?').get(session)).toEqual({ cleanup_code: 'RESTART_STAGING_CLEANED' });
   });
 
   it('streams a CSRF-protected student upload and exposes it only to a teacher download', async () => {

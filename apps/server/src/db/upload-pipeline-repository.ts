@@ -53,7 +53,9 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
         this.database.prepare('INSERT INTO file_submissions (id,task_id,student_id,original_filename,display_filename,storage_key,declared_mime_type,byte_length,sha256,received_complete_at_utc,deleted_at_utc) VALUES (?,?,?,?,?,?,?,?,?,?,NULL)')
           .run(input.uploadSessionId, row.task_id, row.student_id, row.original_filename, row.display_filename, input.finalStorageKey, row.declared_mime_type, row.bytes_received, row.sha256, row.received_complete_at_utc);
       }
-      const updated = this.database.prepare("UPDATE upload_sessions SET state='metadata_committed',error_code=NULL,updated_at_utc=? WHERE id=? AND state IN ('file_committed','recovery_pending') AND final_storage_key=?").run(this.now(), input.uploadSessionId, input.finalStorageKey);
+      // Atomic rename consumed the staging object.  Do not leave a stale key
+      // that could later be mistaken for recoverable private bytes.
+      const updated = this.database.prepare("UPDATE upload_sessions SET state='metadata_committed',staging_key=NULL,error_code=NULL,updated_at_utc=? WHERE id=? AND state IN ('file_committed','recovery_pending') AND final_storage_key=?").run(this.now(), input.uploadSessionId, input.finalStorageKey);
       if (updated.changes !== 1) throw new Error('FILE_METADATA_COMMIT_PRECONDITION_FAILED');
     })();
   }
@@ -66,6 +68,24 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
   markFailed(uploadSessionId: UploadSessionId, errorCode: string): void {
     const result = this.database.prepare("UPDATE upload_sessions SET state='failed',error_code=?,updated_at_utc=? WHERE id=? AND state IN ('staging','validating','file_committed','recovery_pending')").run(errorCode, this.now(), uploadSessionId);
     if (result.changes !== 1) throw new Error('FILE_UPLOAD_FAILURE_PRECONDITION_FAILED');
+  }
+
+  markStagingCleanupFailed(uploadSessionId: UploadSessionId, errorCode: string): void {
+    const result = this.database.prepare("UPDATE upload_sessions SET state='failed',error_code=?,updated_at_utc=? WHERE id=? AND staging_key IS NOT NULL AND state IN ('staging','validating','failed')").run(errorCode, this.now(), uploadSessionId);
+    if (result.changes !== 1) throw new Error('FILE_STAGING_CLEANUP_FAILURE_PRECONDITION_FAILED');
+  }
+
+  completeStagingCleanup(uploadSessionId: UploadSessionId, cleanupCode: string): void {
+    this.database.transaction(() => {
+      const row = this.database.prepare("SELECT state FROM upload_sessions WHERE id=? AND staging_key IS NOT NULL").get(uploadSessionId) as Readonly<{ state: ReconciliationRecord['state'] }> | undefined;
+      if (row === undefined || !['staging', 'validating', 'failed', 'metadata_committed'].includes(row.state)) throw new Error('FILE_STAGING_CLEANUP_PRECONDITION_FAILED');
+      const now = this.now();
+      const result = row.state === 'metadata_committed'
+        ? this.database.prepare('UPDATE upload_sessions SET staging_key=NULL,updated_at_utc=? WHERE id=? AND state=\'metadata_committed\' AND staging_key IS NOT NULL').run(now, uploadSessionId)
+        : this.database.prepare("UPDATE upload_sessions SET state='failed',staging_key=NULL,error_code=?,updated_at_utc=? WHERE id=? AND staging_key IS NOT NULL AND state IN ('staging','validating','failed')").run(cleanupCode, now, uploadSessionId);
+      if (result.changes !== 1) throw new Error('FILE_STAGING_CLEANUP_PRECONDITION_FAILED');
+      this.database.prepare('INSERT INTO upload_staging_cleanup_records (upload_session_id,cleanup_code,cleaned_at_utc) VALUES (?,?,?) ON CONFLICT(upload_session_id) DO UPDATE SET cleanup_code=excluded.cleanup_code,cleaned_at_utc=excluded.cleaned_at_utc').run(uploadSessionId, cleanupCode, now);
+    })();
   }
 
   markIntegrityFailure(uploadSessionId: UploadSessionId, errorCode: string): void {
@@ -82,7 +102,10 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
   }
 
   listForReconciliation(): readonly ReconciliationRecord[] {
-    const rows = this.database.prepare("SELECT id,state,staging_key,final_storage_key,bytes_received,sha256 FROM upload_sessions WHERE state IN ('staging','validating','file_committed','recovery_pending','metadata_committed')").all() as readonly RecoveryRow[];
+    // Failed sessions remain reconcilable while their staging key proves a
+    // private object may still exist.  Once cleanup succeeds that key is
+    // cleared, so ordinary historical failures are not repeatedly revisited.
+    const rows = this.database.prepare("SELECT id,state,staging_key,final_storage_key,bytes_received,sha256 FROM upload_sessions WHERE state IN ('staging','validating','file_committed','recovery_pending','metadata_committed') OR (state='failed' AND staging_key IS NOT NULL)").all() as readonly RecoveryRow[];
     return rows.map((row) => ({ uploadSessionId: row.id as UploadSessionId, state: row.state, stagingKey: row.staging_key, finalStorageKey: row.final_storage_key, bytesReceived: row.bytes_received, sha256: row.sha256 }));
   }
 }

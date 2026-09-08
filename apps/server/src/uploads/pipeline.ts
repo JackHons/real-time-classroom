@@ -85,15 +85,20 @@ export class UploadPipeline {
   }
 
   /** Call once at startup, before accepting new uploads. */
-  async reconcile(): Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number }>> {
-    let recovered = 0; let cleaned = 0; let metadataMissing = 0;
+  async reconcile(): Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number; cleanupFailed: number }>> {
+    let recovered = 0; let cleaned = 0; let metadataMissing = 0; let cleanupFailed = 0;
     for (const record of this.options.repository.listForReconciliation()) {
-      if (record.state === 'staging' || record.state === 'validating') {
-        await this.options.storage.removeStaging(record.stagingKey).catch(() => undefined);
-        this.markFailed(record.uploadSessionId, 'RESTART_STAGING_CLEANED'); cleaned += 1; continue;
+      if (record.state === 'staging' || record.state === 'validating' || record.state === 'failed') {
+        if (record.stagingKey === null) { this.markFailed(record.uploadSessionId, 'RESTART_STAGING_CLEANED'); cleaned += 1; continue; }
+        if (await this.cleanupStaging(record)) cleaned += 1;
+        else cleanupFailed += 1;
+        continue;
       }
       if (record.state === 'metadata_committed') {
-        if (record.stagingKey !== null) await this.options.storage.removeStaging(record.stagingKey).catch(() => undefined);
+        if (record.stagingKey !== null) {
+          if (await this.cleanupStaging(record)) cleaned += 1;
+          else { cleanupFailed += 1; continue; }
+        }
         if (record.finalStorageKey === null || !await this.options.storage.existsFinal(record.finalStorageKey)) {
           // Do not leave a missing final looking like a successful submission:
           // retire the live metadata, record a payload-free integrity marker,
@@ -105,7 +110,18 @@ export class UploadPipeline {
       if (await this.recoverCommittedIntent(record)) recovered += 1;
       else cleaned += 1;
     }
-    return { recovered, cleaned, metadataMissing };
+    return { recovered, cleaned, metadataMissing, cleanupFailed };
+  }
+
+  private async cleanupStaging(record: ReconciliationRecord): Promise<boolean> {
+    try {
+      await this.options.storage.removeStaging(record.stagingKey);
+      this.options.repository.completeStagingCleanup(record.uploadSessionId, 'RESTART_STAGING_CLEANED');
+      return true;
+    } catch {
+      this.markStagingCleanupFailed(record.uploadSessionId, 'RESTART_STAGING_CLEANUP_FAILED');
+      return false;
+    }
   }
 
   private async recoverCommittedIntent(record: ReconciliationRecord): Promise<boolean> {
@@ -124,6 +140,7 @@ export class UploadPipeline {
   }
 
   private markFailed(id: UploadSessionId, code: string): void { try { this.options.repository.markFailed(id, code); } catch { /* preserve the original failure */ } }
+  private markStagingCleanupFailed(id: UploadSessionId, code: string): void { try { this.options.repository.markStagingCleanupFailed(id, code); } catch { /* preserve the original failure */ } }
   private markRecovery(id: UploadSessionId, error: unknown): void { try { this.options.repository.markRecoveryPending(id, codeFor(error)); } catch { /* startup reconciliation will retry the durable intent */ } }
   private markIntegrityFailure(id: UploadSessionId, code: string): void { try { this.options.repository.markIntegrityFailure(id, code); } catch { /* a later startup must retry the visible inconsistency */ } }
 }

@@ -162,7 +162,7 @@ export class SqliteFileMetadataRepository implements FileMetadataRepository {
   constructor(private readonly database: SqliteDatabase, private readonly now: () => string = () => new Date().toISOString()) {}
 
   commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void {
-    const result = this.database.prepare("UPDATE upload_sessions SET state='metadata_committed',updated_at_utc=? WHERE id=? AND state='file_committed' AND final_storage_key=?").run(this.now(), input.uploadSessionId, input.finalStorageKey);
+    const result = this.database.prepare("UPDATE upload_sessions SET state='metadata_committed',staging_key=NULL,updated_at_utc=? WHERE id=? AND state='file_committed' AND final_storage_key=?").run(this.now(), input.uploadSessionId, input.finalStorageKey);
     if (result.changes !== 1) throw new Error('FILE_METADATA_COMMIT_PRECONDITION_FAILED');
   }
 

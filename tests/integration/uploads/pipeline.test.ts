@@ -3,7 +3,7 @@ import { Buffer } from 'node:buffer';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openSqlite, type SqliteDatabase } from '../../../apps/server/src/db/connection.js';
 import { migrate } from '../../../apps/server/src/db/migrator.js';
 import { SqliteUploadPipelineRepository } from '../../../apps/server/src/db/upload-pipeline-repository.js';
@@ -64,7 +64,7 @@ describe('upload byte pipeline', () => {
     const failing: UploadPipelineRepository = {
       begin: (input) => repository.begin(input), recordVerified: (input) => repository.recordVerified(input), prepareFileCommit: (input) => repository.prepareFileCommit(input),
       commitAfterFileRename: (input) => { if (failOnce) { failOnce = false; throw new Error('simulated DB outage'); } repository.commitAfterFileRename(input); },
-      markRecoveryPending: (id, code) => repository.markRecoveryPending(id, code), markFailed: (id, code) => repository.markFailed(id, code), markIntegrityFailure: (id, code) => repository.markIntegrityFailure(id, code), listForReconciliation: () => repository.listForReconciliation()
+      markRecoveryPending: (id, code) => repository.markRecoveryPending(id, code), markFailed: (id, code) => repository.markFailed(id, code), markStagingCleanupFailed: (id, code) => repository.markStagingCleanupFailed(id, code), completeStagingCleanup: (id, code) => repository.completeStagingCleanup(id, code), markIntegrityFailure: (id, code) => repository.markIntegrityFailure(id, code), listForReconciliation: () => repository.listForReconciliation()
     };
     const interrupted = new UploadPipeline({ repository: failing, storage, maxBytes: 8, now: () => instant });
     await expect(interrupted.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('abc') })).rejects.toMatchObject({ code: 'UPLOAD_METADATA_RECOVERY_PENDING' });
@@ -118,6 +118,29 @@ describe('upload byte pipeline', () => {
     expect(database?.prepare('SELECT deleted_at_utc FROM file_submissions WHERE id=?').get(result.uploadSessionId)).toMatchObject({ deleted_at_utc: instant.toISOString() });
     expect(database?.prepare('SELECT integrity_code FROM upload_integrity_records WHERE upload_session_id=?').get(result.uploadSessionId)).toEqual({ integrity_code: 'METADATA_FINAL_FILE_MISSING' });
     await expect(pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('next') })).resolves.toMatchObject({ byteLength: 4 });
+  });
+
+  it('retains failed staging cleanup for a later restart, then clears its durable key and writes a payload-free audit', async () => {
+    const { repository, storage, pipeline } = await setup();
+    const session = randomUUID() as never;
+    const stagingKey = storage.stagingKey(session);
+    repository.begin({ uploadSessionId: session, taskId: 'task-1' as never, studentId: 'student-1' as never, stagingKey, originalFilename: 'partial.txt', displayFilename: 'partial.txt', declaredMimeType: null });
+    const handle = await storage.openExclusiveStaging(stagingKey); await handle.write(Buffer.from('partial')); await handle.close();
+    const physicalRemove = storage.removeStaging.bind(storage);
+    const remove = vi.spyOn(storage, 'removeStaging').mockRejectedValue(new Error('simulated permission failure'));
+
+    await expect(pipeline.reconcile()).resolves.toMatchObject({ cleaned: 0, cleanupFailed: 1 });
+    expect(database?.prepare('SELECT state,staging_key,error_code FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'failed', staging_key: stagingKey, error_code: 'RESTART_STAGING_CLEANUP_FAILED' });
+    expect(database?.prepare('SELECT * FROM upload_staging_cleanup_records WHERE upload_session_id=?').get(session)).toBeUndefined();
+    expect(new SqliteFileSubmissionTaskRepository(database!).deleteEmptyTask('task-1' as never)).toBe(false);
+
+    remove.mockImplementation(physicalRemove);
+    const restarted = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant });
+    await expect(restarted.reconcile()).resolves.toMatchObject({ cleaned: 1, cleanupFailed: 0 });
+    expect(await storage.existsStaging(stagingKey)).toBe(false);
+    expect(database?.prepare('SELECT state,staging_key,error_code FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'failed', staging_key: null, error_code: 'RESTART_STAGING_CLEANED' });
+    expect(database?.prepare('SELECT cleanup_code FROM upload_staging_cleanup_records WHERE upload_session_id=?').get(session)).toEqual({ cleanup_code: 'RESTART_STAGING_CLEANED' });
+    expect(new SqliteFileSubmissionTaskRepository(database!).deleteEmptyTask('task-1' as never)).toBe(true);
   });
 
   it('reconciles deletion tombstones across both sides of the metadata transaction', async () => {
