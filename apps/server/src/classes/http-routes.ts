@@ -143,6 +143,6 @@ function confirmation(body: Record<string, unknown>): Readonly<{ confirmed: bool
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   if (status === 204) { response.writeHead(status); response.end(); return; }
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
 }

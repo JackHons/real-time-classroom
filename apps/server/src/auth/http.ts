@@ -247,7 +247,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         if (studentToken !== undefined) options.sessions.logoutStudent(studentToken);
         clearSessionCookie(response, TEACHER_SESSION_COOKIE);
         clearSessionCookie(response, STUDENT_SESSION_COOKIE);
-        response.writeHead(204); response.end(); return;
+        response.writeHead(204, { 'cache-control': 'no-store' }); response.end(); return;
       }
 
       if (request.method === 'GET' && pathname === '/api/auth/session') {
@@ -263,7 +263,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
       // secret in web storage.  Require the browser's exact first-party Origin
       // even though this is a GET, and return only the derived HMAC token.
       if (request.method === 'GET' && pathname === '/api/auth/student/csrf') {
-        if (!hasAllowedOrigin(request, options.allowedOrigin) && request.headers['sec-fetch-site'] !== 'same-origin') { json(response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
+        if (!hasAllowedOrigin(request, options.allowedOrigin)) { json(response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
         const token = parseCookies(request.headers.cookie)[STUDENT_SESSION_COOKIE];
         const student = options.sessions.authenticateStudent(token);
         if (student === undefined) { json(response, 401, { error: 'STUDENT_AUTH_REQUIRED' }); return; }

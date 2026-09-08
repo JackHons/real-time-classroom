@@ -173,11 +173,11 @@ describe('Task 3 composed API routes', () => {
 
     expect((await fetch(`${base}/api/teacher/classes`)).status).toBe(401);
     const roster = await fetch(`${base}/api/teacher/classes/${classroom.id}/roster`, { headers: { cookie: teacher.cookie } });
-    expect(await roster.json()).toEqual([expect.objectContaining({ displayName: 'Ada', studentNumber: 'A1' })]);
+    expect(await roster.json()).toEqual({ items: [expect.objectContaining({ displayName: 'Ada', studentNumber: 'A1' })] });
     const teacherPending = await fetch(`${base}/api/teacher/classes/${classroom.id}/pending-student-requests`, { headers: { cookie: teacher.cookie } });
-    expect(await teacherPending.json()).toEqual([expect.objectContaining({ displayName: 'Unauthorised' })]);
-    expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/questions`, { headers: { cookie: teacher.cookie } })).json()).toEqual([expect.objectContaining({ id: question.id, state: 'open' })]);
-    expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/file-tasks`, { headers: { cookie: teacher.cookie } })).json()).toEqual([expect.objectContaining({ id: task.id, state: 'open' })]);
+    expect(await teacherPending.json()).toEqual({ items: [expect.objectContaining({ displayName: 'Unauthorised' })] });
+    expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/questions`, { headers: { cookie: teacher.cookie } })).json()).toEqual({ items: [expect.objectContaining({ id: question.id, state: 'open' })] });
+    expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/file-tasks`, { headers: { cookie: teacher.cookie } })).json()).toEqual({ items: [expect.objectContaining({ id: task.id, state: 'open' })] });
 
     const join = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Ada', studentNumber: 'A1' }) });
     const studentCookie = join.headers.get('set-cookie')?.split(';')[0] as string;
@@ -186,8 +186,59 @@ describe('Task 3 composed API routes', () => {
     const csrfBody = await csrf.json() as { csrfToken: string };
     expect(csrfBody.csrfToken).not.toContain('teacher_shared_password_hash');
     expect((await fetch(`${base}/api/auth/student/csrf`, { headers: { cookie: studentCookie } })).status).toBe(403);
+    expect((await fetch(`${base}/api/auth/student/csrf`, { headers: { origin: 'http://wrong-origin.test', cookie: studentCookie, 'sec-fetch-site': 'same-origin' } })).status).toBe(403);
     const activities = await fetch(`${base}/api/student/activities`, { headers: { cookie: studentCookie } });
-    expect(await activities.json()).toEqual({ questions: [expect.objectContaining({ id: question.id, prompt: 'Explain', state: 'open' })], fileTasks: [expect.objectContaining({ id: task.id, title: 'Upload', state: 'open' })] });
+    expect(activities.headers.get('cache-control')).toBe('no-store');
+    expect(await activities.json()).toEqual({ questions: { items: [expect.objectContaining({ id: question.id, prompt: 'Explain', state: 'open' })] }, fileTasks: { items: [expect.objectContaining({ id: task.id, title: 'Upload', state: 'open' })] } });
+  });
+
+  it('keyset-pages large teacher and student activity collections without unbounded responses', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name: 'Paging class' }) });
+    const classroom = await created.json() as { id: string };
+    const db = database as SqliteDatabase;
+    const at = (index: number) => `2026-09-08T00:00:00.${String(index).padStart(3, '0')}Z`;
+    const insertStudent = db.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)');
+    const insertPending = db.prepare("INSERT INTO pending_student_requests (id,class_id,display_name,raw_student_number,normalized_student_number,requested_at_utc,status,resolved_at_utc) VALUES (?,?,?,?,?,?, 'pending',NULL)");
+    const insertQuestion = db.prepare("INSERT INTO questions (id,class_id,template_id,kind,prompt,reference_answer,state,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,NULL,'short_text',?,NULL,'open',?,NULL,?,?)");
+    const insertTask = db.prepare("INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,?,'','open',100000000,?,?,NULL,?,?)");
+    for (let index = 0; index < 105; index += 1) {
+      const value = String(index).padStart(3, '0');
+      insertStudent.run(`student-${value}`, classroom.id, `Student ${value}`, `S${value}`, `S${value}`, 0, at(index));
+      insertPending.run(`pending-${value}`, classroom.id, `Pending ${value}`, `P${value}`, `P${value}`, at(index));
+      insertQuestion.run(`question-${value}`, classroom.id, `Question ${value}`, at(index), at(index), at(index));
+      insertTask.run(`task-${value}`, classroom.id, `Task ${value}`, `2099-01-01T00:00:${String(index % 60).padStart(2, '0')}.000Z`, at(index), at(index), at(index));
+      db.prepare('INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES (?,?,?,?)').run(`extra-class-${value}`, `Extra ${value}`, at(index), at(index));
+    }
+
+    type Page = Readonly<{ items: readonly Readonly<{ id: string }>[]; nextCursor?: string }>;
+    const allTeacher = async (path: string): Promise<readonly string[]> => {
+      let cursor: string | undefined; const ids: string[] = [];
+      do {
+        const response = await fetch(`${base}${path}?limit=13${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`, { headers: { cookie: teacher.cookie } });
+        expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');
+        const page = await response.json() as Page; expect(page.items.length).toBeLessThanOrEqual(13); ids.push(...page.items.map((item) => item.id)); cursor = page.nextCursor;
+      } while (cursor !== undefined);
+      return ids;
+    };
+    for (const path of ['/api/teacher/classes', `/api/teacher/classes/${classroom.id}/roster`, `/api/teacher/classes/${classroom.id}/pending-student-requests`, `/api/teacher/classes/${classroom.id}/questions`, `/api/teacher/classes/${classroom.id}/file-tasks`]) {
+      const ids = await allTeacher(path); expect(ids).toHaveLength(path === '/api/teacher/classes' ? 106 : 105); expect(new Set(ids)).toHaveLength(ids.length);
+    }
+    const invalid = await fetch(`${base}/api/teacher/classes/${classroom.id}/roster?cursor=not-a-cursor`, { headers: { cookie: teacher.cookie } });
+    expect(invalid.status).toBe(400); expect(await invalid.json()).toEqual({ error: 'INVALID_REQUEST' });
+
+    const joined = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Student 000', studentNumber: 'S000' }) });
+    const studentCookie = joined.headers.get('set-cookie')?.split(';')[0] as string;
+    let questionCursor: string | undefined; let fileTaskCursor: string | undefined; const questionIds: string[] = []; const taskIds: string[] = [];
+    do {
+      const response = await fetch(`${base}/api/student/activities?limit=13${questionCursor === undefined ? '' : `&questionCursor=${encodeURIComponent(questionCursor)}`}${fileTaskCursor === undefined ? '' : `&fileTaskCursor=${encodeURIComponent(fileTaskCursor)}`}`, { headers: { cookie: studentCookie } });
+      expect(response.status).toBe(200);
+      const body = await response.json() as Readonly<{ questions: Page; fileTasks: Page }>;
+      expect(body.questions.items.length).toBeLessThanOrEqual(13); expect(body.fileTasks.items.length).toBeLessThanOrEqual(13);
+      questionIds.push(...body.questions.items.map((item) => item.id)); taskIds.push(...body.fileTasks.items.map((item) => item.id)); questionCursor = body.questions.nextCursor; fileTaskCursor = body.fileTasks.nextCursor;
+    } while (questionCursor !== undefined || fileTaskCursor !== undefined);
+    expect(new Set(questionIds)).toHaveLength(105); expect(new Set(taskIds)).toHaveLength(105);
   });
 
   it('keeps the application not-ready for a persistent staging cleanup failure and retries it after restart', async () => {

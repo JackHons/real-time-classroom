@@ -251,6 +251,9 @@ class HttpError extends Error {
 function sendError(response: ServerResponse, error: unknown): void {
   if (error instanceof HttpError) { sendJson(response, error.status, { error: error.code }); return; }
   const code = error instanceof Error ? error.message : 'INVALID_REQUEST';
+  // Cursor and limit syntax must not disclose which route or backing fields
+  // rejected an opaque token.
+  if (code === 'REQUEST_CURSOR_INVALID') { sendJson(response, 400, { error: 'INVALID_REQUEST' }); return; }
   if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED' || code.endsWith('_NOT_FOUND') || code === 'ANSWER_NOT_FOUND') { sendJson(response, 404, { error: code }); return; }
   if (code === 'REQUEST_BODY_TOO_LARGE' || code === 'UPLOAD_TOO_LARGE') { sendJson(response, 413, { error: code }); return; }
   if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(response, 403, { error: code }); return; }
