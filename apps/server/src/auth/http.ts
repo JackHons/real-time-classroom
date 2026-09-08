@@ -259,6 +259,18 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         json(response, 401, { error: 'UNAUTHENTICATED' }); return;
       }
 
+      // A restored student page needs a CSRF token without putting any session
+      // secret in web storage.  Require the browser's exact first-party Origin
+      // even though this is a GET, and return only the derived HMAC token.
+      if (request.method === 'GET' && pathname === '/api/auth/student/csrf') {
+        if (!hasAllowedOrigin(request, options.allowedOrigin) && request.headers['sec-fetch-site'] !== 'same-origin') { json(response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
+        const token = parseCookies(request.headers.cookie)[STUDENT_SESSION_COOKIE];
+        const student = options.sessions.authenticateStudent(token);
+        if (student === undefined) { json(response, 401, { error: 'STUDENT_AUTH_REQUIRED' }); return; }
+        // authenticateStudent succeeds only for a defined, still-active token.
+        json(response, 200, { csrfToken: csrfToken(token!, options.csrfSecret) }); return;
+      }
+
       json(response, 404, { error: 'NOT_FOUND' });
     } catch (error) {
       if (error instanceof SyntaxError || error instanceof RequestBodyError) { json(response, 400, { error: 'INVALID_REQUEST' }); return; }

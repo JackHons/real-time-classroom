@@ -156,6 +156,40 @@ describe('Task 3 composed API routes', () => {
     expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 1 });
   });
 
+  it('serves authenticated teacher navigation and student-safe activity DTOs from the real server', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name: '1A' }) });
+    const classroom = await created.json() as { id: string };
+    await fetch(`${base}/api/classes/${classroom.id}/roster/import`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ csv: 'name,studentNumber\nAda,A1' }) });
+    const pending = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Unauthorised', studentNumber: 'S2' }) });
+    expect(pending.status).toBe(202);
+    const draft = await fetch(`${base}/api/classes/${classroom.id}/question-drafts`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ question: { kind: 'short_text', prompt: 'Explain' } }) });
+    const question = await draft.json() as { id: string };
+    await fetch(`${base}/api/questions/${question.id}/open`, { method: 'POST', headers: teacherHeaders(teacher), body: '{}' });
+    const taskResponse = await fetch(`${base}/api/classes/${classroom.id}/file-tasks`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ title: 'Upload', description: '', deadlineAtUtc: '2099-01-01T00:00:00.000Z' }) });
+    const task = await taskResponse.json() as { id: string };
+    await fetch(`${base}/api/classes/${classroom.id}/file-tasks/${task.id}/open`, { method: 'POST', headers: teacherHeaders(teacher), body: '{}' });
+
+    expect((await fetch(`${base}/api/teacher/classes`)).status).toBe(401);
+    const roster = await fetch(`${base}/api/teacher/classes/${classroom.id}/roster`, { headers: { cookie: teacher.cookie } });
+    expect(await roster.json()).toEqual([expect.objectContaining({ displayName: 'Ada', studentNumber: 'A1' })]);
+    const teacherPending = await fetch(`${base}/api/teacher/classes/${classroom.id}/pending-student-requests`, { headers: { cookie: teacher.cookie } });
+    expect(await teacherPending.json()).toEqual([expect.objectContaining({ displayName: 'Unauthorised' })]);
+    expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/questions`, { headers: { cookie: teacher.cookie } })).json()).toEqual([expect.objectContaining({ id: question.id, state: 'open' })]);
+    expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/file-tasks`, { headers: { cookie: teacher.cookie } })).json()).toEqual([expect.objectContaining({ id: task.id, state: 'open' })]);
+
+    const join = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Ada', studentNumber: 'A1' }) });
+    const studentCookie = join.headers.get('set-cookie')?.split(';')[0] as string;
+    const csrf = await fetch(`${base}/api/auth/student/csrf`, { headers: { origin, cookie: studentCookie } });
+    expect(csrf.status).toBe(200);
+    const csrfBody = await csrf.json() as { csrfToken: string };
+    expect(csrfBody.csrfToken).not.toContain('teacher_shared_password_hash');
+    expect((await fetch(`${base}/api/auth/student/csrf`, { headers: { cookie: studentCookie } })).status).toBe(403);
+    const activities = await fetch(`${base}/api/student/activities`, { headers: { cookie: studentCookie } });
+    expect(await activities.json()).toEqual({ questions: [expect.objectContaining({ id: question.id, prompt: 'Explain', state: 'open' })], fileTasks: [expect.objectContaining({ id: task.id, title: 'Upload', state: 'open' })] });
+  });
+
   it('keeps the application not-ready for a persistent staging cleanup failure and retries it after restart', async () => {
     const db = databaseWithTeacherHash();
     db.prepare("INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES ('class-1','1A','now','now')").run();

@@ -32,6 +32,12 @@ export type StudentFileTask = Readonly<{
   submission: Readonly<{ submitted: boolean; displayFilename?: string; submittedAtUtc?: string }>;
 }>;
 
+/** Navigation-only data: no answer key or classmate identity is exposed. */
+export type StudentActivities = Readonly<{
+  questions: readonly Readonly<{ id: string; prompt: string; kind: AnswerPayload['kind']; state: 'open' | 'closed' }>[];
+  fileTasks: readonly Readonly<{ id: string; title: string; description: string; state: 'open' | 'closed'; deadlineAtUtc: string }>[];
+}>;
+
 export type QueuedAnswer = Readonly<{
   id: string;
   questionId: string;

@@ -2,6 +2,8 @@ export type ClassRoom = Readonly<{ id: string; name: string; createdAtUtc: strin
 export type CsvIssue = Readonly<{ line: number; message: string }>;
 export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: string; rawStudentNumber: string; normalizedStudentNumber: string }>[]; issues: readonly CsvIssue[] }>;
 export type PendingApproval = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string }>;
+export type RosterStudent = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: boolean; approvedAtUtc: string }>;
+export type QuestionSummary = Readonly<{ id: string; classId: string; templateId: string | null; kind: QuestionKind; prompt: string; state: 'draft' | 'open' | 'closed' }>;
 export type QuestionKind = 'single_choice' | 'multiple_choice' | 'short_text';
 export type Option = Readonly<{ id: string; label: string; ordinal: number }>;
 export type ReferenceAnswer = string | readonly string[] | null;
@@ -28,7 +30,11 @@ export class TeacherApi {
     this.csrfToken = result.csrfToken;
   }
   async logout(): Promise<void> { await this.request('/api/auth/logout', { method: 'POST', body: {} }); this.csrfToken = undefined; }
-  async classes(): Promise<readonly ClassRoom[]> { return this.request('/api/classes', { method: 'GET' }); }
+  async classes(): Promise<readonly ClassRoom[]> { return this.request('/api/teacher/classes', { method: 'GET' }); }
+  async roster(classId: string): Promise<readonly RosterStudent[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/roster`, { method: 'GET' }); }
+  async pending(classId: string): Promise<readonly PendingApproval[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/pending-student-requests`, { method: 'GET' }); }
+  async questions(classId: string): Promise<readonly QuestionSummary[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/questions`, { method: 'GET' }); }
+  async fileTasks(classId: string): Promise<readonly FileTask[]> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/file-tasks`, { method: 'GET' }); }
   async createClass(name: string): Promise<ClassRoom> { return this.request('/api/classes', { method: 'POST', body: { name } }); }
   async deleteClass(id: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(id)}`, { method: 'DELETE', body: { confirmed: true, impactAcknowledged: true } }); }
   async previewRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/preview`, { method: 'POST', body: { csv } }); }

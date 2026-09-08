@@ -7,8 +7,9 @@ test.describe('student interface (mocked API)', () => {
     await page.route('**/api/classes', (route) => route.fulfill({ contentType: 'application/json', body: '[{"id":"class-1","name":"數學課"}]' }));
     await page.route('**/api/classes/class-1/join', (route) => route.fulfill({ contentType: 'application/json', body: '{"outcome":"matched"}' }));
     await page.route('**/api/auth/student/join', (route) => route.fulfill({ contentType: 'application/json', body: '{"actor":"student","csrfToken":"test-token"}' }));
+    await page.route('**/api/student/activities', (route) => route.fulfill({ contentType: 'application/json', body: '{"questions":[],"fileTasks":[]}' }));
     await page.goto('/student');
-    await page.getByLabel('課堂').selectOption('class-1');
+    await page.getByRole('combobox', { name: '課堂' }).selectOption('class-1');
     await page.getByLabel('姓名').fill('王小明');
     await page.getByLabel('學號').fill('S001');
     await page.getByRole('button', { name: '加入課堂' }).click();

@@ -7,10 +7,10 @@
   import type { AnswerPayload, QueuedAnswer, StudentQuestion } from '$lib/student/types';
 
   const queue = createAnswerQueue();
-  let view = $state<StudentQuestion | undefined>();
-  let state = $state<'loading' | 'ready' | 'saving' | 'queued' | 'closed' | 'error'>('loading');
-  let notice = $state('');
-  const questionId = $derived(page.params.id);
+  let view: StudentQuestion | undefined;
+  let state: 'loading' | 'ready' | 'saving' | 'queued' | 'closed' | 'error' = 'loading';
+  let notice = '';
+  const questionId = page.params.id ?? '';
 
   async function refresh(): Promise<StudentQuestion> {
     const latest = await studentApi.readQuestion(fetch, questionId);

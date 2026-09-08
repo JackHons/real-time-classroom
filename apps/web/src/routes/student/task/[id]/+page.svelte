@@ -4,14 +4,15 @@
   import { studentApi } from '$lib/student/api';
   import type { StudentFileTask } from '$lib/student/types';
 
-  let view = $state<StudentFileTask | undefined>();
-  let file = $state<File | undefined>();
-  let progress = $state(0);
-  let notice = $state('');
-  let uploading = $state(false);
-  const taskId = $derived(page.params.id);
-  const classId = $derived(page.url.searchParams.get('class') ?? '');
-  const deadlinePassed = $derived(view ? new Date(view.task.deadlineAtUtc).getTime() <= Date.now() : false);
+  let view: StudentFileTask | undefined;
+  let file: File | undefined;
+  let progress = 0;
+  let notice = '';
+  let uploading = false;
+  let deadlinePassed = false;
+  const taskId = page.params.id ?? '';
+  const classId = page.url.searchParams.get('class') ?? '';
+  $: deadlinePassed = view ? new Date(view.task.deadlineAtUtc).getTime() <= Date.now() : false;
   async function load(): Promise<void> {
     if (!classId) { notice = '缺少課堂資訊；請使用老師提供的作業連結。'; return; }
     try { view = await studentApi.readFileTask(fetch, classId, taskId); }

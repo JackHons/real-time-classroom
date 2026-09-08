@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createAuthHttpHandler, isValidCsrfToken, StudentJoinRateLimiter, type PasswordVerifier, type StudentJoinPort } from './auth/http.js';
 import { AuthSessions, type Clock, systemClock } from './auth/session.js';
+import { createActivityRoutes } from './activities/http-routes.js';
 import { ClassService } from './classes/class-service.js';
 import { createClassRoutes } from './classes/http-routes.js';
 import { SqliteAuthSessionRepository } from './db/auth-session-repository.js';
@@ -106,7 +107,7 @@ export function createApplication(options: ApplicationOptions): Application {
     }
     const student = sessions.authenticateStudent(token);
     if (student === undefined) throw new HttpError(401, 'STUDENT_AUTH_REQUIRED');
-    return { studentSessionId: student.studentSessionId, studentId: student.studentId, classId: student.classId, csrfValidated: true };
+    return { studentSessionId: student.studentSessionId, studentId: student.studentId, classId: student.classId, csrfValidated: true as const };
   };
   const authHandler = createAuthHttpHandler({
     sessions,
@@ -151,6 +152,7 @@ export function createApplication(options: ApplicationOptions): Application {
   const fileTaskHandler = createFileTaskRoutes({ service: fileTaskService, repository: fileRepository, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now() });
   const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher, ...(options.uploadIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.uploadIdleTimeoutMs }), ...(options.uploadAbsoluteRequestTimeoutMs === undefined ? {} : { absoluteRequestTimeoutMs: options.uploadAbsoluteRequestTimeoutMs }) });
+  const activityHandler = createActivityRoutes({ database: options.database, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   let uploadsReady = false;
 
   return {
@@ -168,6 +170,13 @@ export function createApplication(options: ApplicationOptions): Application {
     apiHandler: async (request, response) => {
       const pathname = new URL(request.url ?? '/', 'http://lan-classroom.local').pathname;
       if (pathname.startsWith('/api/auth/')) { await authHandler(request, response); return true; }
+      if (pathname.startsWith('/api/teacher/') || pathname === '/api/student/activities') {
+        try {
+          const handled = activityHandler(request, response);
+          if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
+        } catch (error) { sendError(response, error); }
+        return true;
+      }
       if (pathname === '/api/classes' || pathname.startsWith('/api/classes/') || pathname.startsWith('/api/pending-student-requests/')) {
         // Public class listing is read-only. All public join requests and every
         // mutation require the configured first-party Origin before parsing a body.

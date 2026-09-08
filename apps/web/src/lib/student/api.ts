@@ -1,16 +1,11 @@
-import { ApiError, type AnswerPayload, type PublicClass, type StudentFileTask, type StudentQuestion } from './types';
+/* global RequestInit, Headers, File, XMLHttpRequest */
+import { ApiError, type AnswerPayload, type PublicClass, type StudentActivities, type StudentFileTask, type StudentQuestion } from './types';
 
 type Fetcher = typeof fetch;
 let csrfToken: string | undefined;
-const CSRF_STORAGE_KEY = 'lan-classroom-student-csrf';
 
 function rememberCsrf(token: string | undefined): void {
   csrfToken = token;
-  if (token !== undefined && typeof sessionStorage !== 'undefined') sessionStorage.setItem(CSRF_STORAGE_KEY, token);
-}
-
-function restoreCsrf(): void {
-  if (csrfToken === undefined && typeof sessionStorage !== 'undefined') csrfToken = sessionStorage.getItem(CSRF_STORAGE_KEY) ?? undefined;
 }
 
 function idempotencyKey(): string {
@@ -59,12 +54,19 @@ export const studentApi = {
   async restoreSession(fetcher: Fetcher = fetch): Promise<{ classId: string } | undefined> {
     try {
       const result = await request<{ actor: string; classId?: string }>(fetcher, '/api/auth/session');
-      restoreCsrf();
-      return result.actor === 'student' && typeof result.classId === 'string' ? { classId: result.classId } : undefined;
+      if (result.actor !== 'student' || typeof result.classId !== 'string') return undefined;
+      // Tokens never persist in IndexedDB/sessionStorage. A fresh, derived token
+      // is requested only after the cookie-authenticated session is restored.
+      const csrf = await request<{ csrfToken: string }>(fetcher, '/api/auth/student/csrf');
+      rememberCsrf(csrf.csrfToken);
+      return { classId: result.classId };
     } catch (error) { if (error instanceof ApiError && error.status === 401) return undefined; throw error; }
   },
   readQuestion(fetcher: Fetcher, id: string): Promise<StudentQuestion> {
     return request(fetcher, `/api/questions/${encodeURIComponent(id)}?as=student`);
+  },
+  activities(fetcher: Fetcher = fetch): Promise<StudentActivities> {
+    return request(fetcher, '/api/student/activities');
   },
   async submitAnswer(fetcher: Fetcher, questionId: string, revision: number, payload: AnswerPayload, key = idempotencyKey()): Promise<void> {
     await request(fetcher, `/api/questions/${encodeURIComponent(questionId)}/answers`, {

@@ -1,3 +1,4 @@
+/* global IDBFactory, IDBDatabase, IDBTransactionMode, IDBObjectStore, IDBRequest */
 import type { QueuedAnswer } from './types';
 
 const DB_NAME = 'lan-classroom-student';
