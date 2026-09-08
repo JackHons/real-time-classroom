@@ -44,4 +44,16 @@ test.describe('teacher management UI (mock API)', () => {
     const box = await page.getByRole('button', { name: '重新整理班級' }).boundingBox();
     expect(box?.height).toBeGreaterThanOrEqual(44);
   });
+
+  test('requires confirmation before closing a question and restores focus on cancellation', async ({ page }) => {
+    await page.route('**/api/teacher/classes/class-1/questions', (route) => route.fulfill({ json: [{ id: 'question-1', classId: 'class-1', kind: 'single_choice', prompt: '確認收答', state: 'open' }] }));
+    await page.goto('/');
+    await page.getByLabel('教師密碼').fill('correct');
+    await page.getByRole('button', { name: '登入' }).click();
+    await page.getByLabel('選擇題目').selectOption('question-1');
+    await page.getByRole('button', { name: '關閉題目' }).click();
+    await expect(page.getByRole('dialog')).toContainText('關閉即時題');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: '關閉題目' })).toBeFocused();
+  });
 });

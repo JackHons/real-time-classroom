@@ -9,7 +9,7 @@ const answer: QueuedAnswer = {
 
 describe('student answer queue', () => {
   it('keeps only answer payloads and removes one only after an idempotent sync', async () => {
-    const queue = createAnswerQueue(undefined);
+    const queue = createAnswerQueue('student-a-session-1', undefined);
     await queue.put(answer);
     expect(await queue.list()).toEqual([answer]);
     const sent: QueuedAnswer[] = [];
@@ -19,9 +19,22 @@ describe('student answer queue', () => {
   });
 
   it('does not discard an answer when REST re-synchronisation fails', async () => {
-    const queue = createAnswerQueue(undefined);
+    const queue = createAnswerQueue('student-a-session-1', undefined);
     await queue.put(answer);
     await expect(flushAnswers(queue, async () => { throw new Error('offline'); })).rejects.toThrow('offline');
     expect(await queue.list()).toEqual([answer]);
+  });
+
+  it('never exposes or flushes a previous student owner after a session switch', async () => {
+    const previous = createAnswerQueue('student-a-session-1', undefined);
+    const current = createAnswerQueue('student-b-session-2', undefined);
+    await previous.put(answer);
+    expect(await current.list()).toEqual([]);
+    const sent: QueuedAnswer[] = [];
+    await flushAnswers(current, async (queued) => { sent.push(queued); });
+    expect(sent).toEqual([]);
+    expect(await previous.list()).toEqual([answer]);
+    await previous.discard();
+    expect(await previous.list()).toEqual([]);
   });
 });

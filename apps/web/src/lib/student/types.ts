@@ -36,6 +36,8 @@ export type StudentFileTask = Readonly<{
 export type StudentActivities = Readonly<{
   questions: readonly Readonly<{ id: string; prompt: string; kind: AnswerPayload['kind']; state: 'open' | 'closed' }>[];
   fileTasks: readonly Readonly<{ id: string; title: string; description: string; state: 'open' | 'closed'; deadlineAtUtc: string }>[];
+  /** Opaque cursor. Omitted until the server has no additional student-safe activity page. */
+  nextCursor?: string;
 }>;
 
 export type QueuedAnswer = Readonly<{

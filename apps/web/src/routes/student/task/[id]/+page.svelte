@@ -9,6 +9,7 @@
   let progress = 0;
   let notice = '';
   let uploading = false;
+  let uploadController: AbortController | undefined;
   let deadlinePassed = false;
   const taskId = page.params.id ?? '';
   const classId = page.url.searchParams.get('class') ?? '';
@@ -18,13 +19,25 @@
     try { view = await studentApi.readFileTask(fetch, classId, taskId); }
     catch { notice = '無法讀取作業。請確認登入與連線。'; }
   }
-  onMount(() => { void load(); });
+  onMount(() => { void load(); return () => uploadController?.abort(); });
+  function selectFile(event: Event): void {
+    const candidate = (event.currentTarget as HTMLInputElement).files?.[0];
+    if (candidate === undefined) return;
+    if (view !== undefined && candidate.size > view.task.maxBytes) {
+      file = undefined;
+      notice = `檔案超過 ${Math.round(view.task.maxBytes / 1_000_000)} MB 上限，未開始上傳。`;
+      (event.currentTarget as HTMLInputElement).value = '';
+      return;
+    }
+    file = candidate; notice = '';
+  }
   async function upload(): Promise<void> {
     if (!file || !view || deadlinePassed || view.submission.submitted) return;
     uploading = true; notice = '';
-    try { await studentApi.uploadFile(fetch, classId, taskId, file, (value) => progress = value); await load(); notice = '檔案已成功繳交，不能再替換。'; }
-    catch { notice = '上傳失敗；未儲存檔案內容，請在期限內重新選擇後上傳。'; }
-    finally { uploading = false; }
+    uploadController = new AbortController();
+    try { await studentApi.uploadFile(fetch, classId, taskId, file, (value) => progress = value, uploadController.signal); await load(); notice = '檔案已成功繳交，不能再替換。'; }
+    catch (error) { notice = error instanceof Error && error.message === 'UPLOAD_ABORTED' ? '已取消上傳；未儲存檔案內容。' : '上傳失敗；未儲存檔案內容，請在期限內重新選擇後上傳。'; }
+    finally { uploadController = undefined; uploading = false; }
   }
 </script>
 
@@ -43,10 +56,11 @@
       {:else}
         <form onsubmit={(event) => { event.preventDefault(); upload(); }}>
           <label for="file">選擇一個檔案（上限 {Math.round(view.task.maxBytes / 1_000_000)} MB）</label>
-          <input id="file" type="file" required onchange={(event) => file = event.currentTarget.files?.[0]} />
+          <input id="file" type="file" required onchange={selectFile} />
           {#if file}<p>已選擇：{file.name}（不會預覽或執行檔案）</p>{/if}
           <progress aria-label="上傳進度" value={progress} max="100">{progress}%</progress>
           <button type="submit" disabled={uploading}>{uploading ? `正在上傳 ${progress}%` : '上傳並繳交'}</button>
+          {#if uploading}<button type="button" onclick={() => uploadController?.abort()}>取消上傳</button>{/if}
         </form>
       {/if}
     </section>

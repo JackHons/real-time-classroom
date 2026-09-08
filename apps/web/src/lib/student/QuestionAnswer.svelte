@@ -25,7 +25,9 @@
   <p class="eyebrow">{closed ? '題目已結束' : '進行中的題目'}</p>
   <h1 id="question-title">{question.prompt}</h1>
   {#if closed}
-    <p class="status" role="status">此題已結束，答案不再接受。{view.answerAtClose?.noAnswer ? '結束時未收到你的答案。' : '可查看你結束時的答案。'}</p>
+    <p class="status" role="status">此題已結束，答案不再接受。{view.answerAtClose?.noAnswer ? '結束時未收到你的答案。' : '以下是結束時保存的答案。'}</p>
+    {#if view.answerAtClose?.payload?.kind === 'short_text'}<p class="saved-answer">你的答案：{view.answerAtClose.payload.text}</p>
+    {:else if view.answerAtClose?.payload?.selectedOptions}<p class="saved-answer">你的答案：{view.answerAtClose.payload.selectedOptions.join('、')}</p>{/if}
   {:else}
     <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
       <fieldset disabled={pending}>
@@ -59,4 +61,5 @@
   button { min-height: 44px; margin-top: 1rem; padding: .65rem 1rem; background: #075985; color: white; border: 0; border-radius: .4rem; font: inherit; font-weight: 700; }
   button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
   .status { background: #e0f2fe; padding: .8rem; border-left: 4px solid #0369a1; }
+  .saved-answer { padding: .75rem; background: #f1f5f9; border-radius: .4rem; overflow-wrap: anywhere; }
 </style>

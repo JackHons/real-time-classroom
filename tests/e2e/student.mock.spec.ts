@@ -25,4 +25,14 @@ test.describe('student interface (mocked API)', () => {
     await page.keyboard.press('Tab');
     await expect(page.locator(':focus')).toBeVisible();
   });
+
+  test('keeps the active view usable when activity polling fails', async ({ page }) => {
+    await page.route('**/api/auth/session', (route) => route.fulfill({ contentType: 'application/json', body: '{"actor":"student","classId":"class-1"}' }));
+    await page.route('**/api/auth/student/csrf', (route) => route.fulfill({ contentType: 'application/json', body: '{"csrfToken":"mock"}' }));
+    await page.route('**/api/student/activities', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"TEMPORARY"}' }));
+    await page.goto('/student');
+    await expect(page.getByRole('heading', { name: '目前活動' })).toBeVisible();
+    await expect(page.getByText('活動清單暫時無法更新，請檢查網路後重新整理。')).toBeVisible();
+    await expect(page.getByRole('button', { name: '重新整理' })).toBeEnabled();
+  });
 });

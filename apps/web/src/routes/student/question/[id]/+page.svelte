@@ -3,39 +3,70 @@
   import { page } from '$app/state';
   import QuestionAnswer from '$lib/student/QuestionAnswer.svelte';
   import { studentApi } from '$lib/student/api';
-  import { createAnswerQueue, flushAnswers } from '$lib/student/answer-queue';
+  import { createAnswerQueue, flushAnswers, type AnswerQueue } from '$lib/student/answer-queue';
   import type { AnswerPayload, QueuedAnswer, StudentQuestion } from '$lib/student/types';
 
-  const queue = createAnswerQueue();
+  let queue: AnswerQueue | undefined;
   let view: StudentQuestion | undefined;
   let state: 'loading' | 'ready' | 'saving' | 'queued' | 'closed' | 'error' = 'loading';
   let notice = '';
+  let mounted = false;
+  let refreshInFlight = false;
+  let generation = 0;
+  let refreshController: AbortController | undefined;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const questionId = page.params.id ?? '';
 
-  async function refresh(): Promise<StudentQuestion> {
-    const latest = await studentApi.readQuestion(fetch, questionId);
-    view = latest;
-    if (latest.question.state === 'closed') state = 'closed';
-    return latest;
+  async function refresh(): Promise<StudentQuestion | undefined> {
+    if (refreshInFlight) return view;
+    refreshInFlight = true;
+    const currentGeneration = generation;
+    const controller = new AbortController();
+    refreshController = controller;
+    try {
+      const latest = await studentApi.readQuestion(fetch, questionId, controller.signal);
+      if (!mounted || currentGeneration !== generation) return undefined;
+      view = latest;
+      if (latest.question.state === 'closed') state = 'closed';
+      return latest;
+    } finally {
+      if (refreshController === controller) refreshController = undefined;
+      refreshInFlight = false;
+    }
   }
   async function sync(answer: QueuedAnswer): Promise<void> {
     const latest = await refresh();
-    if (latest.question.state === 'closed') return;
+    if (latest === undefined || latest.question.state === 'closed') return;
     await studentApi.submitAnswer(fetch, answer.questionId, latest.answer?.revision ?? answer.revision, answer.payload, answer.idempotencyKey);
   }
   async function reconnect(): Promise<void> {
     try {
+      if (queue === undefined) return;
       await flushAnswers(queue, sync);
       if (state !== 'closed') { state = 'ready'; notice = '未同步的答案已重新送出。'; }
     } catch { notice = '仍未能同步答案；答案安全保留在此裝置。'; }
   }
+  async function poll(): Promise<void> {
+    try { await refresh(); }
+    catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if (mounted) notice = '更新題目狀態失敗，請檢查網路後按「重新整理」。';
+    }
+  }
   onMount(() => {
-    window.addEventListener('online', reconnect);
+    mounted = true;
+    const online = () => { void reconnect(); };
+    window.addEventListener('online', online);
     void (async () => {
-      try { await refresh(); if (state !== 'closed') state = 'ready'; await reconnect(); }
-      catch { state = 'error'; notice = '無法讀取題目，請檢查網路後重試。'; }
+      try {
+        const session = await studentApi.restoreSession();
+        if (session === undefined) { state = 'error'; notice = '登入已失效，請回到學生首頁重新加入課堂。'; return; }
+        queue = createAnswerQueue(session.queueOwner);
+        await refresh(); if (state !== 'closed') state = 'ready'; await reconnect();
+        refreshTimer = setInterval(() => { void poll(); }, 15_000);
+      } catch { state = 'error'; notice = '無法讀取題目，請檢查網路後按「重新整理」。'; }
     })();
-    return () => window.removeEventListener('online', reconnect);
+    return () => { mounted = false; generation += 1; refreshController?.abort(); if (refreshTimer !== undefined) clearInterval(refreshTimer); window.removeEventListener('online', online); };
   });
   async function submit(payload: AnswerPayload): Promise<void> {
     if (!view) return;
@@ -45,7 +76,8 @@
       await studentApi.submitAnswer(fetch, queued.questionId, queued.revision, queued.payload, queued.idempotencyKey);
       await refresh(); state = 'ready'; notice = '答案已送出。';
     } catch {
-      await queue.put(queued); state = 'queued'; notice = '目前離線或送出失敗；答案只保存在這台裝置，恢復連線後會自動送出。';
+      if (queue === undefined) { state = 'error'; notice = '登入已失效，無法安全儲存答案；請重新登入後再試。'; return; }
+      await queue.put(queued); state = 'queued'; notice = '目前離線或送出失敗；答案只保存在這台裝置的目前登入階段，恢復連線後會自動送出。';
     }
   }
 </script>
@@ -56,7 +88,7 @@
   <div id="content" aria-live="polite" class="notice">{notice}</div>
   {#if view}<QuestionAnswer {view} onSubmit={submit} pending={state === 'saving'} />
   {:else if state === 'loading'}<p role="status">正在讀取題目…</p>
-  {:else}<button onclick={() => location.reload()}>重新載入</button>{/if}
+  {:else}<button onclick={() => void poll()}>重新整理</button>{/if}
 </main>
 
 <style>
