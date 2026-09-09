@@ -12,7 +12,7 @@ function request(headers: Record<string, string> = {}): PassThrough & IncomingMe
 }
 function response(): ServerResponse { return { writeHead: vi.fn(), end: vi.fn() } as unknown as ServerResponse; }
 function dependencies(pipeline: UploadRouteDependencies['pipeline'], task = { id: 'task-1', classId: 'class-1', state: 'open' }): UploadRouteDependencies {
-  return { pipeline, repository: { task: () => task as never, studentSubmission: () => undefined }, storage: new UploadStorage('C:/unused-upload-route-test'), studentContext: () => ({ studentId: 'student-1' as never, classId: 'class-1' as never }), teacherContext: () => ({}) };
+  return { pipeline, repository: { task: () => task as never, studentSubmission: () => undefined, exportSubmissions: () => [] }, storage: new UploadStorage('C:/unused-upload-route-test'), studentContext: () => ({ studentId: 'student-1' as never, classId: 'class-1' as never }), teacherContext: () => ({}) };
 }
 
 describe('upload HTTP routes', () => {

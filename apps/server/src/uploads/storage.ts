@@ -59,6 +59,16 @@ export class UploadStorage implements FileStoragePort {
   async removeStaging(key: string | null): Promise<void> { if (key !== null) { await this.assertPrivateDirectories(); await rm(this.stagingPath(key), { force: true }); } }
   async removeFinal(key: string): Promise<void> { await this.assertPrivateDirectories(); await rm(this.finalPath(key), { force: true }); }
   async existsFinal(key: string): Promise<boolean> { return isRegularFile(this.finalPath(key)); }
+  /** Hash before a privileged export.  A replaced, missing, linked, or corrupt
+   * final object is never partially disclosed. */
+  async verifyFinal(key: string, expectedBytes: number, expectedSha256: string): Promise<boolean> {
+    const path = this.finalPath(key);
+    if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || !/^[a-f0-9]{64}$/.test(expectedSha256) || !await isRegularFile(path)) return false;
+    const hash = createHash('sha256'); let count = 0;
+    try { for await (const chunk of createReadStream(path)) { count += chunk.length; if (count > expectedBytes) return false; hash.update(chunk); } }
+    catch { return false; }
+    return count === expectedBytes && hash.digest('hex') === expectedSha256;
+  }
   async existsStaging(key: string): Promise<boolean> { return isRegularFile(this.stagingPath(key)); }
 
   /**

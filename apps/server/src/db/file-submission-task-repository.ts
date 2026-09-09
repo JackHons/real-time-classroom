@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ClassId, FileSubmission, FileSubmissionId, FileSubmissionTask, FileSubmissionTaskId, IsoUtc, StudentId } from '../domain/types.js';
-import type { FileTaskRepository, NewFileSubmission, TeacherClosedTaskView, TeacherOpenTaskView } from '../file-tasks/types.js';
+import type { FileExportSubmission, FileTaskRepository, NewFileSubmission, TeacherClosedTaskView, TeacherOpenTaskView } from '../file-tasks/types.js';
 import type { DeletionTombstone, UploadStorage } from '../uploads/storage.js';
 import type { SqliteDatabase } from './connection.js';
 
@@ -47,6 +47,12 @@ export class SqliteFileSubmissionTaskRepository implements FileTaskRepository {
   closedSubmissions(taskId: FileSubmissionTaskId): TeacherClosedTaskView['submissions'] {
     const rows = this.database.prepare("SELECT s.id AS student_id,s.display_name,s.raw_student_number,f.display_filename,f.declared_mime_type,f.byte_length,f.sha256,f.received_complete_at_utc FROM students s LEFT JOIN file_submissions f ON f.student_id=s.id AND f.task_id=? AND f.deleted_at_utc IS NULL WHERE s.class_id=(SELECT class_id FROM file_submission_tasks WHERE id=?) ORDER BY s.normalized_student_number,s.id").all(taskId, taskId) as readonly Readonly<{ student_id: string; display_name: string; raw_student_number: string; display_filename: string | null; declared_mime_type: string | null; byte_length: number | null; sha256: string | null; received_complete_at_utc: string | null }>[];
     return rows.filter((row) => row.display_filename !== null && row.byte_length !== null && row.sha256 !== null && row.received_complete_at_utc !== null).map((row) => ({ studentId: row.student_id as StudentId, displayName: row.display_name, studentNumber: row.raw_student_number, displayFilename: row.display_filename!, declaredMimeType: row.declared_mime_type, byteLength: row.byte_length!, sha256: row.sha256!, receivedCompleteAtUtc: row.received_complete_at_utc! as IsoUtc }));
+  }
+  exportSubmissions(taskId: FileSubmissionTaskId): readonly FileExportSubmission[] {
+    // Deliberately inner-join live metadata: deleted rows and roster members
+    // without a verified submission can never enter an export.
+    const rows = this.database.prepare("SELECT f.student_id,s.display_name,s.raw_student_number,f.original_filename,f.storage_key,f.byte_length,f.sha256 FROM file_submissions f JOIN students s ON s.id=f.student_id WHERE f.task_id=? AND f.deleted_at_utc IS NULL ORDER BY s.normalized_student_number,s.id").all(taskId) as readonly Readonly<{ student_id: string; display_name: string; raw_student_number: string; original_filename: string; storage_key: string; byte_length: number; sha256: string }>[];
+    return rows.map((row) => ({ studentId: row.student_id as StudentId, displayName: row.display_name, studentNumber: row.raw_student_number, originalFilename: row.original_filename, storageKey: row.storage_key, byteLength: row.byte_length, sha256: row.sha256 }));
   }
   createSubmission(input: NewFileSubmission): FileSubmission {
     const id = randomUUID() as FileSubmissionId;

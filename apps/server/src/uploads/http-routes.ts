@@ -4,10 +4,11 @@ import type { ClassId, FileSubmissionTaskId, StudentId } from '../domain/types.j
 import type { FileTaskRepository } from '../file-tasks/types.js';
 import { UploadStorage } from './storage.js';
 import { MAX_UPLOAD_BYTES, UploadPipelineError } from './types.js';
+import { attachmentDisposition, exportZip, withExportSlot } from './zip-export.js';
 
 export type UploadRouteDependencies = Readonly<{
   pipeline: Readonly<{ ingest: (input: Readonly<{ taskId: FileSubmissionTaskId; studentId: StudentId; bytes: AsyncIterable<Uint8Array>; originalFilename?: string; declaredMimeType?: string | null; expectedBytes?: number; expectedSha256?: string; signal?: Readonly<{ aborted: boolean }> }>) => Promise<Readonly<{ byteLength: number; sha256: string; receivedCompleteAtUtc: string }>> }>;
-  repository: Pick<FileTaskRepository, 'task' | 'studentSubmission'>;
+  repository: Pick<FileTaskRepository, 'task' | 'studentSubmission' | 'exportSubmissions'>;
   storage: UploadStorage;
   studentContext: (request: IncomingMessage) => Readonly<{ studentId: StudentId; classId: ClassId }>;
   teacherContext: (request: IncomingMessage) => unknown;
@@ -57,15 +58,28 @@ export function createUploadRoutes(dependencies: UploadRouteDependencies): (requ
       const task = dependencies.repository.task(taskId);
       if (task === undefined || task.classId !== classId || task.state !== 'closed') throw new Error('FILE_TASK_NOT_FOUND');
       const submission = dependencies.repository.studentSubmission(taskId, decodeURIComponent(download[3]!) as StudentId);
-      if (submission === undefined || !await dependencies.storage.existsFinal(submission.storageKey)) throw new Error('FILE_SUBMISSION_NOT_FOUND');
-      response.writeHead(200, {
-        'cache-control': 'no-store',
-        'content-type': 'application/octet-stream',
-        'content-disposition': `attachment; filename="${headerFilename(submission.displayFilename)}"`,
-        'x-content-type-options': 'nosniff',
-        'content-length': String(submission.byteLength)
+      await withExportSlot(async () => {
+        await dependencies.storage.ensureReady();
+        if (submission === undefined || !await dependencies.storage.verifyFinal(submission.storageKey, submission.byteLength, submission.sha256)) throw new Error('FILE_SUBMISSION_NOT_FOUND');
+        response.writeHead(200, {
+          'cache-control': 'no-store',
+          'content-type': 'application/octet-stream',
+          'content-disposition': attachmentDisposition(submission.displayFilename),
+          'x-content-type-options': 'nosniff',
+          'content-length': String(submission.byteLength)
+        });
+        await pipe(createReadStream(dependencies.storage.finalPath(submission.storageKey)), response);
       });
-      await pipe(createReadStream(dependencies.storage.finalPath(submission.storageKey)), response);
+      return true;
+    }
+    const archive = /^\/api\/classes\/([^/]+)\/file-tasks\/([^/]+)\/submissions\.zip$/.exec(path);
+    if (request.method === 'GET' && archive !== null) {
+      dependencies.teacherContext(request);
+      const classId = decodeURIComponent(archive[1]!) as ClassId;
+      const taskId = decodeURIComponent(archive[2]!) as FileSubmissionTaskId;
+      const task = dependencies.repository.task(taskId);
+      if (task === undefined || task.classId !== classId || task.state !== 'closed') throw new Error('FILE_TASK_NOT_FOUND');
+      await exportZip(response, dependencies.storage, dependencies.repository.exportSubmissions(taskId));
       return true;
     }
     return false;
@@ -141,7 +155,6 @@ function mediaType(value: string | string[] | undefined): string | null {
   const type = value.split(';', 1)[0]!.trim().toLowerCase();
   return type.length > 0 && type.length <= 255 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : null;
 }
-function headerFilename(value: string): string { return value.replace(/["\\\r\n]/g, '_').slice(0, 255) || 'download'; }
 function json(response: ServerResponse, status: number, body: unknown): void { response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); }
 function pipe(input: ReturnType<typeof createReadStream>, response: ServerResponse): Promise<void> {
   return new Promise((resolve, reject) => { input.once('error', reject); response.once('error', reject); response.once('finish', resolve); input.pipe(response); });
