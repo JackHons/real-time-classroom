@@ -13,6 +13,7 @@ const database = openSqlite(config.databasePath);
 let apiHandler;
 let realtime: RealtimeGatewayOptions | undefined;
 let realtimeNotifications: RealtimeNotificationBus | undefined;
+let flushTaskCloseNotifications: (() => void) | undefined;
 let health: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string }> = { status: 200, state: 'ready' };
 try {
   const application = createApplication({
@@ -28,6 +29,7 @@ try {
   apiHandler = application.apiHandler;
   realtime = application.realtime;
   realtimeNotifications = application.realtimeNotifications;
+  flushTaskCloseNotifications = application.flushTaskCloseNotifications;
 } catch (error) {
   if (error instanceof FirstRunSetupRequiredError) {
     // The first-run setup flow is intentionally not implemented in this task.
@@ -50,7 +52,7 @@ const server = await startServer({
   health,
   ...(apiHandler === undefined
     ? {}
-    : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => realtimeNotifications?.attach(gateway) }) })
+    : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => { realtimeNotifications?.attach(gateway); flushTaskCloseNotifications?.(); } }) })
 });
 console.info(`LAN Classroom host listening at http://${server.host}:${server.port}`);
 

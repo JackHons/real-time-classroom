@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { FileHandle } from 'node:fs/promises';
 import type { ClassId, UploadSessionId } from '../domain/types.js';
 import { UploadStorage } from './storage.js';
-import { MAX_UPLOAD_BYTES, type ReconciliationRecord, type StoredUpload, type UploadInput, UploadPipelineError, type UploadPipelineRepository } from './types.js';
+import { MAX_UPLOAD_BYTES, type ReconciliationRecord, type StoredUpload, type UploadCommitOutcome, type UploadInput, UploadPipelineError, type UploadPipelineRepository } from './types.js';
 
 export type UploadPipelineOptions = Readonly<{
   repository: UploadPipelineRepository;
@@ -75,7 +75,7 @@ export class UploadPipeline {
           await this.options.storage.removeFinal(storageKey);
           this.completeRejectedCommit(uploadSessionId, storageKey);
           rejectedAtCommit = true;
-          if (outcome.closedTask !== undefined) { try { this.options.onTaskClosed?.(outcome.closedTask); } catch { /* durable close wins */ } }
+          this.deliverTaskClose(outcome);
           throw new UploadPipelineError('FILE_TASK_CLOSED');
         }
       }
@@ -153,7 +153,7 @@ export class UploadPipeline {
       if (outcome !== undefined && outcome.accepted === false) {
         await this.options.storage.removeFinal(record.finalStorageKey);
         this.completeRejectedCommit(record.uploadSessionId, record.finalStorageKey);
-        if (outcome.closedTask !== undefined) { try { this.options.onTaskClosed?.(outcome.closedTask); } catch { /* durable close wins */ } }
+        this.deliverTaskClose(outcome, true);
         return 'cleaned';
       }
       return 'recovered';
@@ -163,6 +163,36 @@ export class UploadPipeline {
   private completeRejectedCommit(uploadSessionId: UploadSessionId, finalStorageKey: string): void {
     if (this.options.repository.completeRejectedFileCommit !== undefined) this.options.repository.completeRejectedFileCommit({ uploadSessionId, finalStorageKey });
     else this.markFailed(uploadSessionId, 'FILE_TASK_CLOSED');
+  }
+
+  /**
+   * Sends only minimal invalidations. Delivery is at-least-once: if the process
+   * crashes after emit and before the DB acknowledgement, a later startup may
+   * repeat the hint; client REST data and realtime versions remain authoritative.
+   */
+  flushTaskCloseNotifications(): void {
+    if (this.options.onTaskClosed === undefined) return;
+    const list = this.options.repository.listPendingTaskCloseNotifications;
+    const markDelivered = this.options.repository.markTaskCloseNotificationDelivered;
+    if (list === undefined || markDelivered === undefined) return;
+    for (const notification of list.call(this.options.repository)) {
+      try {
+        this.options.onTaskClosed?.(notification);
+        markDelivered.call(this.options.repository, notification.taskId);
+      } catch { /* preserve the pending outbox row for a later retry */ }
+    }
+  }
+
+  private deliverTaskClose(outcome: UploadCommitOutcome, deferPersistentDelivery = false): void {
+    // Legacy/fake repository adapters cannot persist an outbox. Keep their
+    // documented best-effort behavior; production SQLite always takes the
+    // durable path below.
+    if (this.options.repository.listPendingTaskCloseNotifications === undefined || this.options.repository.markTaskCloseNotificationDelivered === undefined) {
+      try { if (outcome.closedTask !== undefined) this.options.onTaskClosed?.(outcome.closedTask); } catch { /* durable close wins */ }
+      return;
+    }
+    if (deferPersistentDelivery) return;
+    this.flushTaskCloseNotifications();
   }
 
   private markFailed(id: UploadSessionId, code: string): void { try { this.options.repository.markFailed(id, code); } catch { /* preserve the original failure */ } }

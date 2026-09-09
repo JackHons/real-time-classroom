@@ -53,6 +53,7 @@ export type Application = Readonly<{
   reconcileUploads: () => Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number; cleanupFailed: number }>>;
   realtime: RealtimeGatewayOptions;
   realtimeNotifications: RealtimeNotificationBus;
+  flushTaskCloseNotifications: () => void;
 }>;
 
 /** Thrown instead of exposing partially configured application routes. */
@@ -184,6 +185,7 @@ export function createApplication(options: ApplicationOptions): Application {
       ...(options.realtimeHeartbeatMs === undefined ? {} : { heartbeatMs: options.realtimeHeartbeatMs })
     },
     realtimeNotifications,
+    flushTaskCloseNotifications: () => uploadPipeline.flushTaskCloseNotifications(),
     reconcileUploads: async () => {
       await storage.ensureReady();
       const result = await uploadPipeline.reconcile();

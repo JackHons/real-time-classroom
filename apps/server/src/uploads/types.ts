@@ -16,6 +16,7 @@ export type UploadStart = Readonly<{
 export type UploadTaskPolicy = Readonly<{ deadlineAtUtc: string; maxBytes: number }>;
 /** Result of the atomic metadata admission after the file rename. */
 export type UploadCommitOutcome = Readonly<{ accepted: boolean; closedTask?: Readonly<{ taskId: FileSubmissionTaskId; classId: ClassId }> }>;
+export type PendingTaskCloseNotification = Readonly<{ taskId: FileSubmissionTaskId; classId: ClassId }>;
 
 export type ReconciliationRecord = Readonly<{
   uploadSessionId: UploadSessionId;
@@ -38,6 +39,9 @@ export interface UploadPipelineRepository {
   commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void | UploadCommitOutcome;
   /** Clears the durable rename intent only after its rejected final object is gone. */
   completeRejectedFileCommit?(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
+  /** Persistent at-least-once outbox for server-time automatic closes. */
+  listPendingTaskCloseNotifications?(): readonly PendingTaskCloseNotification[];
+  markTaskCloseNotificationDelivered?(taskId: FileSubmissionTaskId): void;
   markRecoveryPending(uploadSessionId: UploadSessionId, errorCode: string): void;
   markFailed(uploadSessionId: UploadSessionId, errorCode: string): void;
   /** Retains the durable staging key when physical cleanup has not happened. */

@@ -107,12 +107,13 @@ describe('upload byte pipeline', () => {
     const closed: unknown[] = [];
     const restarted = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => closed.push(task) });
     await expect(restarted.reconcile()).resolves.toMatchObject({ recovered: 0, cleaned: 1, cleanupFailed: 0 });
+    restarted.flushTaskCloseNotifications();
     expect(await storage.existsFinal(finalKey)).toBe(false);
     expect(database?.prepare('SELECT state,staging_key,final_storage_key,error_code FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'failed', staging_key: null, final_storage_key: null, error_code: 'FILE_TASK_CLOSED' });
     expect(closed).toEqual([{ taskId: 'task-1', classId: 'class-1' }]);
   });
 
-  it('keeps the durable rename intent when expired-recovery final cleanup fails', async () => {
+  it('delivers an expired-close notification once after failed cleanup and a restart retry', async () => {
     const { repository, storage } = await setup();
     const session = randomUUID() as never; const stagingKey = storage.stagingKey(session); const finalKey = randomUUID();
     repository.begin({ uploadSessionId: session, taskId: 'task-1' as never, studentId: 'student-1' as never, stagingKey, originalFilename: 'late.txt', displayFilename: 'late.txt', declaredMimeType: null });
@@ -122,11 +123,68 @@ describe('upload byte pipeline', () => {
     await storage.renameStagingToFinal(stagingKey, finalKey);
     instant = new Date('2026-09-07T10:00:00.001Z');
     const remove = vi.spyOn(storage, 'removeFinal').mockRejectedValue(new Error('simulated permission failure'));
-    const restarted = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant });
+    const closed: unknown[] = [];
+    const restarted = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => closed.push(task) });
     await expect(restarted.reconcile()).resolves.toMatchObject({ recovered: 0, cleaned: 0, cleanupFailed: 1 });
     expect(await storage.existsFinal(finalKey)).toBe(true);
     expect(database?.prepare('SELECT state,final_storage_key FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'recovery_pending', final_storage_key: finalKey });
     remove.mockRestore();
+    const afterRestart = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => closed.push(task) });
+    await expect(afterRestart.reconcile()).resolves.toMatchObject({ recovered: 0, cleaned: 1, cleanupFailed: 0 });
+    expect(closed).toEqual([]);
+    afterRestart.flushTaskCloseNotifications();
+    afterRestart.flushTaskCloseNotifications();
+    expect(closed).toEqual([{ taskId: 'task-1', classId: 'class-1' }]);
+  });
+
+  it('uses at-least-once delivery when a process crashes after emit but before outbox acknowledgement', async () => {
+    const { repository, storage } = await setup();
+    const session = randomUUID() as never; const stagingKey = storage.stagingKey(session); const finalKey = randomUUID();
+    repository.begin({ uploadSessionId: session, taskId: 'task-1' as never, studentId: 'student-1' as never, stagingKey, originalFilename: 'late.txt', displayFilename: 'late.txt', declaredMimeType: null });
+    const handle = await storage.openExclusiveStaging(stagingKey); await handle.write(Buffer.from('late')); await handle.sync(); await handle.close();
+    repository.recordVerified({ uploadSessionId: session, bytesReceived: 4, sha256: createHash('sha256').update('late').digest('hex'), receivedCompleteAtUtc: instant.toISOString() });
+    repository.prepareFileCommit({ uploadSessionId: session, finalStorageKey: finalKey });
+    await storage.renameStagingToFinal(stagingKey, finalKey);
+    instant = new Date('2026-09-07T10:00:00.001Z');
+    const emitted: unknown[] = [];
+    const pipeline = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => emitted.push(task) });
+    await pipeline.reconcile();
+    const acknowledge = vi.spyOn(repository, 'markTaskCloseNotificationDelivered').mockImplementationOnce(() => { throw new Error('simulated crash after emit'); });
+    pipeline.flushTaskCloseNotifications();
+    pipeline.flushTaskCloseNotifications();
+    expect(emitted).toEqual([{ taskId: 'task-1', classId: 'class-1' }, { taskId: 'task-1', classId: 'class-1' }]);
+    expect(repository.listPendingTaskCloseNotifications()).toEqual([]);
+    acknowledge.mockRestore();
+  });
+
+  it('handles concurrent expired-intent reconciliation without duplicate durable delivery', async () => {
+    const { repository, storage } = await setup();
+    const session = randomUUID() as never; const stagingKey = storage.stagingKey(session); const finalKey = randomUUID();
+    repository.begin({ uploadSessionId: session, taskId: 'task-1' as never, studentId: 'student-1' as never, stagingKey, originalFilename: 'late.txt', displayFilename: 'late.txt', declaredMimeType: null });
+    const handle = await storage.openExclusiveStaging(stagingKey); await handle.write(Buffer.from('late')); await handle.sync(); await handle.close();
+    repository.recordVerified({ uploadSessionId: session, bytesReceived: 4, sha256: createHash('sha256').update('late').digest('hex'), receivedCompleteAtUtc: instant.toISOString() });
+    repository.prepareFileCommit({ uploadSessionId: session, finalStorageKey: finalKey });
+    await storage.renameStagingToFinal(stagingKey, finalKey);
+    instant = new Date('2026-09-07T10:00:00.001Z');
+    const emitted: unknown[] = [];
+    const first = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => emitted.push(task) });
+    const second = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => emitted.push(task) });
+    await expect(Promise.all([first.reconcile(), second.reconcile()])).resolves.toEqual([{ recovered: 0, cleaned: 1, metadataMissing: 0, cleanupFailed: 0 }, { recovered: 0, cleaned: 1, metadataMissing: 0, cleanupFailed: 0 }]);
+    first.flushTaskCloseNotifications(); second.flushTaskCloseNotifications();
+    expect(emitted).toEqual([{ taskId: 'task-1', classId: 'class-1' }]);
+  });
+
+  it('keeps best-effort close notification compatibility for adapters without the durable outbox contract', async () => {
+    const { repository, storage } = await setup();
+    instant = new Date('2026-09-07T10:00:00.001Z');
+    const legacy: UploadPipelineRepository = {
+      begin: (input) => repository.begin(input), recordVerified: (input) => repository.recordVerified(input), prepareFileCommit: (input) => repository.prepareFileCommit(input), commitAfterFileRename: (input) => repository.commitAfterFileRename(input),
+      completeRejectedFileCommit: (input) => repository.completeRejectedFileCommit(input), markRecoveryPending: (id, code) => repository.markRecoveryPending(id, code), markFailed: (id, code) => repository.markFailed(id, code), markStagingCleanupFailed: (id, code) => repository.markStagingCleanupFailed(id, code), completeStagingCleanup: (id, code) => repository.completeStagingCleanup(id, code), markIntegrityFailure: (id, code) => repository.markIntegrityFailure(id, code), listForReconciliation: () => repository.listForReconciliation()
+    };
+    const emitted: unknown[] = [];
+    const pipeline = new UploadPipeline({ repository: legacy, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => emitted.push(task) });
+    await expect(pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('late') })).rejects.toMatchObject({ code: 'FILE_TASK_CLOSED' });
+    expect(emitted).toEqual([{ taskId: 'task-1', classId: 'class-1' }]);
   });
 
   it('enforces both global and per-student-task active reservations', () => {
