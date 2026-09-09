@@ -55,7 +55,6 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
       // byte / deadline race from committing metadata after a server-time close.
       if (task.state !== 'open' || Date.parse(task.deadline_at_utc) < Date.parse(at)) {
         const winner = this.database.prepare("UPDATE file_submission_tasks SET state='closed',closed_at_utc=?,updated_at_utc=? WHERE id=? AND state='open' AND deadline_at_utc<?").run(at, at, task.id, at).changes === 1;
-        this.database.prepare("UPDATE upload_sessions SET state='failed',staging_key=NULL,final_storage_key=NULL,error_code='FILE_TASK_CLOSED',updated_at_utc=? WHERE id=? AND state IN ('file_committed','recovery_pending')").run(at, input.uploadSessionId);
         return { accepted: false, ...(winner ? { closedTask: { taskId: task.id as never, classId: task.class_id as ClassId } } : {}) };
       }
       const exists = this.database.prepare('SELECT 1 FROM file_submissions WHERE task_id=? AND student_id=? AND deleted_at_utc IS NULL').get(row.task_id, row.student_id);
@@ -79,6 +78,13 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
   markFailed(uploadSessionId: UploadSessionId, errorCode: string): void {
     const result = this.database.prepare("UPDATE upload_sessions SET state='failed',error_code=?,updated_at_utc=? WHERE id=? AND state IN ('staging','validating','file_committed','recovery_pending')").run(errorCode, this.now(), uploadSessionId);
     if (result.changes !== 1) throw new Error('FILE_UPLOAD_FAILURE_PRECONDITION_FAILED');
+  }
+
+  completeRejectedFileCommit(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void {
+    assertFinalStorageKey(input.finalStorageKey);
+    const result = this.database.prepare("UPDATE upload_sessions SET state='failed',staging_key=NULL,final_storage_key=NULL,error_code='FILE_TASK_CLOSED',updated_at_utc=? WHERE id=? AND final_storage_key=? AND state IN ('file_committed','recovery_pending')")
+      .run(this.now(), input.uploadSessionId, input.finalStorageKey);
+    if (result.changes !== 1) throw new Error('FILE_REJECTED_COMMIT_PRECONDITION_FAILED');
   }
 
   markStagingCleanupFailed(uploadSessionId: UploadSessionId, errorCode: string): void {

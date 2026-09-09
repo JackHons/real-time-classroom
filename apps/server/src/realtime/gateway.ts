@@ -64,6 +64,7 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
   // never authenticates still owns a transport and is therefore counted.
   let connections = 0;
   const reservations = new WeakMap<IncomingMessage, () => void>();
+  const releaseTransport = (request: IncomingMessage | undefined): void => { if (request !== undefined) reservations.get(request)?.(); };
   let version = 0;
   const io = new Server(server, {
     // There are no client-to-server commands apart from a small subscription
@@ -73,8 +74,12 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
     pingTimeout: Math.min(10_000, heartbeatMs),
     allowRequest: (request, callback) => {
       if (!hasExactPrivateLanOrigin(request, options.allowedOrigin)) { callback('ORIGIN_FORBIDDEN', false); return; }
+      const query = request.url === undefined ? undefined : new URL(request.url, 'http://engine.local').searchParams;
+      // Engine.IO rejects these before creating a transport. Do not reserve a
+      // connection for a malformed handshake that can never emit close.
+      if (query?.get('EIO') !== '4' || !isEngineTransport(query.get('transport'))) { callback(null, true); return; }
       // Engine.IO only creates a transport for requests without a sid.
-      if (request.url !== undefined && new URL(request.url, 'http://engine.local').searchParams.has('sid')) { callback(null, true); return; }
+      if (query.has('sid')) { callback(null, true); return; }
       if (connections >= maximumConnections) { callback('REALTIME_CONNECTION_LIMIT', false); return; }
       connections += 1;
       let released = false;
@@ -84,15 +89,24 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
   });
 
   io.engine.on('connection', (transport) => {
-    const release = reservations.get(transport.request);
     // An Engine.IO close includes unauthenticated handshakes and failed Socket.IO
     // upgrades. It is the one ownership boundary for the reservation.
-    transport.once('close', () => release?.());
+    transport.once('close', () => releaseTransport(transport.request));
   });
 
   io.use((socket, next) => {
     const principal = authenticate(socket.handshake.headers.cookie, options);
-    if (principal === undefined) { next(new Error('REALTIME_AUTH_REQUIRED')); return; }
+    if (principal === undefined) {
+      // Namespace authentication happens after Engine.IO has allocated the
+      // transport. Release that reservation and tear it down now, rather than
+      // allowing unauthenticated polling clients to consume the heartbeat.
+      releaseTransport(socket.conn.request);
+      next(new Error('REALTIME_AUTH_REQUIRED'));
+      // Let Socket.IO flush its standard connect_error packet before the
+      // Engine.IO close; the reservation was already released above.
+      globalThis.setTimeout(() => socket.conn.close(), 0);
+      return;
+    }
     socket.data.principal = principal;
     next();
   });
@@ -222,3 +236,4 @@ function isPrivateLanAddress(address: string | undefined): boolean {
   if (/^10\./.test(normalized) || /^192\.168\./.test(normalized) || /^(?:172\.(?:1[6-9]|2[0-9]|3[01])\.)/.test(normalized)) return true;
   return /^(?:fc|fd)[0-9a-f:]*$/i.test(normalized);
 }
+function isEngineTransport(value: string | null): value is 'polling' | 'websocket' { return value === 'polling' || value === 'websocket'; }

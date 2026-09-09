@@ -36,6 +36,8 @@ export interface UploadPipelineRepository {
   recordVerified(input: Readonly<{ uploadSessionId: UploadSessionId; bytesReceived: number; sha256: string; receivedCompleteAtUtc: string }>): void;
   prepareFileCommit(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
   commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void | UploadCommitOutcome;
+  /** Clears the durable rename intent only after its rejected final object is gone. */
+  completeRejectedFileCommit?(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
   markRecoveryPending(uploadSessionId: UploadSessionId, errorCode: string): void;
   markFailed(uploadSessionId: UploadSessionId, errorCode: string): void;
   /** Retains the durable staging key when physical cleanup has not happened. */

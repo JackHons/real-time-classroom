@@ -69,6 +69,25 @@ describe('realtime gateway', () => {
     expect(responses.filter((response) => response.status !== 200).every((response) => response.status === 403)).toBe(true);
   });
 
+  it('immediately releases a failed namespace-auth handshake reservation', async () => {
+    running = await gatewayServer(undefined, 1);
+    const base = `http://127.0.0.1:${running.port}`;
+    const sid = await handshake(base, 'teacher_session=forged');
+    await packet(base, sid, '40', 'teacher_session=forged');
+    // This must not wait for the Engine.IO heartbeat timeout.
+    await expect(handshake(base, teacherCookie)).resolves.toEqual(expect.any(String));
+  });
+
+  it('does not reserve a slot for malformed Engine.IO handshakes', async () => {
+    running = await gatewayServer(undefined, 1);
+    const base = `http://127.0.0.1:${running.port}`;
+    for (const query of ['EIO=3&transport=polling', 'EIO=4', 'transport=polling', 'EIO=3&transport=websocket', 'EIO=4&transport=bogus']) {
+      const malformed = await fetch(`${base}/socket.io/?${query}`, { headers: { origin } });
+      expect(malformed.status).toBe(400);
+    }
+    await expect(handshake(base, teacherCookie)).resolves.toEqual(expect.any(String));
+  });
+
   it('switches a teacher to one authorized room and ignores invalid runtime enum publishes', async () => {
     let gateway: RealtimeGateway | undefined;
     running = await gatewayServer((attached) => { gateway = attached; }, undefined, true);

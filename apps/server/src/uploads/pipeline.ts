@@ -72,8 +72,9 @@ export class UploadPipeline {
       try {
         const outcome = this.options.repository.commitAfterFileRename({ uploadSessionId, finalStorageKey: storageKey });
         if (outcome !== undefined && outcome.accepted === false) {
-          rejectedAtCommit = true;
           await this.options.storage.removeFinal(storageKey);
+          this.completeRejectedCommit(uploadSessionId, storageKey);
+          rejectedAtCommit = true;
           if (outcome.closedTask !== undefined) { try { this.options.onTaskClosed?.(outcome.closedTask); } catch { /* durable close wins */ } }
           throw new UploadPipelineError('FILE_TASK_CLOSED');
         }
@@ -119,8 +120,10 @@ export class UploadPipeline {
         }
         continue;
       }
-      if (await this.recoverCommittedIntent(record)) recovered += 1;
-      else cleaned += 1;
+      const outcome = await this.recoverCommittedIntent(record);
+      if (outcome === 'recovered') recovered += 1;
+      else if (outcome === 'cleaned') cleaned += 1;
+      else cleanupFailed += 1;
     }
     return { recovered, cleaned, metadataMissing, cleanupFailed };
   }
@@ -136,19 +139,30 @@ export class UploadPipeline {
     }
   }
 
-  private async recoverCommittedIntent(record: ReconciliationRecord): Promise<boolean> {
-    if (record.finalStorageKey === null || record.sha256 === null || record.stagingKey === null) { this.markFailed(record.uploadSessionId, 'RECOVERY_METADATA_INVALID'); return false; }
+  private async recoverCommittedIntent(record: ReconciliationRecord): Promise<'recovered' | 'cleaned' | 'failed'> {
+    if (record.finalStorageKey === null || record.sha256 === null || record.stagingKey === null) { this.markFailed(record.uploadSessionId, 'RECOVERY_METADATA_INVALID'); return 'cleaned'; }
     try {
       if (!await this.options.storage.existsFinal(record.finalStorageKey)) {
         if (!await this.options.storage.existsStaging(record.stagingKey) || !await this.options.storage.verifyStaging(record.stagingKey, record.bytesReceived, record.sha256)) {
           await this.options.storage.removeStaging(record.stagingKey).catch(() => undefined);
-          this.markFailed(record.uploadSessionId, 'RECOVERY_STAGED_FILE_INVALID'); return false;
+          this.markFailed(record.uploadSessionId, 'RECOVERY_STAGED_FILE_INVALID'); return 'cleaned';
         }
         await this.options.storage.renameStagingToFinal(record.stagingKey, record.finalStorageKey);
       }
-      this.options.repository.commitAfterFileRename({ uploadSessionId: record.uploadSessionId, finalStorageKey: record.finalStorageKey });
-      return true;
-    } catch (error) { this.markRecovery(record.uploadSessionId, error); return false; }
+      const outcome = this.options.repository.commitAfterFileRename({ uploadSessionId: record.uploadSessionId, finalStorageKey: record.finalStorageKey });
+      if (outcome !== undefined && outcome.accepted === false) {
+        await this.options.storage.removeFinal(record.finalStorageKey);
+        this.completeRejectedCommit(record.uploadSessionId, record.finalStorageKey);
+        if (outcome.closedTask !== undefined) { try { this.options.onTaskClosed?.(outcome.closedTask); } catch { /* durable close wins */ } }
+        return 'cleaned';
+      }
+      return 'recovered';
+    } catch (error) { this.markRecovery(record.uploadSessionId, error); return 'failed'; }
+  }
+
+  private completeRejectedCommit(uploadSessionId: UploadSessionId, finalStorageKey: string): void {
+    if (this.options.repository.completeRejectedFileCommit !== undefined) this.options.repository.completeRejectedFileCommit({ uploadSessionId, finalStorageKey });
+    else this.markFailed(uploadSessionId, 'FILE_TASK_CLOSED');
   }
 
   private markFailed(id: UploadSessionId, code: string): void { try { this.options.repository.markFailed(id, code); } catch { /* preserve the original failure */ } }

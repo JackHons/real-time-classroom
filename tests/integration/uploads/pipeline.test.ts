@@ -95,6 +95,40 @@ describe('upload byte pipeline', () => {
     expect(await storage.existsFinal(finalKey)).toBe(true);
   });
 
+  it('does not recover a renamed upload after its deadline: it closes once and removes the final safely', async () => {
+    const { repository, storage } = await setup();
+    const session = randomUUID() as never; const stagingKey = storage.stagingKey(session); const finalKey = randomUUID();
+    repository.begin({ uploadSessionId: session, taskId: 'task-1' as never, studentId: 'student-1' as never, stagingKey, originalFilename: 'late.txt', displayFilename: 'late.txt', declaredMimeType: null });
+    const handle = await storage.openExclusiveStaging(stagingKey); await handle.write(Buffer.from('late')); await handle.sync(); await handle.close();
+    repository.recordVerified({ uploadSessionId: session, bytesReceived: 4, sha256: createHash('sha256').update('late').digest('hex'), receivedCompleteAtUtc: instant.toISOString() });
+    repository.prepareFileCommit({ uploadSessionId: session, finalStorageKey: finalKey });
+    await storage.renameStagingToFinal(stagingKey, finalKey);
+    instant = new Date('2026-09-07T10:00:00.001Z');
+    const closed: unknown[] = [];
+    const restarted = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => closed.push(task) });
+    await expect(restarted.reconcile()).resolves.toMatchObject({ recovered: 0, cleaned: 1, cleanupFailed: 0 });
+    expect(await storage.existsFinal(finalKey)).toBe(false);
+    expect(database?.prepare('SELECT state,staging_key,final_storage_key,error_code FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'failed', staging_key: null, final_storage_key: null, error_code: 'FILE_TASK_CLOSED' });
+    expect(closed).toEqual([{ taskId: 'task-1', classId: 'class-1' }]);
+  });
+
+  it('keeps the durable rename intent when expired-recovery final cleanup fails', async () => {
+    const { repository, storage } = await setup();
+    const session = randomUUID() as never; const stagingKey = storage.stagingKey(session); const finalKey = randomUUID();
+    repository.begin({ uploadSessionId: session, taskId: 'task-1' as never, studentId: 'student-1' as never, stagingKey, originalFilename: 'late.txt', displayFilename: 'late.txt', declaredMimeType: null });
+    const handle = await storage.openExclusiveStaging(stagingKey); await handle.write(Buffer.from('late')); await handle.sync(); await handle.close();
+    repository.recordVerified({ uploadSessionId: session, bytesReceived: 4, sha256: createHash('sha256').update('late').digest('hex'), receivedCompleteAtUtc: instant.toISOString() });
+    repository.prepareFileCommit({ uploadSessionId: session, finalStorageKey: finalKey });
+    await storage.renameStagingToFinal(stagingKey, finalKey);
+    instant = new Date('2026-09-07T10:00:00.001Z');
+    const remove = vi.spyOn(storage, 'removeFinal').mockRejectedValue(new Error('simulated permission failure'));
+    const restarted = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant });
+    await expect(restarted.reconcile()).resolves.toMatchObject({ recovered: 0, cleaned: 0, cleanupFailed: 1 });
+    expect(await storage.existsFinal(finalKey)).toBe(true);
+    expect(database?.prepare('SELECT state,final_storage_key FROM upload_sessions WHERE id=?').get(session)).toEqual({ state: 'recovery_pending', final_storage_key: finalKey });
+    remove.mockRestore();
+  });
+
   it('enforces both global and per-student-task active reservations', () => {
     const perStudent = new UploadReservationGate(2); const release = perStudent.reserve('task', 'student');
     expect(() => perStudent.reserve('task', 'student')).toThrow('UPLOAD_ALREADY_ACTIVE_FOR_STUDENT_TASK'); release();
