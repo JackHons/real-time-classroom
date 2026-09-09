@@ -57,6 +57,7 @@ export class UploadStorage implements FileStoragePort {
   async openExclusiveStaging(key: string) { await this.ensureReady(); return open(this.stagingPath(key), 'wx', 0o600); }
   async renameStagingToFinal(stagingKey: string, finalKey: string): Promise<void> { await this.assertPrivateDirectories(); await rename(this.stagingPath(stagingKey), this.finalPath(finalKey)); }
   async removeStaging(key: string | null): Promise<void> { if (key !== null) { await this.assertPrivateDirectories(); await rm(this.stagingPath(key), { force: true }); } }
+  async removeFinal(key: string): Promise<void> { await this.assertPrivateDirectories(); await rm(this.finalPath(key), { force: true }); }
   async existsFinal(key: string): Promise<boolean> { return isRegularFile(this.finalPath(key)); }
   async existsStaging(key: string): Promise<boolean> { return isRegularFile(this.stagingPath(key)); }
 

@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type { FileHandle } from 'node:fs/promises';
-import type { UploadSessionId } from '../domain/types.js';
+import type { ClassId, UploadSessionId } from '../domain/types.js';
 import { UploadStorage } from './storage.js';
 import { MAX_UPLOAD_BYTES, type ReconciliationRecord, type StoredUpload, type UploadInput, UploadPipelineError, type UploadPipelineRepository } from './types.js';
 
@@ -11,6 +11,8 @@ export type UploadPipelineOptions = Readonly<{
   maxBytes?: number;
   maxActiveStreams?: number;
   now?: () => Date;
+  /** The repository reports the single atomic deadline-close winner. */
+  onTaskClosed?: (task: Readonly<{ taskId: string; classId: ClassId }>) => void;
 }>;
 
 /** In-process reservation. The database adapter covers the restart/cross-worker case. */
@@ -46,7 +48,7 @@ export class UploadPipeline {
     const stagingKey = this.options.storage.stagingKey(uploadSessionId);
     const originalFilename = sanitizeFilename(input.originalFilename ?? 'upload.bin');
     const displayFilename = originalFilename;
-    let begun = false; let handle: FileHandle | undefined; let committedIntent = false; let renamed = false;
+    let begun = false; let handle: FileHandle | undefined; let committedIntent = false; let renamed = false; let rejectedAtCommit = false;
     try {
       const policy = this.options.repository.begin({ uploadSessionId, taskId: input.taskId, studentId: input.studentId, stagingKey, originalFilename, displayFilename, declaredMimeType: input.declaredMimeType ?? null });
       begun = true;
@@ -59,15 +61,25 @@ export class UploadPipeline {
       const receivedCompleteAtUtc = this.now().toISOString();
       const deadlineAtMs = Date.parse(policy.deadlineAtUtc);
       if (!Number.isFinite(deadlineAtMs)) throw new UploadPipelineError('UPLOAD_DEADLINE_INVALID');
-      if (Date.parse(receivedCompleteAtUtc) > deadlineAtMs) throw new UploadPipelineError('UPLOAD_DEADLINE_EXPIRED');
+      // The SQLite metadata commit below is the authoritative deadline check:
+      // it atomically closes the task and rejects all concurrent late writers.
       this.options.repository.recordVerified({ uploadSessionId, bytesReceived: byteLength, sha256, receivedCompleteAtUtc });
       const storageKey = randomUUID();
       this.options.repository.prepareFileCommit({ uploadSessionId, finalStorageKey: storageKey });
       committedIntent = true;
       await this.options.storage.renameStagingToFinal(stagingKey, storageKey);
       renamed = true;
-      try { this.options.repository.commitAfterFileRename({ uploadSessionId, finalStorageKey: storageKey }); }
+      try {
+        const outcome = this.options.repository.commitAfterFileRename({ uploadSessionId, finalStorageKey: storageKey });
+        if (outcome !== undefined && outcome.accepted === false) {
+          rejectedAtCommit = true;
+          await this.options.storage.removeFinal(storageKey);
+          if (outcome.closedTask !== undefined) { try { this.options.onTaskClosed?.(outcome.closedTask); } catch { /* durable close wins */ } }
+          throw new UploadPipelineError('FILE_TASK_CLOSED');
+        }
+      }
       catch (error) {
+        if (error instanceof UploadPipelineError) throw error;
         this.markRecovery(uploadSessionId, error);
         throw new UploadPipelineError('UPLOAD_METADATA_RECOVERY_PENDING', error);
       }
@@ -78,7 +90,7 @@ export class UploadPipeline {
       if (begun && !renamed) this.markFailed(uploadSessionId, codeFor(error));
       // A renamed final must survive: reconciliation uses its durable intent to
       // finish the DB transaction. It must never be silently deleted here.
-      if (committedIntent && renamed) this.markRecovery(uploadSessionId, error);
+      if (committedIntent && renamed && !rejectedAtCommit) this.markRecovery(uploadSessionId, error);
       if (error instanceof UploadPipelineError) throw error;
       throw new UploadPipelineError(codeFor(error), error);
     } finally { release(); }

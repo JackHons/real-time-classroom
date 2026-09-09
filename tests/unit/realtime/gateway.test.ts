@@ -60,9 +60,35 @@ describe('realtime gateway', () => {
     const secondWave = await Promise.all(Array.from({ length: 50 }, () => connectedTeacher(base)));
     expect(secondWave).toHaveLength(50);
   });
+
+  it('atomically caps unauthenticated Engine.IO handshakes before Socket.IO authorization', async () => {
+    running = await gatewayServer(undefined, 1);
+    const base = `http://127.0.0.1:${running.port}`;
+    const responses = await Promise.all(Array.from({ length: 20 }, () => fetch(`${base}/socket.io/?EIO=4&transport=polling`, { headers: { origin } })));
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+    expect(responses.filter((response) => response.status !== 200).every((response) => response.status === 403)).toBe(true);
+  });
+
+  it('switches a teacher to one authorized room and ignores invalid runtime enum publishes', async () => {
+    let gateway: RealtimeGateway | undefined;
+    running = await gatewayServer((attached) => { gateway = attached; }, undefined, true);
+    const base = `http://127.0.0.1:${running.port}`;
+    const sid = await connectedTeacher(base);
+    await packet(base, sid, '42["class:subscribe",{"classId":"class-a"}]', teacherCookie);
+    await poll(base, sid, teacherCookie);
+    // A successful switch replaces the prior class room.
+    await packet(base, sid, '42["class:subscribe",{"classId":"class-b"}]', teacherCookie);
+    expect(await poll(base, sid, teacherCookie)).toContain('class:refetch');
+    if (gateway === undefined) throw new Error('gateway was not attached');
+    gateway.publish({ classId: 'class-b' as ClassId, resourceType: 'unexpected' as never, id: 'id', event: 'anything' });
+    const waiting = poll(base, sid, teacherCookie);
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 30));
+    gateway.publish({ classId: 'class-b' as ClassId, resourceType: 'question', id: 'id', event: 'question_opened' });
+    expect(await waiting).toContain('question_opened');
+  });
 });
 
-async function gatewayServer(onGateway?: (gateway: RealtimeGateway) => void): Promise<RunningServer> {
+async function gatewayServer(onGateway?: (gateway: RealtimeGateway) => void, maximumConnections?: number, canAccessClassB = false): Promise<RunningServer> {
   return startServer({
     host: '127.0.0.1',
     port: 0,
@@ -70,9 +96,10 @@ async function gatewayServer(onGateway?: (gateway: RealtimeGateway) => void): Pr
       allowedOrigin: origin,
       authenticateTeacher: (token) => token === 'valid-teacher-cookie' ? { teacherSessionId: 'teacher-session-a' } : undefined,
       authenticateStudent: () => undefined,
-      canTeacherAccessClass: (_teacher, classId) => classId === 'class-a',
+      canTeacherAccessClass: (_teacher, classId) => classId === 'class-a' || (canAccessClassB && classId === 'class-b'),
       sessionCheckMs: 1_000,
-      heartbeatMs: 5_000
+      heartbeatMs: 5_000,
+      ...(maximumConnections === undefined ? {} : { maximumConnections })
     },
     ...(onGateway === undefined ? {} : { onRealtimeGateway: onGateway })
   });

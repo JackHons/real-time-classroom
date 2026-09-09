@@ -37,6 +37,7 @@ export interface QuestionBankRepository {
   createDraft(input: QuestionDraftRecord): QuestionDraftRecord;
   getDraft(classId: ClassId, id: QuestionId): QuestionDraftRecord | undefined;
   updateDraft(classId: ClassId, id: QuestionId, input: Omit<QuestionDraftRecord, 'id' | 'classId' | 'templateId' | 'state'>): QuestionDraftRecord | undefined;
+  deleteDraft?(classId: ClassId, id: QuestionId): boolean;
 }
 
 export interface TeacherAuthorizationPort { assertAuthorized(context: unknown): void; }

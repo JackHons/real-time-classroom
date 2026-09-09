@@ -12,6 +12,7 @@ export type ClassServiceDependencies = Readonly<{
   createPendingRequestId?: () => PendingStudentRequestId;
   /** Best-effort invalidation only; it contains no roster or student data. */
   notify?: (event: Readonly<{ classId: ClassId; resourceType: 'pending' | 'roster'; id: string; event: string; audience: 'teacher' }>) => void;
+  onClassDeleted?: (classId: ClassId) => void;
 }>;
 
 export class ClassService {
@@ -45,6 +46,8 @@ export class ClassService {
     this.dependencies.teacherAuthorization.assertAuthorized(teacherContext);
     if (!confirmation.confirmed || !confirmation.impactAcknowledged) throw new Error('CLASS_DELETE_CONFIRMATION_REQUIRED');
     this.dependencies.repository.deleteClass(classId);
+    this.notify({ classId, resourceType: 'roster', id: classId, event: 'class_deleted', audience: 'teacher' });
+    try { this.dependencies.onClassDeleted?.(classId); } catch { /* durable delete wins */ }
   }
 
   previewRosterCsv(csv: string): CsvPreview {

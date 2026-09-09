@@ -16,6 +16,8 @@ export type QuestionBankServiceDependencies = Readonly<{
   createTemplateId?: () => QuestionTemplateId;
   createQuestionId?: () => QuestionId;
   createOptionId?: () => string;
+  /** Runs only after the repository command has committed. */
+  notify?: (event: Readonly<{ classId?: ClassId; id: string; event: 'draft_created' | 'draft_updated' | 'draft_deleted' | 'template_created' | 'template_updated' | 'template_deleted' }>) => void;
 }>;
 
 /** Teacher-only command boundary. It deliberately works with snapshots, not live template references. */
@@ -38,18 +40,21 @@ export class QuestionBankService {
   createTemplate(context: unknown, input: TemplateInput): QuestionTemplateRecord {
     this.authorize(context);
     const fields = this.validate(input);
-    return this.dependencies.repository.createTemplate({ id: this.createTemplateId(), ...fields });
+    const result = this.dependencies.repository.createTemplate({ id: this.createTemplateId(), ...fields });
+    this.notify({ id: result.id, event: 'template_created' }); return result;
   }
   updateTemplate(context: unknown, id: QuestionTemplateId, input: TemplateInput): QuestionTemplateRecord {
     this.authorize(context);
     const current = this.dependencies.repository.getTemplate(id) ?? fail('QUESTION_TEMPLATE_NOT_FOUND');
     // Existing option ids are immutable. Reordering is represented solely by ordinal;
     // callers cannot replace an option id and silently alter a saved answer meaning.
-    return this.dependencies.repository.updateTemplate(id, this.validate(input, current.options)) ?? fail('QUESTION_TEMPLATE_NOT_FOUND');
+    const result = this.dependencies.repository.updateTemplate(id, this.validate(input, current.options)) ?? fail('QUESTION_TEMPLATE_NOT_FOUND');
+    this.notify({ id, event: 'template_updated' }); return result;
   }
   deleteTemplate(context: unknown, id: QuestionTemplateId): void {
     this.authorize(context);
     if (!this.dependencies.repository.deleteTemplate(id)) fail('QUESTION_TEMPLATE_NOT_FOUND');
+    this.notify({ id, event: 'template_deleted' });
   }
   createDraft(context: unknown, classId: ClassId, input: Readonly<{ templateId?: string; question?: TemplateInput }>): QuestionDraftRecord {
     this.authorize(context);
@@ -58,7 +63,8 @@ export class QuestionBankService {
     const source = input.templateId === undefined
       ? this.validate(requireValue(input.question, 'QUESTION_DRAFT_REQUIRED'))
       : this.snapshot(this.dependencies.repository.getTemplate(input.templateId as QuestionTemplateId) ?? fail('QUESTION_TEMPLATE_NOT_FOUND'));
-    return this.dependencies.repository.createDraft({ id: this.createQuestionId(), classId, templateId: (input.templateId as QuestionTemplateId | undefined) ?? null, ...source, state: 'draft' });
+    const result = this.dependencies.repository.createDraft({ id: this.createQuestionId(), classId, templateId: (input.templateId as QuestionTemplateId | undefined) ?? null, ...source, state: 'draft' });
+    this.notify({ classId, id: result.id, event: 'draft_created' }); return result;
   }
   getDraft(context: unknown, classId: ClassId, id: QuestionId): QuestionDraftRecord {
     this.authorize(context);
@@ -67,8 +73,16 @@ export class QuestionBankService {
   updateDraft(context: unknown, classId: ClassId, id: QuestionId, input: TemplateInput): QuestionDraftRecord {
     this.authorize(context);
     const current = this.dependencies.repository.getDraft(classId, id) ?? fail('QUESTION_DRAFT_NOT_FOUND');
-    return this.dependencies.repository.updateDraft(classId, id, this.validate(input, current.options)) ?? fail('QUESTION_DRAFT_NOT_FOUND');
+    const result = this.dependencies.repository.updateDraft(classId, id, this.validate(input, current.options)) ?? fail('QUESTION_DRAFT_NOT_FOUND');
+    this.notify({ classId, id, event: 'draft_updated' }); return result;
   }
+  deleteDraft(context: unknown, classId: ClassId, id: QuestionId): void {
+    this.authorize(context);
+    if (this.dependencies.repository.deleteDraft === undefined || !this.dependencies.repository.deleteDraft(classId, id)) fail('QUESTION_DRAFT_NOT_FOUND');
+    this.notify({ classId, id, event: 'draft_deleted' });
+  }
+
+  private notify(event: Readonly<{ classId?: ClassId; id: string; event: 'draft_created' | 'draft_updated' | 'draft_deleted' | 'template_created' | 'template_updated' | 'template_deleted' }>): void { try { this.dependencies.notify?.(event); } catch { /* durable writes win */ } }
 
   private authorize(context: unknown): void { this.dependencies.teacherAuthorization.assertAuthorized(context); }
   private snapshot(template: QuestionTemplateRecord): Omit<QuestionDraftRecord, 'id' | 'classId' | 'templateId' | 'state'> {

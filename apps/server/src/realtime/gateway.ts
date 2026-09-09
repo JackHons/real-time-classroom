@@ -25,10 +25,15 @@ export type RealtimeGatewayOptions = Readonly<{
 
 export type RealtimeGateway = Readonly<{
   publish: (change: RealtimeChangeInput) => void;
+  /** Global teacher-only invalidations (for example the shared question bank). */
+  publishTeacher: (change: Omit<RealtimeChangeInput, 'classId' | 'audience'>) => void;
+  /** A deleted class must not retain stale room membership. */
+  evictClass: (classId: ClassId) => void;
   close: () => Promise<void>;
 }>;
 
 const ROOM_PREFIX = 'class:';
+const TEACHER_GLOBAL_ROOM = 'teacher:global';
 const SUBSCRIBE_EVENT = 'class:subscribe';
 const CHANGE_EVENT = 'class:changed';
 const REFETCH_EVENT = 'class:refetch';
@@ -43,6 +48,8 @@ export class RealtimeNotificationBus {
   private gateway: RealtimeGateway | undefined;
   attach(gateway: RealtimeGateway): void { this.gateway = gateway; }
   publish(change: RealtimeChangeInput): void { this.gateway?.publish(change); }
+  publishTeacher(change: Omit<RealtimeChangeInput, 'classId' | 'audience'>): void { this.gateway?.publishTeacher(change); }
+  evictClass(classId: ClassId): void { this.gateway?.evictClass(classId); }
 }
 
 /** Attaches Socket.IO to the already-created single Node HTTP server. */
@@ -53,7 +60,10 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
   const sessionCheckMs = options.sessionCheckMs ?? 30_000;
   if (!Number.isSafeInteger(maximumConnections) || maximumConnections < 1 || !Number.isSafeInteger(heartbeatMs) || heartbeatMs < 1_000 || !Number.isSafeInteger(sessionCheckMs) || sessionCheckMs < 1_000) throw new Error('REALTIME_CONFIGURATION_INVALID');
 
+  // Reserve at the Engine.IO handshake, not Socket.IO middleware.  A peer that
+  // never authenticates still owns a transport and is therefore counted.
   let connections = 0;
+  const reservations = new WeakMap<IncomingMessage, () => void>();
   let version = 0;
   const io = new Server(server, {
     // There are no client-to-server commands apart from a small subscription
@@ -61,11 +71,26 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
     maxHttpBufferSize: 1_024,
     pingInterval: heartbeatMs,
     pingTimeout: Math.min(10_000, heartbeatMs),
-    allowRequest: (request, callback) => callback(null, hasExactPrivateLanOrigin(request, options.allowedOrigin))
+    allowRequest: (request, callback) => {
+      if (!hasExactPrivateLanOrigin(request, options.allowedOrigin)) { callback('ORIGIN_FORBIDDEN', false); return; }
+      // Engine.IO only creates a transport for requests without a sid.
+      if (request.url !== undefined && new URL(request.url, 'http://engine.local').searchParams.has('sid')) { callback(null, true); return; }
+      if (connections >= maximumConnections) { callback('REALTIME_CONNECTION_LIMIT', false); return; }
+      connections += 1;
+      let released = false;
+      reservations.set(request, () => { if (!released) { released = true; connections -= 1; } });
+      callback(null, true);
+    }
+  });
+
+  io.engine.on('connection', (transport) => {
+    const release = reservations.get(transport.request);
+    // An Engine.IO close includes unauthenticated handshakes and failed Socket.IO
+    // upgrades. It is the one ownership boundary for the reservation.
+    transport.once('close', () => release?.());
   });
 
   io.use((socket, next) => {
-    if (connections >= maximumConnections) { next(new Error('REALTIME_CONNECTION_LIMIT')); return; }
     const principal = authenticate(socket.handshake.headers.cookie, options);
     if (principal === undefined) { next(new Error('REALTIME_AUTH_REQUIRED')); return; }
     socket.data.principal = principal;
@@ -73,9 +98,9 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
   });
 
   io.on('connection', (socket) => {
-    connections += 1;
     const principal = principalFor(socket);
     if (principal.actor === 'student') socket.join(room(principal.classId, 'student'));
+    else socket.join(TEACHER_GLOBAL_ROOM);
     // A reconnect is intentionally not a state replay. Every client starts by
     // reading its normal REST views, which preserves authorization and paging.
     emitRefetch(socket);
@@ -103,6 +128,9 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
         return;
       }
       if (!options.canTeacherAccessClass(principal, classId)) { socket.emit('realtime:error', { code: 'CLASS_SCOPE_FORBIDDEN' }); return; }
+      // Authorize before changing membership: a rejected switch retains the
+      // previously selected class.  Teachers hold exactly one class room.
+      for (const joined of socket.rooms) if (joined.startsWith(ROOM_PREFIX) && joined.endsWith(':teacher')) socket.leave(joined);
       socket.join(room(classId, 'teacher'));
       emitRefetch(socket);
     });
@@ -111,7 +139,7 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
       // realtime transport to become a shadow mutation API by accident.
       if (event !== SUBSCRIBE_EVENT) socket.disconnect(true);
     });
-    socket.once('disconnect', () => { globalThis.clearInterval(checkSession); connections -= 1; });
+    socket.once('disconnect', () => { globalThis.clearInterval(checkSession); });
   });
 
   return {
@@ -123,6 +151,19 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
       // client. The next REST refetch is authoritative in all cases.
       if (change.audience !== 'teacher') io.to(room(change.classId, 'student')).volatile.emit(CHANGE_EVENT, notification);
       io.to(room(change.classId, 'teacher')).volatile.emit(CHANGE_EVENT, notification);
+    },
+    publishTeacher: (change) => {
+      if (!validChange({ ...change, classId: 'teacher-global' as ClassId, audience: 'teacher' })) return;
+      version = version === Number.MAX_SAFE_INTEGER ? 1 : version + 1;
+      io.to(TEACHER_GLOBAL_ROOM).volatile.emit(CHANGE_EVENT, { resourceType: change.resourceType, id: change.id, version, event: change.event } satisfies RealtimeChange);
+    },
+    evictClass: (classId) => {
+      const studentRoom = room(classId, 'student');
+      const teacherRoom = room(classId, 'teacher');
+      // Students can no longer have a valid class scope; teachers merely leave
+      // the deleted room and stay connected for their remaining classes.
+      for (const socket of io.sockets.adapter.rooms.get(studentRoom) ?? []) io.sockets.sockets.get(socket)?.disconnect(true);
+      io.in(teacherRoom).socketsLeave(teacherRoom);
     },
     close: () => new Promise((resolve) => io.close(() => resolve()))
   };
@@ -158,7 +199,18 @@ function subscriptionClassId(payload: unknown): ClassId | undefined {
   return typeof classId === 'string' && classId.length > 0 && classId.length <= 200 ? classId as ClassId : undefined;
 }
 function validChange(change: RealtimeChangeInput): boolean {
-  return typeof change.classId === 'string' && change.classId.length > 0 && change.classId.length <= 200 && typeof change.id === 'string' && change.id.length > 0 && change.id.length <= 200 && typeof change.event === 'string' && /^[a-z_]+$/.test(change.event) && change.event.length <= 64 && (change.audience === undefined || change.audience === 'all' || change.audience === 'teacher');
+  const events: Readonly<Record<RealtimeResourceType, readonly string[]>> = {
+    question: ['question_opened', 'question_closed', 'answer_updated', 'draft_created', 'draft_updated', 'draft_deleted', 'template_created', 'template_updated', 'template_deleted'],
+    'file-task': ['filetask_created', 'filetask_updated', 'filetask_opened', 'filetask_closed', 'filetask_deleted'],
+    pending: ['pending_requested', 'pending_resolved'],
+    roster: ['roster_imported', 'roster_changed', 'class_deleted'],
+    submission: ['submission_committed', 'submission_deleted']
+  };
+  return typeof change.classId === 'string' && change.classId.length > 0 && change.classId.length <= 200
+    && typeof change.resourceType === 'string' && Object.hasOwn(events, change.resourceType)
+    && typeof change.id === 'string' && change.id.length > 0 && change.id.length <= 200
+    && typeof change.event === 'string' && events[change.resourceType]?.includes(change.event) === true
+    && (change.audience === undefined || change.audience === 'all' || change.audience === 'teacher');
 }
 function emitRefetch(socket: Socket): void { socket.emit(REFETCH_EVENT, { reason: 'connected' }); }
 function assertAllowedOrigin(origin: string): void { if (new URL(origin).origin !== origin || !origin.startsWith('http://')) throw new Error('REALTIME_ALLOWED_ORIGIN_REQUIRED'); }

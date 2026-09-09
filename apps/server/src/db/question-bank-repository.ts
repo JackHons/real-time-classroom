@@ -64,6 +64,9 @@ export class SqliteQuestionBankRepository implements QuestionBankRepository {
     })();
     return changed ? this.getDraft(classId, id) : undefined;
   }
+  deleteDraft(classId: ClassId, id: QuestionId): boolean {
+    return this.database.prepare("DELETE FROM questions WHERE id=? AND class_id=? AND state='draft'").run(id, classId).changes === 1;
+  }
 
   private insertTemplateOptions(templateId: QuestionTemplateId, options: readonly QuestionBankOption[]): void {
     const insert = this.database.prepare('INSERT INTO question_template_options (id,template_id,option_key,label,ordinal) VALUES (?,?,?,?,?)');

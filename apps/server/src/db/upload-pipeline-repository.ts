@@ -1,8 +1,8 @@
-import type { UploadSessionId } from '../domain/types.js';
+import type { ClassId, UploadSessionId } from '../domain/types.js';
 import type { SqliteDatabase } from './connection.js';
-import type { ReconciliationRecord, UploadPipelineRepository, UploadStart, UploadTaskPolicy } from '../uploads/types.js';
+import type { ReconciliationRecord, UploadCommitOutcome, UploadPipelineRepository, UploadStart, UploadTaskPolicy } from '../uploads/types.js';
 
-type TaskRow = Readonly<{ deadline_at_utc: string; max_bytes: number }>;
+type TaskRow = Readonly<{ id: string; class_id: string; state: 'open' | 'closed' | 'draft'; deadline_at_utc: string; max_bytes: number }>;
 type RecoveryRow = Readonly<{ id: string; state: ReconciliationRecord['state']; staging_key: string | null; final_storage_key: string | null; bytes_received: number; sha256: string | null }>;
 
 /** SQLite implementation of the narrow byte-pipeline persistence port. */
@@ -11,7 +11,7 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
 
   begin(input: UploadStart): UploadTaskPolicy {
     return this.database.transaction(() => {
-      const task = this.database.prepare("SELECT deadline_at_utc,max_bytes FROM file_submission_tasks WHERE id=? AND state='open'").get(input.taskId) as TaskRow | undefined;
+      const task = this.database.prepare("SELECT id,class_id,state,deadline_at_utc,max_bytes FROM file_submission_tasks WHERE id=? AND state='open'").get(input.taskId) as TaskRow | undefined;
       if (task === undefined) throw new Error('FILE_TASK_NOT_OPEN');
       const member = this.database.prepare('SELECT 1 FROM students WHERE id=? AND class_id=(SELECT class_id FROM file_submission_tasks WHERE id=?)').get(input.studentId, input.taskId);
       if (member === undefined) throw new Error('FILE_UPLOAD_NOT_AUTHORIZED');
@@ -43,11 +43,21 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
     if (result.changes !== 1) throw new Error('FILE_COMMIT_INTENT_PRECONDITION_FAILED');
   }
 
-  commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void {
+  commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): UploadCommitOutcome {
     assertFinalStorageKey(input.finalStorageKey);
-    this.database.transaction(() => {
+    return this.database.transaction(() => {
       const row = this.database.prepare("SELECT task_id,student_id,original_filename,display_filename,declared_mime_type,bytes_received,sha256,received_complete_at_utc FROM upload_sessions WHERE id=? AND state IN ('file_committed','recovery_pending') AND final_storage_key=?").get(input.uploadSessionId, input.finalStorageKey) as Readonly<{ task_id: string; student_id: string; original_filename: string | null; display_filename: string | null; declared_mime_type: string | null; bytes_received: number; sha256: string | null; received_complete_at_utc: string | null }> | undefined;
       if (row === undefined || row.original_filename === null || row.display_filename === null || row.sha256 === null || row.received_complete_at_utc === null) throw new Error('FILE_METADATA_COMMIT_PRECONDITION_FAILED');
+      const task = this.database.prepare('SELECT id,class_id,state,deadline_at_utc,max_bytes FROM file_submission_tasks WHERE id=?').get(row.task_id) as TaskRow | undefined;
+      if (task === undefined) throw new Error('FILE_TASK_NOT_FOUND');
+      const at = this.now();
+      // This transaction is the final admission point.  It prevents the last
+      // byte / deadline race from committing metadata after a server-time close.
+      if (task.state !== 'open' || Date.parse(task.deadline_at_utc) < Date.parse(at)) {
+        const winner = this.database.prepare("UPDATE file_submission_tasks SET state='closed',closed_at_utc=?,updated_at_utc=? WHERE id=? AND state='open' AND deadline_at_utc<?").run(at, at, task.id, at).changes === 1;
+        this.database.prepare("UPDATE upload_sessions SET state='failed',staging_key=NULL,final_storage_key=NULL,error_code='FILE_TASK_CLOSED',updated_at_utc=? WHERE id=? AND state IN ('file_committed','recovery_pending')").run(at, input.uploadSessionId);
+        return { accepted: false, ...(winner ? { closedTask: { taskId: task.id as never, classId: task.class_id as ClassId } } : {}) };
+      }
       const exists = this.database.prepare('SELECT 1 FROM file_submissions WHERE task_id=? AND student_id=? AND deleted_at_utc IS NULL').get(row.task_id, row.student_id);
       if (exists === undefined) {
         this.database.prepare('INSERT INTO file_submissions (id,task_id,student_id,original_filename,display_filename,storage_key,declared_mime_type,byte_length,sha256,received_complete_at_utc,deleted_at_utc) VALUES (?,?,?,?,?,?,?,?,?,?,NULL)')
@@ -57,6 +67,7 @@ export class SqliteUploadPipelineRepository implements UploadPipelineRepository 
       // that could later be mistaken for recoverable private bytes.
       const updated = this.database.prepare("UPDATE upload_sessions SET state='metadata_committed',staging_key=NULL,error_code=NULL,updated_at_utc=? WHERE id=? AND state IN ('file_committed','recovery_pending') AND final_storage_key=?").run(this.now(), input.uploadSessionId, input.finalStorageKey);
       if (updated.changes !== 1) throw new Error('FILE_METADATA_COMMIT_PRECONDITION_FAILED');
+      return { accepted: true };
     })();
   }
 

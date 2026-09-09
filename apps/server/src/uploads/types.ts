@@ -1,4 +1,4 @@
-import type { FileSubmissionTaskId, StudentId, UploadSessionId, UploadState } from '../domain/types.js';
+import type { ClassId, FileSubmissionTaskId, StudentId, UploadSessionId, UploadState } from '../domain/types.js';
 
 /** The product-level hard limit. Tests may configure a lower limit only. */
 export const MAX_UPLOAD_BYTES = 100_000_000;
@@ -14,6 +14,8 @@ export type UploadStart = Readonly<{
 }>;
 
 export type UploadTaskPolicy = Readonly<{ deadlineAtUtc: string; maxBytes: number }>;
+/** Result of the atomic metadata admission after the file rename. */
+export type UploadCommitOutcome = Readonly<{ accepted: boolean; closedTask?: Readonly<{ taskId: FileSubmissionTaskId; classId: ClassId }> }>;
 
 export type ReconciliationRecord = Readonly<{
   uploadSessionId: UploadSessionId;
@@ -33,7 +35,7 @@ export interface UploadPipelineRepository {
   begin(input: UploadStart): UploadTaskPolicy;
   recordVerified(input: Readonly<{ uploadSessionId: UploadSessionId; bytesReceived: number; sha256: string; receivedCompleteAtUtc: string }>): void;
   prepareFileCommit(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
-  commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void;
+  commitAfterFileRename(input: Readonly<{ uploadSessionId: UploadSessionId; finalStorageKey: string }>): void | UploadCommitOutcome;
   markRecoveryPending(uploadSessionId: UploadSessionId, errorCode: string): void;
   markFailed(uploadSessionId: UploadSessionId, errorCode: string): void;
   /** Retains the durable staging key when physical cleanup has not happened. */

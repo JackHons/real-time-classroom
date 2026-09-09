@@ -28,6 +28,7 @@ export function createQuestionBankRoutes(dependencies: QuestionBankRoutesDepende
     if (request.method === 'POST' && id === undefined) return respond(response, 201, dependencies.service.createDraft(dependencies.teacherContext(request), classId, draftBody(await readJson(request))));
     if (request.method === 'GET' && id !== undefined) return respond(response, 200, dependencies.service.getDraft(dependencies.teacherContext(request), classId, id));
     if (request.method === 'PUT' && id !== undefined) return respond(response, 200, dependencies.service.updateDraft(dependencies.teacherContext(request), classId, id, templateBody(await readJson(request))));
+    if (request.method === 'DELETE' && id !== undefined) { requireEmptyOrObject(await readJson(request)); dependencies.service.deleteDraft(dependencies.teacherContext(request), classId, id); return respond(response, 204); }
     return false;
   };
 }

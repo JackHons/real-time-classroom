@@ -53,9 +53,22 @@ describe('upload byte pipeline', () => {
     expect(database?.prepare("SELECT count(*) AS count FROM upload_sessions WHERE state='failed'").get()).toEqual({ count: 5 });
   });
 
-  it('uses its own completion clock and rejects a stream that crosses the deadline', async () => {
+  it('uses its own completion clock to atomically close and reject a stream that crosses the deadline', async () => {
     const { pipeline } = await setup(); instant = new Date('2026-09-07T10:00:00.001Z');
-    await expect(pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('late') })).rejects.toMatchObject({ code: 'UPLOAD_DEADLINE_EXPIRED' });
+    await expect(pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('late') })).rejects.toMatchObject({ code: 'FILE_TASK_CLOSED' });
+    expect(database?.prepare('SELECT state FROM file_submission_tasks WHERE id=?').get('task-1')).toEqual({ state: 'closed' });
+  });
+
+  it('closes an expired task once when concurrent uploads reach final metadata admission', async () => {
+    const { repository, storage } = await setup();
+    database?.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run('student-2', 'class-1', 'Student 2', '2', '2', 0, instant.toISOString());
+    instant = new Date('2026-09-07T10:00:00.001Z');
+    const closed: unknown[] = [];
+    const first = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => closed.push(task) });
+    const second = new UploadPipeline({ repository, storage, maxBytes: 8, now: () => instant, onTaskClosed: (task) => closed.push(task) });
+    await expect(Promise.all([first.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('late-a') }), second.ingest({ taskId: 'task-1' as never, studentId: 'student-2' as never, bytes: chunks('late-b') })])).rejects.toMatchObject({ code: 'FILE_TASK_CLOSED' });
+    expect(closed).toEqual([{ taskId: 'task-1', classId: 'class-1' }]);
+    expect(database?.prepare('SELECT count(*) AS count FROM file_submissions').get()).toEqual({ count: 0 });
   });
 
   it('persists a rename intent and completes it after a database-commit failure or process restart', async () => {

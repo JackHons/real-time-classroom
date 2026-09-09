@@ -80,7 +80,8 @@ export function createApplication(options: ApplicationOptions): Application {
     repository: rosterRepository,
     teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
     now: () => clock.now().toISOString(),
-    notify: (event) => realtimeNotifications.publish(event)
+    notify: (event) => realtimeNotifications.publish(event),
+    onClassDeleted: (classId) => realtimeNotifications.evictClass(classId)
   });
   const studentJoin: StudentJoinPort = {
     join: (request) => {
@@ -135,7 +136,11 @@ export function createApplication(options: ApplicationOptions): Application {
     service: new QuestionBankService({
       repository: new SqliteQuestionBankRepository(options.database, () => clock.now().toISOString()),
       teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
-      classExists: (classId) => rosterRepository.classExists(classId)
+      classExists: (classId) => rosterRepository.classExists(classId),
+      notify: (event) => {
+        if (event.classId === undefined) realtimeNotifications.publishTeacher({ resourceType: 'question', id: event.id, event: event.event });
+        else realtimeNotifications.publish({ classId: event.classId, resourceType: 'question', id: event.id, event: event.event, audience: 'teacher' });
+      }
     }),
     teacherContext: authenticateTeacher
   });
@@ -161,7 +166,7 @@ export function createApplication(options: ApplicationOptions): Application {
     notify: (event) => realtimeNotifications.publish(event)
   });
   const fileTaskHandler = createFileTaskRoutes({ service: fileTaskService, repository: fileRepository, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
-  const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now() });
+  const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now(), onTaskClosed: (task) => realtimeNotifications.publish({ classId: task.classId, resourceType: 'file-task', id: task.taskId, event: 'filetask_closed', audience: 'all' }) });
   const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher, notify: (event) => realtimeNotifications.publish(event), ...(options.uploadIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.uploadIdleTimeoutMs }), ...(options.uploadAbsoluteRequestTimeoutMs === undefined ? {} : { absoluteRequestTimeoutMs: options.uploadAbsoluteRequestTimeoutMs }) });
   const activityHandler = createActivityRoutes({ database: options.database, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   let uploadsReady = false;
