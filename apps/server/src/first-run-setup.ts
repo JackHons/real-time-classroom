@@ -22,7 +22,7 @@ export type FirstRunSetupOptions = Readonly<{
 /**
  * First-run is intentionally a separate, very small HTTP surface.  It trusts
  * neither Host forwarding headers nor proxy client-address headers: a request
- * must be a direct TCP loopback request addressed to literal 127.0.0.1.
+ * must be a direct TCP loopback request addressed to its matching literal IP.
  */
 export function createFirstRunSetupHandler(options: FirstRunSetupOptions): HttpRouteHandler {
   const now = options.now ?? (() => new Date());
@@ -31,12 +31,14 @@ export function createFirstRunSetupHandler(options: FirstRunSetupOptions): HttpR
   let bootstrapSecret = randomBytes(32).toString('base64url');
   return async (request, response) => {
     // Use the TCP listener's actual local port, rather than a configured
-    // value. This remains exact when a test or a local operator uses port 0.
-    const expectedHost = `127.0.0.1:${request.socket.localPort}`;
+    // value. IPv6 loopback has its own bracketed authority; accepting a
+    // different literal here would reintroduce Host/DNS rebinding ambiguity.
+    const expectedHost = loopbackHost(request);
+    if (expectedHost === undefined) { sendJson(response, 404, { error: 'NOT_FOUND' }); return true; }
     const expectedOrigin = `http://${expectedHost}`;
     const pathname = new URL(request.url ?? '/', expectedOrigin).pathname;
     if (pathname !== '/setup' && pathname !== '/api/setup/csrf' && pathname !== '/api/setup/teacher-password') return false;
-    if (!isDirectLoopback(request) || request.headers.host !== expectedHost || hasProxyHeaders(request)) {
+    if (request.headers.host !== expectedHost || hasProxyHeaders(request)) {
       sendJson(response, 404, { error: 'NOT_FOUND' }); return true;
     }
     if (options.repository.teacherPasswordHash() !== undefined) {
@@ -93,9 +95,12 @@ export function isStrongPassword(password: string): boolean {
 function isPasswordBody(value: unknown): value is Readonly<{ password: string; confirmPassword: string }> {
   return typeof value === 'object' && value !== null && typeof (value as { password?: unknown }).password === 'string' && typeof (value as { confirmPassword?: unknown }).confirmPassword === 'string';
 }
-function isDirectLoopback(request: IncomingMessage): boolean {
+function loopbackHost(request: IncomingMessage): string | undefined {
   const address = request.socket.remoteAddress;
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+  const port = request.socket.localPort;
+  if (address === '::1') return `[::1]:${port}`;
+  if (address === '127.0.0.1' || address === '::ffff:127.0.0.1') return `127.0.0.1:${port}`;
+  return undefined;
 }
 function hasProxyHeaders(request: IncomingMessage): boolean {
   return Object.keys(request.headers).some((name) => name === 'via' || name === 'forwarded' || name === 'x-real-ip' || name.startsWith('x-forwarded-'));
@@ -109,7 +114,12 @@ function validCsrf(request: IncomingMessage, secret: string): boolean {
 }
 function csrfToken(secret: string): string { return createHmac('sha256', secret).update('first-run-setup').digest('base64url'); }
 function parseCookie(header: string | undefined, name: string): string | undefined {
-  for (const part of header?.split(';') ?? []) { const index = part.indexOf('='); if (index > 0 && part.slice(0, index).trim() === name) return decodeURIComponent(part.slice(index + 1).trim()); }
+  for (const part of header?.split(';') ?? []) {
+    const index = part.indexOf('=');
+    if (index <= 0 || part.slice(0, index).trim() !== name) continue;
+    try { return decodeURIComponent(part.slice(index + 1).trim()); }
+    catch { return undefined; }
+  }
   return undefined;
 }
 class BodyTooLarge extends Error {}

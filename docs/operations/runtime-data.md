@@ -10,7 +10,7 @@ The production default is `%LOCALAPPDATA%\LanClassroomPlatform`, outside the web
 
 Do not place student uploads, SQLite files, session secrets, or production logs under the source checkout. The application must verify that this directory is writable and has sufficient free disk before declaring readiness.
 
-On its first start the service creates `runtime-secrets.json` next to the SQLite database only if `LAN_CLASSROOM_CSRF_SECRET` was not supplied. The file is created exclusively (never replaced), synced before use, and requested with owner-only permissions. On Windows, deployment ACLs remain authoritative. Keep this directory private and do not copy that secret into the repository.
+On its first start the service creates `runtime-secrets.json` next to the SQLite database only if `LAN_CLASSROOM_CSRF_SECRET` was not supplied. It publishes a synced temporary file by atomic rename under an exclusive startup lock, so readers never observe partial JSON. Every later startup validates the exact 32-byte base64url value and reapplies owner-only permissions (a Windows owner-only ACL, or POSIX mode `0600`). Keep this directory private and do not copy that secret into the repository.
 
 ## First-run and upgrade
 

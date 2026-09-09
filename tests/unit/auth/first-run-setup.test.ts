@@ -47,4 +47,25 @@ describe('loopback-only first-run setup', () => {
     const statuses = (await Promise.all([post(), post()])).map((response) => response.status).sort();
     expect(statuses).toEqual([201, 410]);
   });
+
+  it('supports a real IPv6 loopback authority without accepting an IPv4 Host', async () => {
+    const repository = new SetupRepository();
+    server = await startServer({ host: '::1', port: 0, bootstrapHandler: createFirstRunSetupHandler({ repository, hashPassword: async () => '$argon2id$test' }) });
+    const origin = `http://[::1]:${server.port}`;
+    expect((await fetch(`${origin}/setup`)).status).toBe(200);
+    const csrf = await fetch(`${origin}/api/setup/csrf`);
+    const cookie = csrf.headers.get('set-cookie')?.split(';')[0];
+    if (cookie === undefined) throw new Error('missing setup cookie');
+    const token = (await csrf.json() as { csrfToken: string }).csrfToken;
+    const accepted = await fetch(`${origin}/api/setup/teacher-password`, { method: 'POST', headers: { origin, cookie, 'x-csrf-token': token, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'Strong-passphrase-1!', confirmPassword: 'Strong-passphrase-1!' }) });
+    expect(accepted.status).toBe(201);
+  });
+
+  it('treats a malformed setup cookie as an invalid CSRF token', async () => {
+    const repository = new SetupRepository();
+    server = await startServer({ host: '127.0.0.1', port: 0, bootstrapHandler: createFirstRunSetupHandler({ repository }) });
+    const origin = `http://127.0.0.1:${server.port}`;
+    const response = await fetch(`${origin}/api/setup/teacher-password`, { method: 'POST', headers: { origin, cookie: 'lan_classroom_first_run=%', 'x-csrf-token': 'invalid', 'content-type': 'application/json' }, body: '{}' });
+    expect(response.status).toBe(403);
+  });
 });
