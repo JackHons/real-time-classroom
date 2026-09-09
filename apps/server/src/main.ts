@@ -1,4 +1,6 @@
 import { createApplication, FirstRunSetupRequiredError } from './application.js';
+import { exit } from 'node:process';
+import { setTimeout } from 'node:timers';
 import { openSqlite } from './db/connection.js';
 import { SqliteAuthSessionRepository } from './db/auth-session-repository.js';
 import { migrationReadiness } from './db/migrator.js';
@@ -40,7 +42,15 @@ try {
     // handler wins the atomic password insert. This deliberately does not
     // trust a forwarded client address or a LAN Host header.
     health = { status: 503, state: 'not_ready', reason: 'FIRST_RUN_SETUP_REQUIRED' };
-    bootstrapHandler = createFirstRunSetupHandler({ repository: new SqliteAuthSessionRepository(database) });
+    bootstrapHandler = createFirstRunSetupHandler({
+      repository: new SqliteAuthSessionRepository(database),
+      onConfigured: () => {
+        // Exit with a dedicated, non-error code after the HTTP response has
+        // drained. LanClassroomSupervisor.ps1 alone recognizes this code and
+        // relaunches into the fully configured normal application.
+        setTimeout(() => exit(75), 25).unref();
+      }
+    });
     console.error('FIRST_RUN_SETUP_REQUIRED: only direct loopback /setup and GET /health are available until teacher setup completes.');
   } else if (isUploadStorageStartupError(error)) {
     // Storage reconciliation is a readiness prerequisite. Keep the process

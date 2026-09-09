@@ -129,9 +129,20 @@ function Add-LanPrivateFirewallRule {
   param([Parameter(Mandatory)][string] $NodeProgram, [Parameter(Mandatory)][ValidateRange(1,65535)][int] $Port)
   if (-not (Test-LanAdministrator)) { throw 'Administrator rights are required to add a firewall rule.' }
   $name = "LanClassroom-Private-$Port"
-  Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+  $existing = @(Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue)
+  if ($existing.Count -gt 1) { throw "More than one firewall rule is named $name. Remove the duplicate rules before starting." }
+  if ($existing.Count -eq 1) {
+    $rule = $existing[0]
+    $portFilter = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop)
+    $appFilter = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop)
+    $isExact = $rule.Direction -eq 'Inbound' -and $rule.Action -eq 'Allow' -and $rule.Profile -eq 'Private' -and
+      $portFilter.Count -eq 1 -and $portFilter[0].Protocol -eq 'TCP' -and $portFilter[0].LocalPort -eq "$Port" -and
+      $appFilter.Count -eq 1 -and $appFilter[0].Program -eq $NodeProgram
+    if ($isExact) { return [pscustomobject]@{ Name = $name; Created = $false } }
+    throw "Firewall rule $name already exists but does not match this exact Node program and TCP port. Review or remove it before starting."
+  }
   New-NetFirewallRule -Name $name -DisplayName "LAN Classroom private LAN ($Port)" -Direction Inbound -Action Allow -Profile Private -Program $NodeProgram -Protocol TCP -LocalPort $Port -RemoteAddress LocalSubnet | Out-Null
-  $name
+  [pscustomobject]@{ Name = $name; Created = $true }
 }
 
 Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule

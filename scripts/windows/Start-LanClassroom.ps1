@@ -16,18 +16,17 @@ Test-LanDeployment -RepositoryRoot $repo
 Test-LanSqlite -RepositoryRoot $repo -RuntimeRoot ([IO.Path]::GetFullPath($RuntimeRoot))
 $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
 $node = (Get-Command node -ErrorAction Stop).Source
-$ruleName = $null
+$firewall = $null
 if ($ConfigureFirewall) {
-  try { $ruleName = Add-LanPrivateFirewallRule -NodeProgram $node -Port $Port }
-  catch { Write-Warning "Firewall rule was not changed: $($_.Exception.Message)"; Write-Warning "Ask an administrator to run: New-NetFirewallRule -Name 'LanClassroom-Private-$Port' -Direction Inbound -Action Allow -Profile Private -Program '$node' -Protocol TCP -LocalPort $Port -RemoteAddress LocalSubnet" }
+  # Do not expose a listener after a requested firewall setup has failed.
+  $firewall = Add-LanPrivateFirewallRule -NodeProgram $node -Port $Port
 }
-$psi = [Diagnostics.ProcessStartInfo]::new(); $psi.FileName = $node; $psi.WorkingDirectory = $repo; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
-[void]$psi.ArgumentList.Add('apps/server/dist/main.js')
-$psi.Environment['LAN_CLASSROOM_HOST'] = $selected.Address; $psi.Environment['LAN_CLASSROOM_HOSTS'] = ($addresses -join ','); $psi.Environment['LAN_CLASSROOM_PORT'] = "$Port"
-$psi.Environment['LAN_CLASSROOM_ALLOWED_ORIGIN'] = "http://$($selected.Address):$Port"; $psi.Environment['LAN_CLASSROOM_CSRF_SECRET'] = [string]$settings.csrfSecret
-$psi.Environment['LAN_CLASSROOM_DATABASE_PATH'] = Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) 'database\classroom.sqlite'; $psi.Environment['LAN_CLASSROOM_UPLOAD_STORAGE_PATH'] = Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) 'uploads'
-$process = [Diagnostics.Process]::Start($psi); if ($null -eq $process) { throw 'Could not start the classroom server.' }
-@{ pid = $process.Id; port = $Port; address = $selected.Address; firewallRule = $ruleName; startedAtUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) 'launcher-state.json') -Encoding utf8
+$supervisorArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'LanClassroomSupervisor.ps1'), '-RepositoryRoot', $repo, '-RuntimeRoot', ([IO.Path]::GetFullPath($RuntimeRoot)), '-NodeProgram', $node, '-Address', $selected.Address, '-Port', "$Port", '-CsrfSecret', ([string]$settings.csrfSecret), '-FirewallRule', ($(if ($null -eq $firewall) { '' } else { [string]$firewall.Name })), '-FirewallOwned', ($(if ($null -ne $firewall -and $firewall.Created) { 'true' } else { 'false' })))
+# Windows PowerShell 5.1 does not expose ProcessStartInfo.ArgumentList; use
+# Start-Process so the launcher works on the supported in-box shell too.
+$process = Start-Process -FilePath (Get-Command powershell -ErrorAction Stop).Source -ArgumentList $supervisorArguments -WorkingDirectory $repo -WindowStyle Hidden -PassThru
+if ($null -eq $process) { throw 'Could not start the classroom supervisor.' }
+@{ pid = $process.Id; workerPid = $null; port = $Port; address = $selected.Address; firewallRule = $(if ($null -eq $firewall) { $null } else { $firewall.Name }); firewallOwned = $(if ($null -ne $firewall) { $firewall.Created } else { $false }); startedAtUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) 'launcher-state.json') -Encoding utf8
 Write-Host "Students: http://$($selected.Address):$Port"
 Write-Warning 'HTTP is only for this teacher-confirmed trusted Private LAN. It does not protect against local interception or session-token theft. Do not use Public/Domain networks or expose this port to the Internet.'
 Write-Host "To stop without deleting data: .\scripts\windows\Stop-LanClassroom.ps1 -RuntimeRoot '$RuntimeRoot'"

@@ -15,6 +15,8 @@ export type FirstRunSetupOptions = Readonly<{
   repository: Pick<AuthSessionRepository, 'teacherPasswordHash' | 'setTeacherPasswordHashIfAbsent'>;
   now?: () => Date;
   hashPassword?: (password: string) => Promise<string>;
+  /** The launcher owns the restart; invoke only after the credential is durable. */
+  onConfigured?: () => void;
 }>;
 
 /**
@@ -70,7 +72,11 @@ export function createFirstRunSetupHandler(options: FirstRunSetupOptions): HttpR
       }
       bootstrapSecret = randomBytes(32).toString('base64url');
       response.setHeader('set-cookie', `${SETUP_COOKIE}=; Max-Age=0; Path=/api/setup; HttpOnly; SameSite=Strict`);
-      sendJson(response, 201, { status: 'configured' }); return true;
+      // Let ServerResponse flush the success response before the launcher is
+      // notified to replace this bootstrap-only process.
+      response.once('finish', () => options.onConfigured?.());
+      sendJson(response, 201, { status: 'configured' });
+      return true;
     } catch (error) {
       if (error instanceof SyntaxError || error instanceof BodyTooLarge) { sendJson(response, 400, { error: 'INVALID_REQUEST' }); return true; }
       sendJson(response, 500, { error: 'SETUP_INTERNAL_ERROR' }); return true;
