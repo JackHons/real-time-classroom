@@ -45,11 +45,12 @@ const SUBSCRIBE_WINDOW_MS = 10_000;
  * a notification only tells a class-scoped client which resource to refetch.
  */
 export class RealtimeNotificationBus {
-  private gateway: RealtimeGateway | undefined;
-  attach(gateway: RealtimeGateway): void { this.gateway = gateway; }
-  publish(change: RealtimeChangeInput): void { this.gateway?.publish(change); }
-  publishTeacher(change: Omit<RealtimeChangeInput, 'classId' | 'audience'>): void { this.gateway?.publishTeacher(change); }
-  evictClass(classId: ClassId): void { this.gateway?.evictClass(classId); }
+  private readonly gateways = new Set<RealtimeGateway>();
+  /** More than one explicit listener is supported by the Windows LAN launcher. */
+  attach(gateway: RealtimeGateway): void { this.gateways.add(gateway); }
+  publish(change: RealtimeChangeInput): void { for (const gateway of this.gateways) gateway.publish(change); }
+  publishTeacher(change: Omit<RealtimeChangeInput, 'classId' | 'audience'>): void { for (const gateway of this.gateways) gateway.publishTeacher(change); }
+  evictClass(classId: ClassId): void { for (const gateway of this.gateways) gateway.evictClass(classId); }
 }
 
 /** Attaches Socket.IO to the already-created single Node HTTP server. */

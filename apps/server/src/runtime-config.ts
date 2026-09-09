@@ -13,6 +13,8 @@ export type RuntimeConfig = Readonly<{
   allowedOrigin: string;
   csrfSecret: string;
   host: string;
+  /** A launcher may expose the selected private NIC and loopback, never a wildcard. */
+  hosts: readonly string[];
   port: number;
 }>;
 
@@ -34,7 +36,15 @@ export function readRuntimeConfig(environment: Environment = processEnvironment)
     ? DEFAULT_MINIMUM_FREE_BYTES
     : Number(environment.LAN_CLASSROOM_UPLOAD_MINIMUM_FREE_BYTES);
   if (!Number.isSafeInteger(uploadStorageMinimumFreeBytes) || uploadStorageMinimumFreeBytes < DEFAULT_MINIMUM_FREE_BYTES) throw new Error('RUNTIME_UPLOAD_STORAGE_RESERVE_INVALID');
-  return { databasePath, uploadStoragePath, uploadStorageMinimumFreeBytes, allowedOrigin, csrfSecret, host: environment.LAN_CLASSROOM_HOST ?? '0.0.0.0', port };
+  const host = environment.LAN_CLASSROOM_HOST ?? '127.0.0.1';
+  const hosts = parseHosts(environment.LAN_CLASSROOM_HOSTS, host);
+  return { databasePath, uploadStoragePath, uploadStorageMinimumFreeBytes, allowedOrigin, csrfSecret, host, hosts, port };
+}
+
+function parseHosts(value: string | undefined, fallback: string): readonly string[] {
+  const hosts = (value ?? fallback).split(',').map((host) => host.trim()).filter((host) => host.length > 0);
+  if (hosts.length === 0 || hosts.some((host) => host === '0.0.0.0' || host === '::')) throw new Error('RUNTIME_HOST_INVALID');
+  return [...new Set(hosts)];
 }
 
 function readOrCreateCsrfSecret(directory: string): string {

@@ -11,6 +11,8 @@ export type HttpRouteHandler = (request: IncomingMessage, response: ServerRespon
 
 export type ServerOptions = Readonly<{
   host?: string;
+  /** Explicit bindings only.  The Windows launcher supplies private IPv4 plus loopback. */
+  hosts?: readonly string[];
   port?: number;
   /** Bootstrap may expose a health-only, explicitly non-ready host. */
   health?: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string; version?: string; schemaVersion?: string; upgradeReady?: boolean }>;
@@ -26,6 +28,7 @@ export type ServerOptions = Readonly<{
 
 export type RunningServer = Readonly<{
   host: string;
+  hosts: readonly string[];
   port: number;
   close: () => Promise<void>;
 }>;
@@ -35,24 +38,44 @@ export type RunningServer = Readonly<{
  * SvelteKit handler; later tasks add REST routes and the Socket.IO gateway here.
  */
 export async function startServer(options: ServerOptions = {}): Promise<RunningServer> {
-  const host = options.host ?? '127.0.0.1';
+  const host = options.host ?? options.hosts?.[0] ?? '127.0.0.1';
+  const hosts = [...new Set(options.hosts ?? [host])];
   const port = options.port ?? 4173;
-  const server = createServer((request, response) => { void dispatch(request, response, options); });
-  const realtime = options.realtime === undefined ? undefined : attachRealtimeGateway(server, options.realtime);
-  if (realtime !== undefined) options.onRealtimeGateway?.(realtime);
+  const servers = hosts.map(() => createServer((request, response) => { void dispatch(request, response, options); }));
+  const realtime = options.realtime === undefined ? [] : servers.map((server) => attachRealtimeGateway(server, options.realtime as RealtimeGatewayOptions));
+  for (const gateway of realtime) options.onRealtimeGateway?.(gateway);
 
-  await listen(server, host, port);
-  const address = server.address();
-  if (address === null || typeof address === 'string') {
-    await realtime?.close();
-    await close(server);
+  try {
+    // A port selected by the launcher is shared only by disjoint local addresses.
+    // Bind loopback first so a partial failure does not expose the LAN listener.
+    let listeningPort = port;
+    for (let index = 0; index < servers.length; index += 1) {
+      await listen(servers[index] as HttpServer, hosts[index] as string, listeningPort);
+      // Port zero means the kernel chose a port for the first explicit binding;
+      // subsequent bindings must use that same port.
+      if (index === 0 && port === 0) {
+        const firstAddress = servers[0]?.address();
+        if (firstAddress === null || firstAddress === undefined || typeof firstAddress === 'string') throw new Error('The HTTP server did not expose a TCP address.');
+        listeningPort = firstAddress.port;
+      }
+    }
+  } catch (error) {
+    await Promise.all(realtime.map((gateway) => gateway.close()));
+    await Promise.all(servers.map((server) => close(server)));
+    throw error;
+  }
+  const address = servers[0]?.address();
+  if (address === null || address === undefined || typeof address === 'string') {
+    await Promise.all(realtime.map((gateway) => gateway.close()));
+    await Promise.all(servers.map((server) => close(server)));
     throw new Error('The HTTP server did not expose a TCP address.');
   }
 
   return {
     host,
+    hosts,
     port: address.port,
-    close: async () => { await realtime?.close(); await close(server); }
+    close: async () => { await Promise.all(realtime.map((gateway) => gateway.close())); await Promise.all(servers.map((server) => close(server))); }
   };
 }
 

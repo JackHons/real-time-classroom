@@ -33,6 +33,32 @@ pnpm test:unit
 
 `pnpm build` 先產生 `apps/web/build/`，再產生 `apps/server/dist/`。production package 必須同時保留兩者及 production dependencies，並只能以 `node apps/server/dist/main.js` 啟動；不得另行啟動 SvelteKit adapter 的預設 server。詳見 [bootstrap contract](docs/operations/bootstrap-contract.md)。
 
+## Windows 私有 LAN 啟動
+
+先在部署目錄完成 `pnpm install --frozen-lockfile` 和 `pnpm build`。教師在 **Private** 網路上從 repository 根目錄執行：
+
+```powershell
+.\scripts\windows\Start-LanClassroom.ps1
+```
+
+啟動器會列出可用的私有 IPv4 網卡，並要求教師明確選擇；虛擬網卡會標示出來，Public／Domain、loopback、APIPA 和非 RFC1918 位址不會列入。它會在開始前檢查端口、建置產物和 migrations、runtime data 的私有 ACL／可寫入及 fsync、SQLite 依賴，以及 5.2 GB 上傳預留空間。資料一律位於 `%LOCALAPPDATA%\LanClassroomPlatform`，不在 repository 內；升級不會清除它。
+
+若要建立防火牆規則，管理員可明確要求：
+
+```powershell
+.\scripts\windows\Start-LanClassroom.ps1 -ConfigureFirewall
+```
+
+規則只允許指定 Node 程式和 TCP port，限 **Private** profile 及 `LocalSubnet`；它不會開放 Public 或 Domain profile，也不會自行提權。沒有管理權限時，啟動器會顯示可交給管理員執行的精確指令。預設不變更防火牆。學生使用啟動器顯示的 URL；這是 HTTP，僅限教師確認的受信任 Private LAN，不能防止同網段攔截、竄改或 session token 竊取。
+
+關機時執行：
+
+```powershell
+.\scripts\windows\Stop-LanClassroom.ps1
+```
+
+它只停止記錄的程序並移除由本次啟動器建立的防火牆規則，**不刪除** SQLite、uploads 或其他 runtime data。用 `pnpm test:windows-launcher` 可驗證網卡篩選和選擇邏輯。
+
 ## Quality-gate status
 
 `pnpm lint` 會執行 TypeScript ESLint 及 `svelte-check`；後者是目前明確的 Svelte template/typing quality gate，並非宣稱已具備完整 Svelte style-rule coverage。將來若需要 style lint，必須新增 Svelte ESLint plugin 與規則，而不是靜默略過 `.svelte`。

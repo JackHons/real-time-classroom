@@ -54,6 +54,7 @@ const readiness = migrationReadiness(database);
 health = { ...health, version: '0.1.0', schemaVersion: readiness.schemaVersion, upgradeReady: readiness.upgradeReady };
 const server = await startServer({
   host: config.host,
+  hosts: config.hosts,
   port: config.port,
   health,
   ...(bootstrapHandler === undefined ? {} : { bootstrapHandler }),
@@ -61,7 +62,7 @@ const server = await startServer({
     ? {}
     : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => { realtimeNotifications?.attach(gateway); flushTaskCloseNotifications?.(); } }) })
 });
-console.info(`LAN Classroom host listening at http://${server.host}:${server.port}`);
+console.info(`LAN Classroom host listening at ${server.hosts.map((host) => `http://${host}:${server.port}`).join(', ')}`);
 
 function isUploadStorageStartupError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;

@@ -21,7 +21,8 @@
     "test:integration": "vitest run --config vitest.workspace.ts tests/integration",
     "test:e2e": "playwright test",
     "test:a11y": "playwright test --grep @a11y",
-    "test:load": "node scripts/require-load-suite.mjs"
+    "test:load": "node scripts/require-load-suite.mjs",
+    "test:windows-launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows/launcher.tests.ps1"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
