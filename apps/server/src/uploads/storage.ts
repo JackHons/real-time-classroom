@@ -1,5 +1,6 @@
-import { createReadStream, lstatSync, renameSync, rmSync } from 'node:fs';
+import { constants, createReadStream, lstatSync, renameSync, rmSync } from 'node:fs';
 import { lstat, mkdir, open, readdir, rename, rm, statfs } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { basename, resolve, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { FileStorageDeletion, FileStoragePort } from '../file-tasks/types.js';
@@ -59,14 +60,47 @@ export class UploadStorage implements FileStoragePort {
   async removeStaging(key: string | null): Promise<void> { if (key !== null) { await this.assertPrivateDirectories(); await rm(this.stagingPath(key), { force: true }); } }
   async removeFinal(key: string): Promise<void> { await this.assertPrivateDirectories(); await rm(this.finalPath(key), { force: true }); }
   async existsFinal(key: string): Promise<boolean> { return isRegularFile(this.finalPath(key)); }
+
+  /**
+   * Opens a final object without following links and pins the exact filesystem
+   * object that was inspected.  Callers must close the returned handle.
+   *
+   * Comparing the pre-open lstat with fstat closes the replacement window: a
+   * file swapped between those operations is rejected instead of exported.
+   * O_NOFOLLOW is also used where the platform supports it; the identity check
+   * remains necessary because Windows does not expose that flag consistently.
+   */
+  async openVerifiedFinal(key: string): Promise<FileHandle> {
+    await this.assertPrivateDirectories();
+    const path = this.finalPath(key);
+    let before: Awaited<ReturnType<typeof lstat>>;
+    try { before = await lstat(path); } catch { throw new Error('FILE_EXPORT_INTEGRITY_FAILED'); }
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error('FILE_EXPORT_INTEGRITY_FAILED');
+    let handle: FileHandle | undefined;
+    try {
+      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const after = await handle.stat();
+      if (!after.isFile() || !sameFileIdentity(before, after)) throw new Error('FILE_EXPORT_INTEGRITY_FAILED');
+      return handle;
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      if (error instanceof Error && error.message === 'FILE_EXPORT_INTEGRITY_FAILED') throw error;
+      throw new Error('FILE_EXPORT_INTEGRITY_FAILED', { cause: error });
+    }
+  }
+
   /** Hash before a privileged export.  A replaced, missing, linked, or corrupt
    * final object is never partially disclosed. */
   async verifyFinal(key: string, expectedBytes: number, expectedSha256: string): Promise<boolean> {
-    const path = this.finalPath(key);
-    if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || !/^[a-f0-9]{64}$/.test(expectedSha256) || !await isRegularFile(path)) return false;
+    if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || !/^[a-f0-9]{64}$/.test(expectedSha256)) return false;
     const hash = createHash('sha256'); let count = 0;
-    try { for await (const chunk of createReadStream(path)) { count += chunk.length; if (count > expectedBytes) return false; hash.update(chunk); } }
+    let handle: FileHandle | undefined;
+    try {
+      handle = await this.openVerifiedFinal(key);
+      for await (const chunk of handle.createReadStream({ autoClose: false })) { count += chunk.length; if (count > expectedBytes) return false; hash.update(chunk); }
+    }
     catch { return false; }
+    finally { await handle?.close().catch(() => undefined); }
     return count === expectedBytes && hash.digest('hex') === expectedSha256;
   }
   async existsStaging(key: string): Promise<boolean> { return isRegularFile(this.stagingPath(key)); }
@@ -162,5 +196,8 @@ export class UploadStorage implements FileStoragePort {
 
 async function availableBytes(root: string): Promise<number> { const info = await statfs(root); return Number(info.bavail) * Number(info.bsize); }
 async function isRegularFile(path: string): Promise<boolean> { try { return (await lstat(path)).isFile(); } catch { return false; } }
+function sameFileIdentity(left: Awaited<ReturnType<typeof lstat>>, right: Awaited<ReturnType<FileHandle['stat']>>): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+}
 async function assertPrivateDirectory(path: string): Promise<void> { const info = await lstat(path); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('UPLOAD_STORAGE_PATH_UNSAFE'); }
 function assertPrivateDirectorySync(path: string): void { const info = lstatSync(path); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('UPLOAD_STORAGE_PATH_UNSAFE'); }
