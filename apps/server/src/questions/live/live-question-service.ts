@@ -72,8 +72,9 @@ export class LiveQuestionService {
   deleteAnswer(teacherContext: unknown, questionId: QuestionId, studentId: StudentId, confirmation: DeleteConfirmation): void {
     this.dependencies.teacherAuthorization.assertAuthorized(teacherContext);
     // Resolve first so a nonsensical id cannot turn into a cross-question delete.
-    this.dependencies.repository.question(questionId);
+    const question = this.dependencies.repository.question(questionId);
     this.dependencies.repository.deleteAnswer(questionId, studentId, confirmation);
+    this.notify('answer_updated', question);
   }
 
   private notify(type: 'question_opened' | 'answer_updated' | 'question_closed', question: Question): void {

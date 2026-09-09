@@ -59,7 +59,7 @@
   function startRealtime(): void {
     realtime?.stop();
     realtime = new RealtimeClient({
-      resources: ['class', 'roster', 'question', 'file-task'],
+      resources: ['question', 'file-task'],
       resync: refreshActivities,
       onStatus: (status) => { if (mounted) realtimeStatus = status; }
     });

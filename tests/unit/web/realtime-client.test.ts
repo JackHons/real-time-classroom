@@ -46,9 +46,9 @@ describe('RealtimeClient', () => {
 
   it('cleans up retries and ignores socket events after logout/unmount', async () => {
     const socket = new FakeSocket(); const clock = timers(); let resyncs = 0;
-    const client = new RealtimeClient({ resources: ['class'], resync: async () => { resyncs += 1; }, socketFactory: () => socket, setTimer: clock.set, clearTimer: clock.clear });
+    const client = new RealtimeClient({ resources: ['pending'], resync: async () => { resyncs += 1; }, socketFactory: () => socket, setTimer: clock.set, clearTimer: clock.clear });
     client.start(); socket.emit('disconnect'); client.stop();
-    socket.emit('connect'); socket.emit('class:changed', { resourceType: 'class' });
+    socket.emit('connect'); socket.emit('class:changed', { resourceType: 'pending' });
     expect(socket.disconnects).toBe(1); expect(socket.connects).toBe(1); expect(resyncs).toBe(0);
   });
 });

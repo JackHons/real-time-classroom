@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
  * The gateway intentionally sends only invalidation hints.  Never add entity
  * fields here: the REST endpoint remains the single source of UI state.
  */
-export type RealtimeResource = 'class' | 'roster' | 'question' | 'file-task';
+export type RealtimeResource = 'roster' | 'question' | 'file-task' | 'pending' | 'submission';
 export type RealtimeStatus = 'connecting' | 'live' | 'reconnecting' | 'offline';
 export type ChangeHint = Readonly<{ resourceType: RealtimeResource }>;
 type Timer = ReturnType<typeof globalThis.setTimeout>;
@@ -15,6 +15,7 @@ export interface RealtimeSocket {
   disconnect(): RealtimeSocket;
   on(event: string, callback: (...args: unknown[]) => void): RealtimeSocket;
   off(event: string, callback?: (...args: unknown[]) => void): RealtimeSocket;
+  emit(event: string, ...args: unknown[]): void;
 }
 
 export type RealtimeOptions = Readonly<{
@@ -26,6 +27,8 @@ export type RealtimeOptions = Readonly<{
   random?: () => number;
   setTimer?: (callback: () => void, delayMs: number) => Timer;
   clearTimer?: (timer: Timer) => void;
+  /** Teachers opt into one already-authorized class; students never send it. */
+  teacherClassId?: () => string | undefined;
 }>;
 
 const CHANGE_EVENT = 'class:changed';
@@ -106,6 +109,13 @@ export class RealtimeClient {
 
   isLive(): boolean { return this.running && this.live && this.socket.connected; }
 
+  /** Updates the visible teacher class; the server remains the authorization authority. */
+  subscribeTeacherClass(): void {
+    if (!this.running || !this.live) return;
+    const classId = this.options.teacherClassId?.();
+    if (classId !== undefined && classId.length > 0) this.socket.emit('class:subscribe', { classId });
+  }
+
   private readonly connected = (): void => {
     if (!this.running) return;
     this.live = true;
@@ -113,6 +123,7 @@ export class RealtimeClient {
     if (this.retryTimer !== undefined) this.clearTimer(this.retryTimer);
     this.retryTimer = undefined;
     this.options.onStatus?.('live');
+    this.subscribeTeacherClass();
     // A reconnect never trusts missed socket history; it re-reads REST.
     void this.requestResync();
   };
@@ -177,5 +188,5 @@ export class RealtimeClient {
 
 export const realtimeEventContract = Object.freeze({
   event: CHANGE_EVENT,
-  payload: '{ resourceType: "class" | "roster" | "question" | "file-task" }'
+  payload: '{ resourceType: "roster" | "question" | "file-task" | "pending" | "submission" }'
 });

@@ -43,6 +43,9 @@ export type ApplicationOptions = Readonly<{
   /** Focused tests may shorten these; production uses the conservative route defaults. */
   uploadIdleTimeoutMs?: number;
   uploadAbsoluteRequestTimeoutMs?: number;
+  /** Focused server tests may shorten realtime liveness checks. */
+  realtimeSessionCheckMs?: number;
+  realtimeHeartbeatMs?: number;
 }>;
 
 export type Application = Readonly<{
@@ -168,7 +171,12 @@ export function createApplication(options: ApplicationOptions): Application {
       allowedOrigin: options.allowedOrigin,
       authenticateTeacher: (token) => sessions.authenticateTeacher(token),
       authenticateStudent: (token) => sessions.authenticateStudent(token),
-      classExists: (classId) => rosterRepository.classExists(classId)
+      // This deployment has one shared teacher principal. Therefore every
+      // existing class is authorized for an authenticated teacher; retaining
+      // the explicit predicate makes a future per-teacher model fail closed.
+      canTeacherAccessClass: (_teacher, classId) => rosterRepository.classExists(classId),
+      ...(options.realtimeSessionCheckMs === undefined ? {} : { sessionCheckMs: options.realtimeSessionCheckMs }),
+      ...(options.realtimeHeartbeatMs === undefined ? {} : { heartbeatMs: options.realtimeHeartbeatMs })
     },
     realtimeNotifications,
     reconcileUploads: async () => {

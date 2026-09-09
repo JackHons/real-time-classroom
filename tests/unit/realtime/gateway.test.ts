@@ -44,6 +44,14 @@ describe('realtime gateway', () => {
     expect(response).not.toMatch(/referenceAnswer|selectedOptions|studentId|displayName|filename/i);
   });
 
+  it('rejects a teacher subscription outside the authorization port', async () => {
+    running = await gatewayServer();
+    const base = `http://127.0.0.1:${running.port}`;
+    const sid = await connectedTeacher(base);
+    await packet(base, sid, '42["class:subscribe",{"classId":"class-b"}]', teacherCookie);
+    expect(await poll(base, sid, teacherCookie)).toContain('CLASS_SCOPE_FORBIDDEN');
+  });
+
   it('admits 50 clients and handles a reconnect burst within the configured ceiling', async () => {
     running = await gatewayServer();
     const base = `http://127.0.0.1:${running.port}`;
@@ -62,7 +70,7 @@ async function gatewayServer(onGateway?: (gateway: RealtimeGateway) => void): Pr
       allowedOrigin: origin,
       authenticateTeacher: (token) => token === 'valid-teacher-cookie' ? { teacherSessionId: 'teacher-session-a' } : undefined,
       authenticateStudent: () => undefined,
-      classExists: (classId) => classId === 'class-a',
+      canTeacherAccessClass: (_teacher, classId) => classId === 'class-a',
       sessionCheckMs: 1_000,
       heartbeatMs: 5_000
     },

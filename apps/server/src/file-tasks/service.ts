@@ -14,7 +14,7 @@ export type FileTaskServiceDependencies = Readonly<{
   now?: () => Date;
   createTaskId?: () => FileSubmissionTaskId;
   /** Best-effort, payload-free class invalidation after durable writes. */
-  notify?: (event: Readonly<{ classId: ClassId; resourceType: 'fileTask' | 'submission'; id: string; event: string; audience: 'all' | 'teacher' }>) => void;
+  notify?: (event: Readonly<{ classId: ClassId; resourceType: 'file-task' | 'submission'; id: string; event: string; audience: 'all' | 'teacher' }>) => void;
 }>;
 
 /** State and authorization boundary for metadata; it never consumes file bytes. */
@@ -128,14 +128,16 @@ export class FileTaskService {
   private reconcile(taskId: FileSubmissionTaskId): FileSubmissionTask {
     const task = required(this.dependencies.repository.task(taskId));
     if (task.state === 'open' && Date.parse(task.deadlineAtUtc) < this.now().valueOf()) {
-      return this.dependencies.repository.closeTask(taskId, iso(this.now())) ?? required(this.dependencies.repository.task(taskId));
+      const closed = this.dependencies.repository.closeTask(taskId, iso(this.now())) ?? required(this.dependencies.repository.task(taskId));
+      this.notifyTask(closed, 'filetask_closed');
+      return closed;
     }
     return task;
   }
   private teacher(context: unknown): void { this.dependencies.teacherAuthorization.assertAuthorized(context); }
   private student(context: unknown): AuthorizedStudentContext { return this.dependencies.studentAuthorization.assertAuthorized(context); }
   private notifyTask(task: Pick<FileSubmissionTask, 'id' | 'classId'>, event: string): void {
-    try { this.dependencies.notify?.({ classId: task.classId, resourceType: 'fileTask', id: task.id, event, audience: event === 'filetask_opened' || event === 'filetask_closed' ? 'all' : 'teacher' }); } catch { /* REST write stays durable */ }
+    try { this.dependencies.notify?.({ classId: task.classId, resourceType: 'file-task', id: task.id, event, audience: event === 'filetask_opened' || event === 'filetask_closed' ? 'all' : 'teacher' }); } catch { /* REST write stays durable */ }
   }
   private notifySubmission(taskId: FileSubmissionTaskId, event: string): void {
     const task = this.dependencies.repository.task(taskId);

@@ -10,8 +10,8 @@ way to create, edit, open, close, approve, upload, or delete data.
   `LAN_CLASSROOM_ALLOWED_ORIGIN`, a loopback or RFC1918/IPv6-ULA peer address,
   and either the existing `teacher_session` or `student_session` cookie.
 - Student sockets join only their authenticated `class:<classId>:student` room.
-  Teachers must explicitly send `class:subscribe` with `{ "classId": "..." }`;
-  the gateway verifies that the class exists and joins their
+  Teachers explicitly send `class:subscribe` with `{ "classId": "..." }`;
+  the gateway verifies that the authenticated teacher is authorized for it and joins their
   `class:<classId>:teacher` room. A student cannot subscribe to a different
   class.
 - The gateway rechecks the same session every 30 seconds. Revoked, expired, or
@@ -30,7 +30,7 @@ way to create, edit, open, close, approve, upload, or delete data.
 { "resourceType": "question", "id": "opaque-id", "version": 42, "event": "question_opened" }
 ```
 
-`resourceType` is one of `question`, `fileTask`, `pending`, `roster`, or
+`resourceType` is one of `question`, `file-task`, `pending`, `roster`, or
 `submission`. The `event` is an invalidation label only. The event schema has
 no answer content, reference answer, student ID/name/number, file name, hash,
 or byte metadata. Notifications are best-effort and occur only after the REST

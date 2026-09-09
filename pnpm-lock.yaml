@@ -32,6 +32,9 @@ importers:
       fake-indexeddb:
         specifier: 6.2.5
         version: 6.2.5
+      socket.io-client:
+        specifier: 4.8.3
+        version: 4.8.3
       typescript:
         specifier: 6.0.3
         version: 6.0.3

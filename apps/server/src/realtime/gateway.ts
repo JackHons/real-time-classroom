@@ -2,7 +2,8 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import type { ClassId } from '../domain/types.js';
 
-export type RealtimeResourceType = 'question' | 'fileTask' | 'pending' | 'roster' | 'submission';
+/** Keep this discriminator byte-for-byte aligned with the web client's allowlist. */
+export type RealtimeResourceType = 'question' | 'file-task' | 'pending' | 'roster' | 'submission';
 export type RealtimeChangeInput = Readonly<{ classId: ClassId; resourceType: RealtimeResourceType; id: string; event: string; audience?: 'all' | 'teacher' }>;
 export type RealtimeChange = Readonly<{ resourceType: RealtimeResourceType; id: string; version: number; event: string }>;
 
@@ -14,7 +15,8 @@ export type RealtimeGatewayOptions = Readonly<{
   allowedOrigin: string;
   authenticateTeacher: (token: string | undefined) => Readonly<{ teacherSessionId: string }> | undefined;
   authenticateStudent: (token: string | undefined) => Readonly<{ studentSessionId: string; studentId: string; classId: ClassId }> | undefined;
-  classExists: (classId: ClassId) => boolean;
+  /** Must check both existence and this teacher's authority for the class. */
+  canTeacherAccessClass: (teacher: RealtimeTeacher, classId: ClassId) => boolean;
   /** Production defaults admit 100 concurrent browser transports, including 50-client class tests. */
   maximumConnections?: number;
   heartbeatMs?: number;
@@ -93,8 +95,14 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
       if (classId === undefined) { socket.emit('realtime:error', { code: 'INVALID_SUBSCRIPTION' }); return; }
       const current = authenticate(socket.handshake.headers.cookie, options);
       if (current === undefined || !sameSession(principal, current)) { socket.disconnect(true); return; }
-      if (principal.actor === 'student' && principal.classId !== classId) { socket.emit('realtime:error', { code: 'CLASS_SCOPE_FORBIDDEN' }); return; }
-      if (principal.actor === 'teacher' && !options.classExists(classId)) { socket.emit('realtime:error', { code: 'CLASS_NOT_FOUND' }); return; }
+      if (principal.actor === 'student') {
+        // Student scope is fixed by the authenticated session and was joined at
+        // connect time. Never let this event join a student to a teacher room.
+        if (principal.classId !== classId) socket.emit('realtime:error', { code: 'CLASS_SCOPE_FORBIDDEN' });
+        else emitRefetch(socket);
+        return;
+      }
+      if (!options.canTeacherAccessClass(principal, classId)) { socket.emit('realtime:error', { code: 'CLASS_SCOPE_FORBIDDEN' }); return; }
       socket.join(room(classId, 'teacher'));
       emitRefetch(socket);
     });
