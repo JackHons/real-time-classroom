@@ -203,23 +203,25 @@ function materializeClosedAnswerSnapshot(database: SqliteDatabase, questionId: Q
 
 function createExportSnapshot(): ExportSnapshot {
   const directory = mkdtempSync(join(tmpdir(), 'lan-classroom-export-snapshot-'));
-  const snapshotDatabase: SqliteDatabase = new Database(join(directory, 'snapshot.sqlite'));
+  let snapshotDatabase: SqliteDatabase | undefined;
   try {
+    snapshotDatabase = new Database(join(directory, 'snapshot.sqlite'));
     snapshotDatabase.pragma('journal_mode = DELETE');
     snapshotDatabase.pragma('page_size = 4096');
     snapshotDatabase.pragma(`max_page_count = ${EXPORT_SNAPSHOT_MAX_PAGES}`);
+    const database = snapshotDatabase;
+    return {
+      database,
+      dispose: () => {
+        database.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    };
   } catch (error) {
-    snapshotDatabase.close();
+    snapshotDatabase?.close();
     rmSync(directory, { recursive: true, force: true });
     throw error;
   }
-  return {
-    database: snapshotDatabase,
-    dispose: () => {
-      snapshotDatabase.close();
-      rmSync(directory, { recursive: true, force: true });
-    }
-  };
 }
 
 class ExportAbortedError extends Error {}
