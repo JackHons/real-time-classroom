@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -305,4 +305,54 @@ describe('Task 3 composed API routes', () => {
     expect(archive.headers.get('content-disposition')).toContain('filename*=UTF-8');
     expect(Buffer.from(await archive.arrayBuffer()).toString('utf8')).toContain('A1_Ada_answer.txt');
   });
+
+  it('streams a verified, flat fifty-file ZIP only for its closed class', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const db = database as SqliteDatabase;
+    const at = '2026-09-09T00:00:00.000Z';
+    db.prepare('INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES (?,?,?,?)').run('archive-class', 'Archive class', at, at);
+    db.prepare('INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES (?,?,?,?)').run('other-class', 'Other class', at, at);
+    db.prepare("INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,?,'','closed',100000000,?,?,?,?,?)")
+      .run('archive-task', 'archive-class', 'Archive', '2099-01-01T00:00:00.000Z', at, at, at, at);
+    const student = db.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)');
+    const submission = db.prepare('INSERT INTO file_submissions (id,task_id,student_id,original_filename,display_filename,storage_key,declared_mime_type,byte_length,sha256,received_complete_at_utc,deleted_at_utc) VALUES (?,?,?,?,?,?,?,?,?,?,NULL)');
+    let missingKey = '';
+    for (let index = 0; index < 50; index += 1) {
+      const studentId = `archive-student-${index}`; const key = randomUUID(); const content = Buffer.from(`verified-${index}`);
+      student.run(studentId, 'archive-class', `Name${index === 0 ? '/evil' : index === 1 ? '\\evil' : index}`, `S${String(index).padStart(2, '0')}`, `S${String(index).padStart(2, '0')}`, 0, at);
+      // The first two normalize to colliding flat names; neither path syntax can
+      // survive the server-generated archive entry boundary.
+      const filename = index === 0 ? '../report.txt' : index === 1 ? '..\\report.txt' : 'answer.txt';
+      submission.run(randomUUID(), 'archive-task', studentId, filename, 'answer.txt', key, null, content.length, createHash('sha256').update(content).digest('hex'), at);
+      writeFileSync(join(directory as string, 'uploads', 'files', key), content);
+      if (index === 49) missingKey = key;
+    }
+    expect((await fetch(`${base}/api/classes/archive-class/file-tasks/archive-task/submissions.zip`)).status).toBe(401);
+    expect((await fetch(`${base}/api/classes/other-class/file-tasks/archive-task/submissions.zip`, { headers: { cookie: teacher.cookie } })).status).toBe(404);
+    const archive = await fetch(`${base}/api/classes/archive-class/file-tasks/archive-task/submissions.zip`, { headers: { cookie: teacher.cookie } });
+    expect(archive.status).toBe(200);
+    expect(archive.headers.get('cache-control')).toBe('no-store');
+    expect(archive.headers.get('x-content-type-options')).toBe('nosniff');
+    const names = zipEntryNames(Buffer.from(await archive.arrayBuffer()));
+    expect(names).toHaveLength(50);
+    expect(new Set(names.map((name) => name.toLocaleLowerCase('en-US'))).size).toBe(50);
+    expect(names.every((name) => !/[\\/:]/.test(name) && !name.includes('..'))).toBe(true);
+    rmSync(join(directory as string, 'uploads', 'files', missingKey));
+    const missing = await fetch(`${base}/api/classes/archive-class/file-tasks/archive-task/submissions.zip`, { headers: { cookie: teacher.cookie } });
+    expect(missing.status).toBe(400);
+    expect(missing.headers.get('content-type')).toContain('application/json');
+  });
 });
+
+/** Read central-directory names instead of trusting the byte stream as text. */
+function zipEntryNames(archive: Buffer): readonly string[] {
+  let offset = archive.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  const names: string[] = [];
+  while (offset >= 0 && archive.readUInt32LE(offset) === 0x02014b50) {
+    const nameLength = archive.readUInt16LE(offset + 28); const extraLength = archive.readUInt16LE(offset + 30); const commentLength = archive.readUInt16LE(offset + 32);
+    names.push(archive.subarray(offset + 46, offset + 46 + nameLength).toString('utf8'));
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return names;
+}

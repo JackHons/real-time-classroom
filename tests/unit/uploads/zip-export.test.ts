@@ -45,6 +45,19 @@ describe('ZIP export', () => {
       expect(output.writeHead).toHaveBeenCalledTimes(1);
     });
   });
+
+  it('releases its stream slot when the HTTP receiver aborts mid-archive', async () => {
+    await withStorage(async (storage) => {
+      const item = await source(storage, 'x'.repeat(128 * 1024));
+      const aborted = new PassThrough() as PassThrough & { writeHead: ReturnType<typeof vi.fn> }; aborted.writeHead = vi.fn();
+      const exportWhileBlocked = exportZip(aborted as never, storage, [entry(item, '1', 'Name', 'answer.bin')]);
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+      aborted.destroy();
+      await expect(exportWhileBlocked).rejects.toThrow('FILE_EXPORT_ABORTED');
+      const retry = new PassThrough() as PassThrough & { writeHead: ReturnType<typeof vi.fn> }; retry.writeHead = vi.fn(); retry.resume();
+      await expect(exportZip(retry as never, storage, [entry(item, '1', 'Name', 'answer.bin')])).resolves.toBeUndefined();
+    });
+  });
 });
 
 async function withStorage(work: (storage: UploadStorage) => Promise<void>): Promise<void> {
