@@ -1,6 +1,6 @@
 /* global RequestInit, Headers, File, XMLHttpRequest, AbortSignal, URLSearchParams */
 import { ApiError, type AnswerPayload, type PublicClass, type StudentActivities, type StudentFileTask, type StudentQuestion } from './types';
-import { discardAnswerQueueOwner, discardOtherAnswerQueueOwners } from './answer-queue';
+import { discardAnswerQueueOwner } from './answer-queue';
 
 type Fetcher = typeof fetch;
 let csrfToken: string | undefined;
@@ -12,12 +12,9 @@ function rememberCsrf(token: string | undefined): void {
 
 async function rememberQueueOwner(sessionId: string): Promise<string> {
   const nextOwner = `student-session:${sessionId}`;
-  // A successful authentication replaces the former browser session, not its
-  // pending answers.
-  if (queueOwner !== undefined && queueOwner !== nextOwner) await discardAnswerQueueOwner(queueOwner);
-  // A browser cookie identifies one active student; all other queue namespaces
-  // are orphaned and contain only answer JSON, never tokens or uploads.
-  await discardOtherAnswerQueueOwners(nextOwner);
+  // Another browser tab can still hold this owner's offline answer. A newly
+  // authenticated cookie therefore never proves any other owner was discarded.
+  // Explicit logout/expiry paths below are the only automatic deletion paths.
   queueOwner = nextOwner;
   return queueOwner;
 }
@@ -25,8 +22,7 @@ async function forgetSession(): Promise<void> {
   const formerOwner = queueOwner;
   csrfToken = undefined;
   queueOwner = undefined;
-  if (formerOwner === undefined) await discardOtherAnswerQueueOwners(undefined);
-  else await discardAnswerQueueOwner(formerOwner);
+  if (formerOwner !== undefined) await discardAnswerQueueOwner(formerOwner);
 }
 
 export function isSessionExpired(error: unknown): error is ApiError {

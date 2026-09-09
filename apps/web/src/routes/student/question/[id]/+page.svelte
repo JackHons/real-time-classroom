@@ -96,7 +96,10 @@
     } catch (error) {
       if (isSessionExpired(error)) { await expireSession(); return; }
       if (queue === undefined) { state = 'session-expired'; notice = '登入已失效，無法安全儲存答案；請重新登入後再試。'; return; }
-      await queue.put(queued); state = 'queued'; notice = '目前離線或送出失敗；答案只保存在這台裝置的目前登入階段，恢復連線後會自動送出。';
+      const maintenance = await queue.put(queued); state = 'queued';
+      notice = maintenance.storagePressure
+        ? '目前離線或送出失敗；答案已安全保留。此裝置累積許多未同步答案，請恢復連線後重新送出或明確捨棄不需要的答案。'
+        : '目前離線或送出失敗；答案只保存在這台裝置的目前登入階段，恢復連線後會自動送出。';
     }
   }
 </script>

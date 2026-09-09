@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
-import { cleanupAnswerQueues, createAnswerQueue, discardOtherAnswerQueueOwners, flushAnswers } from '../../../apps/web/src/lib/student/answer-queue.js';
+import { studentApi } from '../../../apps/web/src/lib/student/api.js';
+import { cleanupAnswerQueues, createAnswerQueue, flushAnswers } from '../../../apps/web/src/lib/student/answer-queue.js';
 import type { QueuedAnswer } from '../../../apps/web/src/lib/student/types.js';
 
 const answer: QueuedAnswer = {
@@ -64,7 +65,7 @@ describe('student answer queue', () => {
     expect(await second.list()).toEqual([secondAnswer]);
   });
 
-  it('deletes v1 ownerless-key records during migration instead of replaying them', async () => {
+  it('deletes v1 ownerless-key records during a concurrent migration instead of replaying them', async () => {
     const indexedDb = new IDBFactory();
     await new Promise<void>((resolve, reject) => {
       const open = indexedDb.open('lan-classroom-student', 1);
@@ -72,33 +73,86 @@ describe('student answer queue', () => {
       open.onsuccess = () => { open.result.close(); resolve(); };
       open.onerror = () => reject(open.error);
     });
-    const migrated = createAnswerQueue('student-a', indexedDb);
-    expect(await migrated.list()).toEqual([]);
+    const first = createAnswerQueue('student-a', indexedDb);
+    const second = createAnswerQueue('student-b', indexedDb);
+    const firstAnswer = { ...answer, id: 'first', createdAt: Date.now() };
+    const secondAnswer = { ...answer, id: 'second', createdAt: Date.now() };
+    await Promise.all([first.put(firstAnswer), second.put(secondAnswer)]);
+    expect(await first.list()).toEqual([firstAnswer]);
+    expect(await second.list()).toEqual([secondAnswer]);
   });
 
-  it('removes expired orphan owners but preserves the active owner', async () => {
+  it('keeps an eight-day unsynchronised owner when another owner creates and writes a queue', async () => {
     const indexedDb = new IDBFactory();
     const now = Date.now();
-    const expired = createAnswerQueue('old-session', indexedDb);
-    const active = createAnswerQueue('active-session', indexedDb);
+    const current = createAnswerQueue('current-session', indexedDb);
+    const other = createAnswerQueue('other-session', indexedDb);
     const oldAnswer = { ...answer, id: 'old', createdAt: now - 8 * 24 * 60 * 60 * 1000 };
-    const activeAnswer = { ...answer, id: 'active', createdAt: oldAnswer.createdAt };
-    await expired.put(oldAnswer);
-    await active.put(activeAnswer);
-    await cleanupAnswerQueues(indexedDb, 'active-session', now);
-    expect(await expired.list()).toEqual([]);
-    expect(await active.list()).toEqual([activeAnswer]);
+    const currentAnswer = { ...answer, id: 'current', createdAt: now };
+    await current.put(oldAnswer);
+    await other.put(currentAnswer);
+    expect(await cleanupAnswerQueues(indexedDb)).toEqual({ recordCount: 2, storagePressure: false });
+    expect(await current.list()).toEqual([oldAnswer]);
+    expect(await other.list()).toEqual([currentAnswer]);
   });
 
-  it('clears prior-owner answer JSON when a server-confirmed new owner starts', async () => {
+  it('removes an owner only after that owner is explicitly discarded', async () => {
     const indexedDb = new IDBFactory();
     const previous = createAnswerQueue('previous-session', indexedDb);
     const current = createAnswerQueue('current-session', indexedDb);
     const currentAnswer = { ...answer, id: 'current', createdAt: Date.now() };
     await previous.put({ ...answer, id: 'previous', createdAt: Date.now() });
     await current.put(currentAnswer);
-    await discardOtherAnswerQueueOwners('current-session', indexedDb);
+    await previous.discard();
     expect(await previous.list()).toEqual([]);
     expect(await current.list()).toEqual([currentAnswer]);
+  });
+
+  it('reports storage pressure at the global target without deleting another owner', async () => {
+    const indexedDb = new IDBFactory();
+    const queues = Array.from({ length: 101 }, (_, index) => createAnswerQueue(`session-${index}`, indexedDb));
+    let maintenance = await queues[0].put({ ...answer, id: 'answer-0', createdAt: Date.now() - 8 * 24 * 60 * 60 * 1000 });
+    for (let index = 1; index < queues.length; index += 1) {
+      maintenance = await queues[index].put({ ...answer, id: `answer-${index}`, createdAt: Date.now() + index });
+    }
+    expect(maintenance).toEqual({ recordCount: 101, storagePressure: true });
+    expect(await queues[0].list()).toEqual([{ ...answer, id: 'answer-0', createdAt: expect.any(Number) }]);
+  });
+
+  it('allows same-owner tabs to write concurrently without either queue deleting the other answer', async () => {
+    const indexedDb = new IDBFactory();
+    const firstTab = createAnswerQueue('shared-session', indexedDb);
+    const secondTab = createAnswerQueue('shared-session', indexedDb);
+    const firstAnswer = { ...answer, id: 'first-tab', createdAt: Date.now() };
+    const secondAnswer = { ...answer, id: 'second-tab', createdAt: Date.now() + 1 };
+    await Promise.all([firstTab.put(firstAnswer), secondTab.put(secondAnswer)]);
+    expect(await firstTab.list()).toEqual([firstAnswer, secondAnswer]);
+    expect(await secondTab.list()).toEqual([firstAnswer, secondAnswer]);
+  });
+
+  it('does not discard a previous owner merely because a new session is restored', async () => {
+    const indexedDb = new IDBFactory();
+    const previous = createAnswerQueue('previous-session', indexedDb);
+    const previousAnswer = { ...answer, id: 'previous-session-answer', createdAt: Date.now() - 8 * 24 * 60 * 60 * 1000 };
+    await previous.put(previousAnswer);
+    const originalFetch = globalThis.fetch;
+    const originalIndexedDb = globalThis.indexedDB;
+    try {
+      globalThis.indexedDB = indexedDb;
+      globalThis.fetch = vi.fn()
+        .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({ actor: 'student', classId: 'class-1', sessionId: 'new-session' })))
+        .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({ csrfToken: 'csrf-token' }))) as typeof globalThis.fetch;
+      await expect(studentApi.restoreSession()).resolves.toEqual({ classId: 'class-1', queueOwner: 'student-session:new-session' });
+      expect(await previous.list()).toEqual([previousAnswer]);
+      const restored = createAnswerQueue('student-session:new-session', indexedDb);
+      await restored.put({ ...answer, id: 'restored-session-answer', createdAt: Date.now() });
+      await studentApi.endSession();
+      expect(await restored.list()).toEqual([]);
+      expect(await previous.list()).toEqual([previousAnswer]);
+    } finally {
+      await studentApi.endSession();
+      globalThis.fetch = originalFetch;
+      globalThis.indexedDB = originalIndexedDb;
+    }
   });
 });
