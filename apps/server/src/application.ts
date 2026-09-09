@@ -14,6 +14,7 @@ import { SqliteQuestionBankRepository } from './db/question-bank-repository.js';
 import { SqliteDomainRepository } from './db/sqlite-repositories.js';
 import { SqliteUploadPipelineRepository } from './db/upload-pipeline-repository.js';
 import type { AuthorizedStudentContext, AuthorizedTeacherContext } from './domain/types.js';
+import { createExportRoutes } from './exports/http-routes.js';
 import { createFileTaskRoutes } from './file-tasks/http-routes.js';
 import { FileTaskService } from './file-tasks/service.js';
 import { createQuestionBankRoutes } from './questions/bank/http-routes.js';
@@ -170,6 +171,7 @@ export function createApplication(options: ApplicationOptions): Application {
   const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now(), onTaskClosed: (task) => realtimeNotifications.publish({ classId: task.classId, resourceType: 'file-task', id: task.taskId, event: 'filetask_closed', audience: 'all' }) });
   const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher, notify: (event) => realtimeNotifications.publish(event), ...(options.uploadIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.uploadIdleTimeoutMs }), ...(options.uploadAbsoluteRequestTimeoutMs === undefined ? {} : { absoluteRequestTimeoutMs: options.uploadAbsoluteRequestTimeoutMs }) });
   const activityHandler = createActivityRoutes({ database: options.database, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
+  const exportHandler = createExportRoutes({ database: options.database, teacherContext: authenticateTeacher });
   let uploadsReady = false;
 
   return {
@@ -215,7 +217,7 @@ export function createApplication(options: ApplicationOptions): Application {
         }
         try {
           if (pathname.includes('/file-tasks/') && !uploadsReady) { sendJson(response, 503, { error: 'UPLOADS_INITIALIZING' }); return true; }
-          const handled = await classHandler(request, response) || await questionBankHandler(request, response) || await fileTaskHandler(request, response) || await uploadHandler(request, response);
+          const handled = await exportHandler(request, response) || await classHandler(request, response) || await questionBankHandler(request, response) || await fileTaskHandler(request, response) || await uploadHandler(request, response);
           if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
         } catch (error) { sendError(response, error); }
         return true;
@@ -228,9 +230,9 @@ export function createApplication(options: ApplicationOptions): Application {
           try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(response, error); return true; }
         }
         try {
-          const handled = pathname.startsWith('/api/question-templates')
+          const handled = await exportHandler(request, response) || (pathname.startsWith('/api/question-templates')
             ? await questionBankHandler(request, response)
-            : await liveQuestionHandler(request, response);
+            : await liveQuestionHandler(request, response));
           if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
         } catch (error) { sendError(response, error); }
         return true;
@@ -287,7 +289,7 @@ function sendError(response: ServerResponse, error: unknown): void {
   if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED' || code.endsWith('_NOT_FOUND') || code === 'ANSWER_NOT_FOUND') { sendJson(response, 404, { error: code }); return; }
   if (code === 'REQUEST_BODY_TOO_LARGE' || code === 'UPLOAD_TOO_LARGE') { sendJson(response, 413, { error: code }); return; }
   if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(response, 403, { error: code }); return; }
-  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT' || code === 'FILE_SUBMISSION_ALREADY_EXISTS' || code === 'FILE_TASK_TRANSITION_CONFLICT') { sendJson(response, 409, { error: code }); return; }
+  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT' || code === 'QUESTION_EXPORT_CLOSED_REQUIRED' || code === 'FILE_SUBMISSION_ALREADY_EXISTS' || code === 'FILE_TASK_TRANSITION_CONFLICT') { sendJson(response, 409, { error: code }); return; }
   if (code === 'UPLOAD_STREAM_LIMIT_REACHED') { sendJson(response, 429, { error: 'UPLOAD_REJECTED' }); return; }
   if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
   sendJson(response, 500, { error: 'CLASS_INTERNAL_ERROR' });

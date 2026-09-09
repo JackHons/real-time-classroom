@@ -7,7 +7,8 @@ const migrations = [
   { id: '0003_upload_session_recovery_metadata', sql: readFileSync(new URL('./migrations/0003_upload_session_recovery_metadata.sql', import.meta.url), 'utf8') },
   { id: '0004_upload_storage_integrity', sql: readFileSync(new URL('./migrations/0004_upload_storage_integrity.sql', import.meta.url), 'utf8') },
   { id: '0005_upload_staging_cleanup_audit', sql: readFileSync(new URL('./migrations/0005_upload_staging_cleanup_audit.sql', import.meta.url), 'utf8') },
-  { id: '0006_file_task_close_notification_outbox', sql: readFileSync(new URL('./migrations/0006_file_task_close_notification_outbox.sql', import.meta.url), 'utf8') }
+  { id: '0006_file_task_close_notification_outbox', sql: readFileSync(new URL('./migrations/0006_file_task_close_notification_outbox.sql', import.meta.url), 'utf8') },
+  { id: '0007_answer_export_deletion_snapshot', sql: readFileSync(new URL('./migrations/0007_answer_export_deletion_snapshot.sql', import.meta.url), 'utf8') }
 ] as const;
 
 export function migrate(database: SqliteDatabase): void {

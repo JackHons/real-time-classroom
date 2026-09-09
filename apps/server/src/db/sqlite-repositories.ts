@@ -120,10 +120,11 @@ export class SqliteDomainRepository implements DomainRepository {
   deleteAnswer(questionId: QuestionId, studentId: StudentId, confirmation: { confirmed: true; impactAcknowledged: true }): void {
     if (!confirmation.confirmed || !confirmation.impactAcknowledged) throw new Error('DELETE_CONFIRMATION_REQUIRED');
     this.database.transaction(() => {
+      const closeSnapshot = this.database.prepare('SELECT display_name,student_number,closed_at_utc FROM answer_at_close WHERE question_id=? AND student_id=?').get(questionId, studentId) as { display_name: string | null; student_number: string | null; closed_at_utc: string | null } | undefined;
       this.database.prepare('DELETE FROM answer_submission_idempotency WHERE question_id=? AND student_id=?').run(questionId, studentId);
       this.database.prepare('DELETE FROM answer_current WHERE question_id=? AND student_id=?').run(questionId, studentId);
       this.database.prepare('DELETE FROM answer_at_close WHERE question_id=? AND student_id=?').run(questionId, studentId);
-      this.database.prepare('INSERT INTO answer_deletion_markers (question_id,student_id,deleted_at_utc) VALUES (?,?,?) ON CONFLICT(question_id,student_id) DO UPDATE SET deleted_at_utc=excluded.deleted_at_utc').run(questionId, studentId, this.now());
+      this.database.prepare('INSERT INTO answer_deletion_markers (question_id,student_id,deleted_at_utc,display_name,student_number,closed_at_utc) VALUES (?,?,?,?,?,?) ON CONFLICT(question_id,student_id) DO UPDATE SET deleted_at_utc=excluded.deleted_at_utc,display_name=COALESCE(answer_deletion_markers.display_name,excluded.display_name),student_number=COALESCE(answer_deletion_markers.student_number,excluded.student_number),closed_at_utc=COALESCE(answer_deletion_markers.closed_at_utc,excluded.closed_at_utc)').run(questionId, studentId, this.now(), closeSnapshot?.display_name ?? null, closeSnapshot?.student_number ?? null, closeSnapshot?.closed_at_utc ?? null);
     })();
   }
 
