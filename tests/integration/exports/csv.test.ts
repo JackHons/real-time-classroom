@@ -223,7 +223,7 @@ function exportSnapshotDirectories(): readonly string[] {
 async function waitForSnapshotCleanup(before: readonly string[]): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (JSON.stringify(exportSnapshotDirectories()) === JSON.stringify(before)) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 10));
   }
   throw new Error('export snapshot cleanup timed out');
 }
