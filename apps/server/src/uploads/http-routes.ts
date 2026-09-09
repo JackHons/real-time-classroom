@@ -11,6 +11,8 @@ export type UploadRouteDependencies = Readonly<{
   storage: UploadStorage;
   studentContext: (request: IncomingMessage) => Readonly<{ studentId: StudentId; classId: ClassId }>;
   teacherContext: (request: IncomingMessage) => unknown;
+  /** A successful byte commit may invalidate only submission status, never filenames or identity. */
+  notify?: (event: Readonly<{ classId: ClassId; resourceType: 'submission'; id: string; event: string; audience: 'teacher' }>) => void;
   /** Lower only in focused tests; each timer aborts the actual HTTP stream. */
   idleTimeoutMs?: number;
   absoluteRequestTimeoutMs?: number;
@@ -42,6 +44,7 @@ export function createUploadRoutes(dependencies: UploadRouteDependencies): (requ
         ...(expectedSha256 === undefined ? {} : { expectedSha256 }),
         signal: request
       });
+      try { dependencies.notify?.({ classId, resourceType: 'submission', id: taskId, event: 'submission_committed', audience: 'teacher' }); } catch { /* durable upload remains successful */ }
       json(response, 201, { submitted: true, byteLength: result.byteLength, sha256: result.sha256, receivedCompleteAtUtc: result.receivedCompleteAtUtc });
       return true;
     }

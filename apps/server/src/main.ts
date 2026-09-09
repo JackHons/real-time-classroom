@@ -2,6 +2,7 @@ import { createApplication, FirstRunSetupRequiredError } from './application.js'
 import { openSqlite } from './db/connection.js';
 import { readRuntimeConfig } from './runtime-config.js';
 import { startServer, type HttpRequestListener } from './server.js';
+import type { RealtimeGatewayOptions, RealtimeNotificationBus } from './realtime/gateway.js';
 
 const webModule = (await import(
   new URL('../../web/build/handler.js', import.meta.url).href
@@ -10,6 +11,8 @@ const webModule = (await import(
 const config = readRuntimeConfig();
 const database = openSqlite(config.databasePath);
 let apiHandler;
+let realtime: RealtimeGatewayOptions | undefined;
+let realtimeNotifications: RealtimeNotificationBus | undefined;
 let health: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string }> = { status: 200, state: 'ready' };
 try {
   const application = createApplication({
@@ -23,6 +26,8 @@ try {
   // agree; startup is deliberately fail-closed when reconciliation fails.
   await application.reconcileUploads();
   apiHandler = application.apiHandler;
+  realtime = application.realtime;
+  realtimeNotifications = application.realtimeNotifications;
 } catch (error) {
   if (error instanceof FirstRunSetupRequiredError) {
     // The first-run setup flow is intentionally not implemented in this task.
@@ -43,7 +48,9 @@ const server = await startServer({
   host: config.host,
   port: config.port,
   health,
-  ...(apiHandler === undefined ? {} : { apiHandler, webHandler: webModule.handler })
+  ...(apiHandler === undefined
+    ? {}
+    : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => realtimeNotifications?.attach(gateway) }) })
 });
 console.info(`LAN Classroom host listening at http://${server.host}:${server.port}`);
 

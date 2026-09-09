@@ -10,6 +10,8 @@ export type ClassServiceDependencies = Readonly<{
   createClassId?: () => ClassId;
   createStudentId?: () => StudentId;
   createPendingRequestId?: () => PendingStudentRequestId;
+  /** Best-effort invalidation only; it contains no roster or student data. */
+  notify?: (event: Readonly<{ classId: ClassId; resourceType: 'pending' | 'roster'; id: string; event: string; audience: 'teacher' }>) => void;
 }>;
 
 export class ClassService {
@@ -85,6 +87,7 @@ export class ClassService {
     if (existingIssues.length > 0) return { ...preview, issues: existingIssues };
     try {
       this.dependencies.repository.importRoster(classId, preview.rows, this.createStudentId, this.now());
+      this.notify({ classId, resourceType: 'roster', id: classId, event: 'roster_imported', audience: 'teacher' });
       return preview;
     } catch (error) {
       if (error instanceof Error && error.message === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT') return { ...preview, issues: [{ line: 1, message: '名單匯入時發現既有或併發重複學號，未匯入任何資料' }] };
@@ -103,12 +106,21 @@ export class ClassService {
     const pending: PendingStudentRequest = {
       id: this.createPendingRequestId(), classId, displayName: name, rawStudentNumber, normalizedStudentNumber, requestedAtUtc: now, status: 'pending'
     };
-    return { outcome: 'pending', request: this.dependencies.repository.createOrGetPendingRequest(pending) };
+    const request = this.dependencies.repository.createOrGetPendingRequest(pending);
+    this.notify({ classId, resourceType: 'pending', id: request.id, event: 'pending_requested', audience: 'teacher' });
+    return { outcome: 'pending', request };
   }
 
   approvePendingRequest(teacherContext: unknown, requestId: PendingStudentRequestId): ReturnType<ClassRosterRepository['approvePendingRequest']> {
     this.dependencies.teacherAuthorization.assertAuthorized(teacherContext);
-    return this.dependencies.repository.approvePendingRequest(requestId, this.createStudentId, this.now());
+    const student = this.dependencies.repository.approvePendingRequest(requestId, this.createStudentId, this.now());
+    this.notify({ classId: student.classId, resourceType: 'pending', id: requestId, event: 'pending_resolved', audience: 'teacher' });
+    this.notify({ classId: student.classId, resourceType: 'roster', id: student.classId, event: 'roster_changed', audience: 'teacher' });
+    return student;
+  }
+
+  private notify(event: Readonly<{ classId: ClassId; resourceType: 'pending' | 'roster'; id: string; event: string; audience: 'teacher' }>): void {
+    try { this.dependencies.notify?.(event); } catch { /* notification failure cannot roll back REST persistence */ }
   }
 }
 

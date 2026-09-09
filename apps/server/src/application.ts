@@ -21,6 +21,7 @@ import { QuestionBankService } from './questions/bank/service.js';
 import { createLiveQuestionRoutes } from './questions/live/http-routes.js';
 import { LiveQuestionService } from './questions/live/live-question-service.js';
 import type { HttpRouteHandler } from './server.js';
+import { RealtimeNotificationBus, type RealtimeGatewayOptions } from './realtime/gateway.js';
 import { createUploadRoutes } from './uploads/http-routes.js';
 import { UploadPipeline } from './uploads/pipeline.js';
 import { UploadStorage, type UploadStorageOptions } from './uploads/storage.js';
@@ -44,7 +45,12 @@ export type ApplicationOptions = Readonly<{
   uploadAbsoluteRequestTimeoutMs?: number;
 }>;
 
-export type Application = Readonly<{ apiHandler: HttpRouteHandler; reconcileUploads: () => Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number; cleanupFailed: number }>> }>;
+export type Application = Readonly<{
+  apiHandler: HttpRouteHandler;
+  reconcileUploads: () => Promise<Readonly<{ recovered: number; cleaned: number; metadataMissing: number; cleanupFailed: number }>>;
+  realtime: RealtimeGatewayOptions;
+  realtimeNotifications: RealtimeNotificationBus;
+}>;
 
 /** Thrown instead of exposing partially configured application routes. */
 export class FirstRunSetupRequiredError extends Error {
@@ -64,12 +70,14 @@ export function createApplication(options: ApplicationOptions): Application {
 
   const clock = options.clock ?? systemClock;
   const sessions = new AuthSessions(authRepository, clock);
+  const realtimeNotifications = new RealtimeNotificationBus();
   const studentJoinRateLimiter = options.studentJoinRateLimiter ?? new StudentJoinRateLimiter();
   const rosterRepository = new SqliteClassRosterRepository(options.database);
   const classService = new ClassService({
     repository: rosterRepository,
     teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
-    now: () => clock.now().toISOString()
+    now: () => clock.now().toISOString(),
+    notify: (event) => realtimeNotifications.publish(event)
   });
   const studentJoin: StudentJoinPort = {
     join: (request) => {
@@ -132,9 +140,8 @@ export function createApplication(options: ApplicationOptions): Application {
     service: new LiveQuestionService({
       repository: new SqliteLiveQuestionRepository(options.database, domainRepository),
       teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
-      studentAuthorization: { assertAuthorized: (context) => assertStudentContext(context) }
-      // Deliberately no notifier: Task 5 owns Socket delivery. REST persistence
-      // has no per-student payload side channel in this composition.
+      studentAuthorization: { assertAuthorized: (context) => assertStudentContext(context) },
+      notify: (event) => realtimeNotifications.publish({ classId: event.classId, resourceType: 'question', id: event.questionId, event: event.type, audience: event.type === 'answer_updated' ? 'teacher' : 'all' })
     }),
     teacherContext: authenticateTeacher,
     studentContext: authenticateStudent
@@ -147,15 +154,23 @@ export function createApplication(options: ApplicationOptions): Application {
     teacherAuthorization: { assertAuthorized: (context) => assertTeacherContext(context) },
     studentAuthorization: { assertAuthorized: (context) => assertStudentContext(context) },
     classExists: (classId) => rosterRepository.classExists(classId),
-    now: () => clock.now()
+    now: () => clock.now(),
+    notify: (event) => realtimeNotifications.publish(event)
   });
   const fileTaskHandler = createFileTaskRoutes({ service: fileTaskService, repository: fileRepository, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now() });
-  const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher, ...(options.uploadIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.uploadIdleTimeoutMs }), ...(options.uploadAbsoluteRequestTimeoutMs === undefined ? {} : { absoluteRequestTimeoutMs: options.uploadAbsoluteRequestTimeoutMs }) });
+  const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher, notify: (event) => realtimeNotifications.publish(event), ...(options.uploadIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.uploadIdleTimeoutMs }), ...(options.uploadAbsoluteRequestTimeoutMs === undefined ? {} : { absoluteRequestTimeoutMs: options.uploadAbsoluteRequestTimeoutMs }) });
   const activityHandler = createActivityRoutes({ database: options.database, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   let uploadsReady = false;
 
   return {
+    realtime: {
+      allowedOrigin: options.allowedOrigin,
+      authenticateTeacher: (token) => sessions.authenticateTeacher(token),
+      authenticateStudent: (token) => sessions.authenticateStudent(token),
+      classExists: (classId) => rosterRepository.classExists(classId)
+    },
+    realtimeNotifications,
     reconcileUploads: async () => {
       await storage.ensureReady();
       const result = await uploadPipeline.reconcile();

@@ -4,6 +4,7 @@ import {
   type Server as HttpServer,
   type ServerResponse
 } from 'node:http';
+import { attachRealtimeGateway, type RealtimeGateway, type RealtimeGatewayOptions } from './realtime/gateway.js';
 
 export type HttpRequestListener = (request: IncomingMessage, response: ServerResponse) => void;
 export type HttpRouteHandler = (request: IncomingMessage, response: ServerResponse) => boolean | Promise<boolean>;
@@ -16,6 +17,9 @@ export type ServerOptions = Readonly<{
   /** API routes share this host and take precedence over the SvelteKit handler. */
   apiHandler?: HttpRouteHandler;
   webHandler?: HttpRequestListener;
+  /** Socket.IO is attached to this same HTTP server; it has no mutation routes. */
+  realtime?: RealtimeGatewayOptions;
+  onRealtimeGateway?: (gateway: RealtimeGateway) => void;
 }>;
 
 export type RunningServer = Readonly<{
@@ -32,10 +36,13 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const host = options.host ?? '127.0.0.1';
   const port = options.port ?? 4173;
   const server = createServer((request, response) => { void dispatch(request, response, options); });
+  const realtime = options.realtime === undefined ? undefined : attachRealtimeGateway(server, options.realtime);
+  if (realtime !== undefined) options.onRealtimeGateway?.(realtime);
 
   await listen(server, host, port);
   const address = server.address();
   if (address === null || typeof address === 'string') {
+    await realtime?.close();
     await close(server);
     throw new Error('The HTTP server did not expose a TCP address.');
   }
@@ -43,7 +50,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   return {
     host,
     port: address.port,
-    close: () => close(server)
+    close: async () => { await realtime?.close(); await close(server); }
   };
 }
 
@@ -88,7 +95,9 @@ function listen(server: HttpServer, host: string, port: number): Promise<void> {
 function close(server: HttpServer): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => {
-      if (error === undefined) {
+      // Socket.IO closes its Engine.IO transport first. Depending on the
+      // transport mix, Node may already consider the shared server closed.
+      if (error === undefined || (error as { code?: unknown }).code === 'ERR_SERVER_NOT_RUNNING') {
         resolve();
         return;
       }

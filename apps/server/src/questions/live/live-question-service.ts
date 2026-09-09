@@ -6,7 +6,7 @@ export type LiveQuestionServiceDependencies = Readonly<{
   teacherAuthorization: LiveTeacherAuthorization;
   studentAuthorization: LiveStudentAuthorization;
   /** Best-effort event delivery only; persistence is complete before this is called. */
-  notify?: (event: Readonly<{ type: 'question_opened' | 'answer_updated' | 'question_closed'; questionId: QuestionId; classId: string }>) => void;
+  notify?: (event: Readonly<{ type: 'question_opened' | 'answer_updated' | 'question_closed'; questionId: QuestionId; classId: Question['classId'] }>) => void;
 }>;
 
 export class LiveQuestionService {

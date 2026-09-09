@@ -13,6 +13,8 @@ export type FileTaskServiceDependencies = Readonly<{
   classExists?: (classId: ClassId) => boolean;
   now?: () => Date;
   createTaskId?: () => FileSubmissionTaskId;
+  /** Best-effort, payload-free class invalidation after durable writes. */
+  notify?: (event: Readonly<{ classId: ClassId; resourceType: 'fileTask' | 'submission'; id: string; event: string; audience: 'all' | 'teacher' }>) => void;
 }>;
 
 /** State and authorization boundary for metadata; it never consumes file bytes. */
@@ -28,14 +30,16 @@ export class FileTaskService {
     this.teacher(context);
     if (this.dependencies.classExists !== undefined && !this.dependencies.classExists(classId)) fail('CLASS_NOT_FOUND');
     const fields = validate(input);
-    return this.dependencies.repository.createTask({ id: this.createTaskId(), classId, ...fields, state: 'draft', maxBytes: FILE_TASK_MAX_BYTES, openedAtUtc: null, closedAtUtc: null });
+    const task = this.dependencies.repository.createTask({ id: this.createTaskId(), classId, ...fields, state: 'draft', maxBytes: FILE_TASK_MAX_BYTES, openedAtUtc: null, closedAtUtc: null });
+    this.notifyTask(task, 'filetask_created'); return task;
   }
 
   updateDraft(context: unknown, taskId: FileSubmissionTaskId, input: FileTaskDraftInput): FileSubmissionTask {
     this.teacher(context);
     const task = required(this.dependencies.repository.task(taskId));
     if (task.state !== 'draft') fail('FILE_TASK_TRANSITION_CONFLICT');
-    return this.dependencies.repository.updateDraft(taskId, validate(input)) ?? fail('FILE_TASK_NOT_FOUND');
+    const updated = this.dependencies.repository.updateDraft(taskId, validate(input)) ?? fail('FILE_TASK_NOT_FOUND');
+    this.notifyTask(updated, 'filetask_updated'); return updated;
   }
 
   open(context: unknown, taskId: FileSubmissionTaskId): FileSubmissionTask {
@@ -43,14 +47,16 @@ export class FileTaskService {
     const task = required(this.dependencies.repository.task(taskId));
     if (task.state !== 'draft') fail('FILE_TASK_TRANSITION_CONFLICT');
     if (Date.parse(task.deadlineAtUtc) < this.now().valueOf()) fail('FILE_TASK_DEADLINE_PASSED');
-    return this.dependencies.repository.openTask(taskId, iso(this.now())) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
+    const opened = this.dependencies.repository.openTask(taskId, iso(this.now())) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
+    this.notifyTask(opened, 'filetask_opened'); return opened;
   }
 
   close(context: unknown, taskId: FileSubmissionTaskId): FileSubmissionTask {
     this.teacher(context);
     const task = this.reconcile(taskId);
     if (task.state !== 'open') fail('FILE_TASK_TRANSITION_CONFLICT');
-    return this.dependencies.repository.closeTask(taskId, iso(this.now())) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
+    const closed = this.dependencies.repository.closeTask(taskId, iso(this.now())) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
+    this.notifyTask(closed, 'filetask_closed'); return closed;
   }
 
   readForTeacher(context: unknown, taskId: FileSubmissionTaskId): TeacherOpenTaskView | TeacherClosedTaskView {
@@ -97,6 +103,7 @@ export class FileTaskService {
       if (deleted === undefined) return;
       marked = true;
       operation.commit();
+      this.notifySubmission(taskId, 'submission_deleted');
     } catch (error) {
       try { operation.rollback(); } finally { if (marked) this.dependencies.repository.restoreSubmission(submission.id); }
       throw error;
@@ -105,10 +112,11 @@ export class FileTaskService {
 
   deleteTask(context: unknown, taskId: FileSubmissionTaskId, confirmation: DeleteConfirmation): void {
     this.teacher(context); confirmed(confirmation);
-    required(this.dependencies.repository.task(taskId));
+    const task = required(this.dependencies.repository.task(taskId));
     // A task is only physically deletable after each submitted object has been
     // removed through deleteSubmission's reversible storage protocol.
     if (!this.dependencies.repository.deleteEmptyTask(taskId)) fail('FILE_TASK_HAS_SUBMISSIONS');
+    this.notifyTask(task, 'filetask_deleted');
   }
 
   private studentTask(taskId: FileSubmissionTaskId, student: AuthorizedStudentContext): FileSubmissionTask {
@@ -126,6 +134,14 @@ export class FileTaskService {
   }
   private teacher(context: unknown): void { this.dependencies.teacherAuthorization.assertAuthorized(context); }
   private student(context: unknown): AuthorizedStudentContext { return this.dependencies.studentAuthorization.assertAuthorized(context); }
+  private notifyTask(task: Pick<FileSubmissionTask, 'id' | 'classId'>, event: string): void {
+    try { this.dependencies.notify?.({ classId: task.classId, resourceType: 'fileTask', id: task.id, event, audience: event === 'filetask_opened' || event === 'filetask_closed' ? 'all' : 'teacher' }); } catch { /* REST write stays durable */ }
+  }
+  private notifySubmission(taskId: FileSubmissionTaskId, event: string): void {
+    const task = this.dependencies.repository.task(taskId);
+    if (task === undefined) return;
+    try { this.dependencies.notify?.({ classId: task.classId, resourceType: 'submission', id: taskId, event, audience: 'teacher' }); } catch { /* REST write stays durable */ }
+  }
 }
 
 function validate(input: FileTaskDraftInput): Pick<FileSubmissionTask, 'title' | 'description' | 'deadlineAtUtc'> {
