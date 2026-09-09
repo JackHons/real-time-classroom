@@ -9,8 +9,9 @@ function csvField(value: string): string {
 }
 
 export function csvSafeText(value: string): string {
-  // Importers accept formulas after whitespace, controls, or bidi marks.
-  // Check before replacing NUL so NUL cannot become an injection bypass.
+  // Importers may discard Unicode controls, format characters, or whitespace
+  // before deciding whether a cell is a formula. Check the original input so
+  // replacing NUL cannot turn a dangerous prefix into an injection bypass.
   const dangerous = hasFormulaPrefix(value);
   const withoutNul = value.replaceAll('\u0000', '\ufffd');
   return dangerous ? `'${withoutNul}` : withoutNul;
@@ -20,15 +21,23 @@ function hasFormulaPrefix(value: string): boolean {
   let offset = 0;
   while (offset < value.length) {
     const codePoint = value.codePointAt(offset);
-    if (codePoint === undefined || !isSpreadsheetIgnorablePrefix(codePoint)) break;
+    if (codePoint === undefined) return false;
+    // Tabs and line breaks are formula-leading characters in spreadsheet
+    // importers, rather than harmless whitespace. They must be handled before
+    // the broader Cc/White_Space prefix check below.
+    if (codePoint === 0x09 || codePoint === 0x0a || codePoint === 0x0d) return true;
+    const character = String.fromCodePoint(codePoint);
+    if (character === '=' || character === '+' || character === '-' || character === '@') return true;
+    if (!isSpreadsheetIgnorablePrefix(character)) return false;
     offset += codePoint > 0xffff ? 2 : 1;
   }
-  const first = value[offset];
-  return first === '=' || first === '+' || first === '-' || first === '@';
+  return false;
 }
 
-function isSpreadsheetIgnorablePrefix(codePoint: number): boolean {
-  return (codePoint >= 0 && codePoint <= 0x20) || codePoint === 0x00a0 || codePoint === 0x1680
-    || (codePoint >= 0x2000 && codePoint <= 0x200f) || (codePoint >= 0x2028 && codePoint <= 0x202e)
-    || codePoint === 0x205f || codePoint === 0x2060 || (codePoint >= 0x2066 && codePoint <= 0x2069) || codePoint === 0x3000;
+function isSpreadsheetIgnorablePrefix(character: string): boolean {
+  // Cc includes DEL/C1 controls; Cf covers U+061C, soft hyphen, BOM and the
+  // zero-width/bidi controls. Default_Ignorable_Code_Point catches the less
+  // obvious Unicode variants which are not all Cf. Keep the original visible
+  // text in the CSV; the leading apostrophe is the spreadsheet safety boundary.
+  return /^(?:\p{White_Space}|\p{Cc}|\p{Cf}|\p{Default_Ignorable_Code_Point})$/u.test(character);
 }

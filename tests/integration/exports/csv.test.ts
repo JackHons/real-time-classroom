@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -113,6 +114,49 @@ describe('CSV exports v1', () => {
     expect(csv).toContain('Unknown,Unknown student,noAnswer,,');
     expect(csv).not.toContain('Renamed today');
   });
+
+  it('materializes one fixed roster snapshot before concurrent changes cross batch boundaries', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const classId = await createClass(base, teacher, 'Concurrent roster');
+    const db = database as SqliteDatabase;
+    const students = db.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)');
+    for (let index = 0; index < 501; index += 1) {
+      const padded = String(index).padStart(4, '0');
+      // Force transport backpressure, so the changes occur while later batches
+      // would otherwise still be live-read from the source database.
+      students.run(`snapshot-student-${padded}`, classId, `Student ${index} ${'x'.repeat(5_000)}`, `S${index}`, `S${index}`, 0, '2026-09-09T00:00:00.000Z');
+    }
+    const response = await requestRoster(base, classId, teacher.cookie, true);
+    db.prepare('UPDATE students SET display_name=? WHERE id=?').run('Changed after snapshot', 'snapshot-student-0300');
+    db.prepare('DELETE FROM students WHERE id=?').run('snapshot-student-0400');
+    students.run('snapshot-student-new', classId, 'Inserted after snapshot', 'S-new', 'S-NEW', 0, '2026-09-09T00:00:00.000Z');
+    const body = collect(response);
+    response.resume();
+    const csv = Buffer.concat(await body).subarray(3).toString('utf8');
+    const lines = csv.split('\r\n').filter(Boolean);
+    expect(lines).toHaveLength(502);
+    expect(csv).toContain('S300,Student 300 ');
+    expect(csv).toContain('S400,Student 400 ');
+    expect(csv).not.toContain('Changed after snapshot');
+    expect(csv).not.toContain('Inserted after snapshot');
+    expect(csv.match(/S300,/g)).toHaveLength(1);
+    expect(csv.match(/S400,/g)).toHaveLength(1);
+  });
+
+  it('cleans an on-disk export snapshot if a client aborts a slow roster download', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const classId = await createClass(base, teacher, 'Aborted roster');
+    const db = database as SqliteDatabase;
+    const students = db.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)');
+    for (let index = 0; index < 251; index += 1) students.run(`abort-student-${index}`, classId, `Student ${'x'.repeat(5_000)}`, `A${index}`, `A${index}`, 0, '2026-09-09T00:00:00.000Z');
+    const before = exportSnapshotDirectories();
+    const response = await requestRoster(base, classId, teacher.cookie, true);
+    response.destroy();
+    await waitForSnapshotCleanup(before);
+    expect(exportSnapshotDirectories()).toEqual(before);
+  });
 });
 
 async function applicationBase(): Promise<string> {
@@ -151,3 +195,35 @@ async function createShortTextQuestion(base: string, teacher: Readonly<{ cookie:
 
 function teacherHeaders(login: Readonly<{ cookie: string; csrf: string }>): Record<string, string> { return { origin, cookie: login.cookie, 'x-csrf-token': login.csrf, 'content-type': 'application/json' }; }
 function studentHeaders(login: Readonly<{ cookie: string; csrf: string }>): Record<string, string> { return { origin, cookie: login.cookie, 'x-csrf-token': login.csrf, 'content-type': 'application/json' }; }
+
+async function requestRoster(base: string, classId: string, cookie: string, pause: boolean): Promise<import('node:http').IncomingMessage> {
+  const url = new URL(`/api/classes/${classId}/roster/export.csv`, base);
+  return new Promise((resolve, reject) => {
+    const request = get(url, { headers: { cookie } }, (response) => {
+      if (pause) response.pause();
+      resolve(response);
+    });
+    request.once('error', reject);
+  });
+}
+
+function collect(response: import('node:http').IncomingMessage): Promise<Buffer[]> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    response.on('data', (chunk: Buffer) => chunks.push(chunk));
+    response.once('end', () => resolve(chunks));
+    response.once('error', reject);
+  });
+}
+
+function exportSnapshotDirectories(): readonly string[] {
+  return readdirSync(tmpdir()).filter((entry) => entry.startsWith('lan-classroom-export-snapshot-')).sort();
+}
+
+async function waitForSnapshotCleanup(before: readonly string[]): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (JSON.stringify(exportSnapshotDirectories()) === JSON.stringify(before)) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('export snapshot cleanup timed out');
+}
