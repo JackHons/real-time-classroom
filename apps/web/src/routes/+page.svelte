@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { RealtimeClient, type RealtimeStatus } from '$lib/realtime/client';
   import { TeacherApi, readableError, type ClassRoom, type ClosedQuestionView, type CsvPreview, type FileTask, type FileTaskView, type OpenQuestionView, type PendingApproval, type QuestionKind, type QuestionSummary, type ReferenceAnswer, type RosterStudent, type Template, type TemplateInput } from '$lib/teacher-api';
   const api = new TeacherApi();
   let state: 'checking' | 'first-run' | 'login' | 'teacher' = 'checking'; let notice = ''; let error = ''; let busy = false;
@@ -8,20 +9,43 @@
   let questionId = ''; let questions: readonly QuestionSummary[] = []; let questionsCursor: string | undefined; let questionView: OpenQuestionView | ClosedQuestionView | undefined; let questionCursor: string | undefined;
   let fileTaskId = ''; let fileTasks: readonly FileTask[] = []; let fileTasksCursor: string | undefined; let fileTitle = ''; let fileDescription = ''; let fileDeadline = ''; let fileTaskView: FileTaskView | undefined; let password = '';
   let dangerDialog: HTMLDialogElement; let confirmButton: HTMLButtonElement; let dangerLabel = ''; let dangerDescription = ''; let dangerAction: (() => Promise<void>) | undefined; let returnFocus: HTMLElement | undefined;
+  let realtime: RealtimeClient | undefined; let realtimeStatus: RealtimeStatus | undefined; let pollTimer: ReturnType<typeof setInterval> | undefined; let mounted = false; let dataGeneration = 0; let resyncing: Promise<void> | undefined; let resyncQueued = false;
   const selectedClass = (): ClassRoom | undefined => classes.find((item) => item.id === selectedClassId);
   const selectedTemplate = (): Template | undefined => templates.find((item) => item.id === selectedTemplateId);
-  onMount(() => { void initialise(); });
+  onMount(() => { mounted = true; void initialise(); return () => { mounted = false; dataGeneration += 1; realtime?.stop(); if (pollTimer !== undefined) clearInterval(pollTimer); }; });
   async function initialise(): Promise<void> { try { const health = await api.health(); if (health.reason === 'FIRST_RUN_SETUP_REQUIRED') { state = 'first-run'; return; } state = 'login'; } catch { state = 'login'; } }
   async function run(work: () => Promise<void>): Promise<void> { busy = true; error = ''; notice = ''; try { await work(); } catch (caught) { error = readableError(caught); } finally { busy = false; } }
-  async function login(): Promise<void> { await run(async () => { await api.login(password); password = ''; state = 'teacher'; notice = '已登入教師管理介面。'; await refreshClasses(); await refreshTemplates(); }); }
-  async function refreshClasses(): Promise<void> { const page = await api.classes(); classes = page.items; classCursor = page.nextCursor; if (!classes.some((item) => item.id === selectedClassId)) selectedClassId = classes[0]?.id ?? ''; await refreshClassDetails(); }
-  async function refreshClassDetails(): Promise<void> { if (!selectedClassId) { roster = []; pending = []; questions = []; fileTasks = []; rosterCursor = pendingCursor = questionsCursor = fileTasksCursor = undefined; return; } const [nextRoster, nextPending, nextQuestions, nextFileTasks] = await Promise.all([api.roster(selectedClassId), api.pending(selectedClassId), api.questions(selectedClassId), api.fileTasks(selectedClassId)]); roster = nextRoster.items; rosterCursor = nextRoster.nextCursor; pending = nextPending.items; pendingCursor = nextPending.nextCursor; questions = nextQuestions.items; questionsCursor = nextQuestions.nextCursor; fileTasks = nextFileTasks.items; fileTasksCursor = nextFileTasks.nextCursor; }
+  async function login(): Promise<void> { await run(async () => { await api.login(password); password = ''; state = 'teacher'; notice = '已登入教師管理介面。'; await refreshClasses(); await refreshTemplates(); startRealtime(); }); }
+  async function refreshClasses(expectedGeneration = dataGeneration): Promise<void> { const page = await api.classes(); if (!mounted || expectedGeneration !== dataGeneration) return; classes = page.items; classCursor = page.nextCursor; if (!classes.some((item) => item.id === selectedClassId)) selectedClassId = classes[0]?.id ?? ''; await refreshClassDetails(expectedGeneration); }
+  async function refreshClassDetails(expectedGeneration = dataGeneration): Promise<void> { if (!selectedClassId) { roster = []; pending = []; questions = []; fileTasks = []; rosterCursor = pendingCursor = questionsCursor = fileTasksCursor = undefined; return; } const [nextRoster, nextPending, nextQuestions, nextFileTasks] = await Promise.all([api.roster(selectedClassId), api.pending(selectedClassId), api.questions(selectedClassId), api.fileTasks(selectedClassId)]); if (!mounted || expectedGeneration !== dataGeneration) return; roster = nextRoster.items; rosterCursor = nextRoster.nextCursor; pending = nextPending.items; pendingCursor = nextPending.nextCursor; questions = nextQuestions.items; questionsCursor = nextQuestions.nextCursor; fileTasks = nextFileTasks.items; fileTasksCursor = nextFileTasks.nextCursor; }
   async function moreClasses(): Promise<void> { if (classCursor === undefined) return; const page = await api.classes(classCursor); classes = [...classes, ...page.items]; classCursor = page.nextCursor; }
   async function moreRoster(): Promise<void> { if (rosterCursor === undefined) return; const page = await api.roster(selectedClassId, rosterCursor); roster = [...roster, ...page.items]; rosterCursor = page.nextCursor; }
   async function morePending(): Promise<void> { if (pendingCursor === undefined) return; const page = await api.pending(selectedClassId, pendingCursor); pending = [...pending, ...page.items]; pendingCursor = page.nextCursor; }
   async function moreQuestions(): Promise<void> { if (questionsCursor === undefined) return; const page = await api.questions(selectedClassId, questionsCursor); questions = [...questions, ...page.items]; questionsCursor = page.nextCursor; }
   async function moreFileTasks(): Promise<void> { if (fileTasksCursor === undefined) return; const page = await api.fileTasks(selectedClassId, fileTasksCursor); fileTasks = [...fileTasks, ...page.items]; fileTasksCursor = page.nextCursor; }
   async function refreshTemplates(): Promise<void> { templates = await api.templates(); }
+  async function resyncTeacher(): Promise<void> {
+    if (state !== 'teacher') return;
+    if (resyncing !== undefined) { resyncQueued = true; return resyncing; }
+    const expectedGeneration = dataGeneration;
+    resyncing = (async () => {
+      do {
+        resyncQueued = false;
+        await Promise.all([refreshClasses(expectedGeneration), refreshTemplates()]);
+        if (!mounted || state !== 'teacher' || expectedGeneration !== dataGeneration) return;
+        if (questionId) await readQuestion(questionCursor, expectedGeneration);
+        if (fileTaskId) await readFileTask(expectedGeneration);
+      } while (resyncQueued && mounted && state === 'teacher' && expectedGeneration === dataGeneration);
+    })();
+    try { await resyncing; } finally { resyncing = undefined; }
+  }
+  function startRealtime(): void {
+    realtime?.stop();
+    realtime = new RealtimeClient({ resources: ['class', 'roster', 'question', 'file-task'], resync: resyncTeacher, onStatus: (status) => { if (mounted) realtimeStatus = status; } });
+    realtime.start();
+    if (pollTimer !== undefined) clearInterval(pollTimer);
+    pollTimer = setInterval(() => { if (!realtime?.isLive()) void resyncTeacher(); }, 15_000);
+  }
   async function createClass(): Promise<void> { await run(async () => { const room = await api.createClass(className); className = ''; await refreshClasses(); selectedClassId = room.id; notice = `已建立「${room.name}」。`; }); }
   function requireClass(): boolean { if (selectedClassId) return true; error = '請先選擇或建立班級。'; return false; }
   function requireQuestion(): boolean { if (questionId) return true; error = '請先建立或輸入題目 ID。'; return false; }
@@ -38,12 +62,12 @@
   async function openQuestion(): Promise<void> { if (!requireQuestion()) return; await run(async () => { await api.openQuestion(questionId); await readQuestion(); await refreshClassDetails(); notice = '題目已開放；僅顯示匿名彙總。'; }); }
   async function closeQuestion(): Promise<void> { if (!requireQuestion()) return; await run(async () => { await api.closeQuestion(questionId); questionCursor = undefined; await readQuestion(); await refreshClassDetails(); notice = '題目已關閉；現在可查看具名作答。'; }); }
   async function requestCloseQuestion(event: MouseEvent): Promise<void> { if (!requireQuestion()) return; await askDanger('關閉即時題', '關閉後學生不能再作答，且題目不可重新開放。請確認已完成收答。', closeQuestion, event); }
-  async function readQuestion(cursor?: string): Promise<void> { if (!requireQuestion()) return; questionCursor = cursor; questionView = await api.question(questionId, cursor); }
+  async function readQuestion(cursor?: string, expectedGeneration = dataGeneration): Promise<void> { if (!requireQuestion()) return; const requestedId = questionId; const result = await api.question(requestedId, cursor); if (!mounted || expectedGeneration !== dataGeneration || requestedId !== questionId) return; questionCursor = cursor; questionView = result; }
   async function loadQuestion(cursor?: string): Promise<void> { await run(() => readQuestion(cursor)); }
   function toLocalInput(value: string): string { const date = new Date(value); return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16); }
   function fileInput(): Readonly<{ title: string; description: string; deadlineAtUtc: string }> { return { title: fileTitle, description: fileDescription, deadlineAtUtc: new Date(fileDeadline).toISOString() }; }
   async function createFileTask(): Promise<void> { if (!requireClass()) return; await run(async () => { const task = await api.createFileTask(selectedClassId, fileInput()); fileTaskId = task.id; notice = '已建立檔案作業草稿。'; await readFileTask(); await refreshClassDetails(); }); }
-  async function readFileTask(): Promise<void> { if (!requireClass() || !fileTaskId) throw new Error('請輸入班級與檔案作業 ID。'); fileTaskView = await api.fileTask(selectedClassId, fileTaskId); const task = fileTaskView.task; fileTitle = task.title; fileDescription = task.description; fileDeadline = toLocalInput(task.deadlineAtUtc); }
+  async function readFileTask(expectedGeneration = dataGeneration): Promise<void> { if (!requireClass() || !fileTaskId) throw new Error('請輸入班級與檔案作業 ID。'); const requestedClassId = selectedClassId; const requestedId = fileTaskId; const result = await api.fileTask(requestedClassId, requestedId); if (!mounted || expectedGeneration !== dataGeneration || requestedClassId !== selectedClassId || requestedId !== fileTaskId) return; fileTaskView = result; const task = result.task; fileTitle = task.title; fileDescription = task.description; fileDeadline = toLocalInput(task.deadlineAtUtc); }
   async function loadFileTask(): Promise<void> { await run(readFileTask); }
   async function updateFileTask(): Promise<void> { if (!requireClass() || !fileTaskId) return; await run(async () => { await api.updateFileTask(selectedClassId, fileTaskId, fileInput()); await readFileTask(); notice = '已更新檔案作業草稿。'; }); }
   async function openFileTask(): Promise<void> { if (!requireClass() || !fileTaskId) return; await run(async () => { await api.openFileTask(selectedClassId, fileTaskId); await readFileTask(); notice = '檔案作業已開放。'; }); }
@@ -63,8 +87,9 @@
   <main class="centered" aria-labelledby="login-title"><form class="panel login" on:submit|preventDefault={() => void login()}><h1 id="login-title">教師登入</h1><p>請使用共用教師密碼。登入後的安全權杖只保留在目前頁面，重新整理時請重新登入。</p><label for="password">教師密碼</label><input id="password" type="password" autocomplete="current-password" bind:value={password} required /><button class="primary" disabled={busy}>{busy ? '登入中…' : '登入'}</button>{#if error}<p class="error" role="alert">{error}</p>{/if}</form></main>
 {:else}
   <main aria-labelledby="app-title">
-    <header class="top"><div><p class="eyebrow">LAN CLASSROOM</p><h1 id="app-title">教師管理</h1></div><button on:click={() => void run(async () => { await api.logout(); state = 'login'; classes = []; templates = []; notice = '已登出。'; })}>登出</button></header>
+    <header class="top"><div><p class="eyebrow">LAN CLASSROOM</p><h1 id="app-title">教師管理</h1></div><button on:click={() => void run(async () => { realtime?.stop(); realtime = undefined; dataGeneration += 1; if (pollTimer !== undefined) clearInterval(pollTimer); pollTimer = undefined; await api.logout(); state = 'login'; classes = []; templates = []; notice = '已登出。'; })}>登出</button></header>
     <div class="feedback" aria-live="polite" aria-atomic="true">{#if notice}<p class="notice">{notice}</p>{/if}{#if error}<p class="error" role="alert">{error}</p>{/if}</div>
+    {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="muted">即時更新暫時中斷，畫面仍會定時重新確認。</p>{/if}
     <nav aria-label="教師功能"><a href="#classes">班級與名單</a><a href="#questions">題庫與即時題</a><a href="#files">檔案作業</a></nav>
     <section id="classes" aria-labelledby="classes-title"><div class="section-title"><h2 id="classes-title">班級與名單</h2><button on:click={() => void run(refreshClasses)} disabled={busy}>重新整理班級</button></div>
       <div class="grid two"><form class="panel" on:submit|preventDefault={() => void createClass()}><h3>建立班級</h3><label for="class-name">班級名稱</label><input id="class-name" bind:value={className} required maxlength="200" /><button class="primary" disabled={busy}>建立班級</button></form>

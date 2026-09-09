@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { RealtimeClient, type RealtimeStatus } from '$lib/realtime/client';
   import { isSessionExpired, studentApi } from '$lib/student/api';
   import type { PublicClass, StudentActivities } from '$lib/student/types';
 
@@ -17,11 +18,15 @@
   let mounted = false;
   let activitiesError = '';
   let loadingMore = false;
+  let realtime: RealtimeClient | undefined;
+  let realtimeStatus: RealtimeStatus | undefined;
 
   async function expireSession(): Promise<void> {
     if (refreshTimer !== undefined) clearInterval(refreshTimer);
     refreshTimer = undefined;
     refreshController?.abort();
+    realtime?.stop();
+    realtime = undefined;
     await studentApi.endSession();
     state = 'session-expired';
     message = '登入已失效，為保護你的資料，本機未同步答案已捨棄。請重新加入課堂。';
@@ -49,7 +54,16 @@
   }
   function startPolling(): void {
     if (refreshTimer !== undefined) clearInterval(refreshTimer);
-    refreshTimer = setInterval(() => { void refreshActivities(); }, 15_000);
+    refreshTimer = setInterval(() => { if (!realtime?.isLive()) void refreshActivities(); }, 15_000);
+  }
+  function startRealtime(): void {
+    realtime?.stop();
+    realtime = new RealtimeClient({
+      resources: ['class', 'roster', 'question', 'file-task'],
+      resync: refreshActivities,
+      onStatus: (status) => { if (mounted) realtimeStatus = status; }
+    });
+    realtime.start();
   }
   async function loadMoreActivities(): Promise<void> {
     const questionCursor = activities?.questions.nextCursor;
@@ -75,17 +89,17 @@
   async function initialise(): Promise<void> {
     try {
       const session = await studentApi.restoreSession();
-      if (session) { classId = session.classId; state = 'active'; message = '你已登入課堂。活動清單會定時更新。'; await refreshActivities(); startPolling(); return; }
+      if (session) { classId = session.classId; state = 'active'; message = '你已登入課堂。'; await refreshActivities(); startPolling(); startRealtime(); return; }
       classes = await studentApi.listClasses();
       state = 'form';
     } catch { state = 'error'; message = '現在無法連線到課堂，請稍後再試。'; }
   }
-  onMount(() => { mounted = true; void initialise(); return () => { mounted = false; refreshGeneration += 1; refreshController?.abort(); if (refreshTimer !== undefined) clearInterval(refreshTimer); }; });
+  onMount(() => { mounted = true; void initialise(); return () => { mounted = false; refreshGeneration += 1; refreshController?.abort(); realtime?.stop(); if (refreshTimer !== undefined) clearInterval(refreshTimer); }; });
   async function join(): Promise<void> {
     state = 'joining';
     try {
       const outcome = await studentApi.join(fetch, classId, displayName, studentNumber);
-      if (outcome === 'active') { state = 'active'; message = '已加入課堂。'; await refreshActivities(); startPolling(); }
+      if (outcome === 'active') { state = 'active'; message = '已加入課堂。'; await refreshActivities(); startPolling(); startRealtime(); }
       else if (outcome === 'pending') { state = 'pending'; message = '加入申請已送出，請等待老師核准後再登入。'; }
       else { state = 'denied'; message = '目前無法加入課堂。請向老師確認核准狀態或是否已有另一個登入。'; }
     } catch { state = 'error'; message = '送出失敗，請檢查網路後重試。'; }
@@ -114,6 +128,7 @@
       <p role="status" aria-live="polite">{message}</p>
       {#if state === 'active'}
         <section aria-labelledby="activities-title"><h2 id="activities-title">目前活動</h2><button onclick={() => void refreshActivities()} disabled={refreshInFlight}>{refreshInFlight ? '更新中…' : '重新整理'}</button>
+          {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="connection">即時更新暫時中斷，仍會定時檢查活動。</p>{/if}
           {#if activitiesError}<p class="error" role="status">{activitiesError}</p>{/if}
           {#if activities?.questions.items.length === 0 && activities?.fileTasks.items.length === 0}<p>目前沒有已開放或已結束的活動。</p>{/if}
           {#if activities && activities.questions.items.length > 0}<h3>即時題</h3><ul>{#each activities.questions.items as question}<li><a href={`/student/question/${encodeURIComponent(question.id)}`}>{question.state === 'open' ? '進行中' : '已結束'}｜{question.prompt}</a></li>{/each}</ul>{/if}
@@ -133,6 +148,7 @@
   input, select { border: 2px solid #475569; padding: .4rem .6rem; }
   button { border: 0; padding: .5rem 1rem; background: #075985; color: #fff; font-weight: 700; margin-top: .5rem; }
   .error { color: #7f1d1d; background: #fef2f2; border-left: 4px solid #b91c1c; padding: .7rem; }
+  .connection { color: #475569; font-size: .9rem; }
   :focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
   .skip { position: absolute; left: -999px; } .skip:focus { left: 1rem; top: 1rem; background: white; padding: .5rem; }
   @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }

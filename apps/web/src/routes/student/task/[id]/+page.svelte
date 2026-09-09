@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
+  import { RealtimeClient, type RealtimeStatus } from '$lib/realtime/client';
   import { isSessionExpired, studentApi } from '$lib/student/api';
   import type { StudentFileTask } from '$lib/student/types';
 
@@ -12,6 +13,9 @@
   let uploadController: AbortController | undefined;
   let deadlinePassed = false;
   let sessionExpired = false;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let realtime: RealtimeClient | undefined;
+  let realtimeStatus: RealtimeStatus | undefined;
   const taskId = page.params.id ?? '';
   const classId = page.url.searchParams.get('class') ?? '';
   $: deadlinePassed = view ? new Date(view.task.deadlineAtUtc).getTime() <= Date.now() : false;
@@ -19,11 +23,23 @@
     if (!classId) { notice = '缺少課堂資訊；請使用老師提供的作業連結。'; return; }
     try { view = await studentApi.readFileTask(fetch, classId, taskId); }
     catch (error) {
-      if (isSessionExpired(error)) { await studentApi.endSession(); sessionExpired = true; notice = '登入已失效；請回到學生首頁重新加入課堂。'; }
+      if (isSessionExpired(error)) { realtime?.stop(); await studentApi.endSession(); sessionExpired = true; notice = '登入已失效；請回到學生首頁重新加入課堂。'; }
       else notice = '無法讀取作業。請確認登入與連線。';
     }
   }
-  onMount(() => { void load(); return () => uploadController?.abort(); });
+  function startRealtime(): void {
+    realtime?.stop();
+    realtime = new RealtimeClient({
+      resources: ['file-task'],
+      resync: load,
+      onStatus: (status) => realtimeStatus = status
+    });
+    realtime.start();
+  }
+  onMount(() => {
+    void (async () => { await load(); if (!sessionExpired) { startRealtime(); refreshTimer = setInterval(() => { if (!realtime?.isLive()) void load(); }, 15_000); } })();
+    return () => { uploadController?.abort(); realtime?.stop(); if (refreshTimer !== undefined) clearInterval(refreshTimer); };
+  });
   function selectFile(event: Event): void {
     const candidate = (event.currentTarget as HTMLInputElement).files?.[0];
     if (candidate === undefined) return;
@@ -41,7 +57,7 @@
     uploadController = new AbortController();
     try { await studentApi.uploadFile(fetch, classId, taskId, file, (value) => progress = value, uploadController.signal); await load(); notice = '檔案已成功繳交，不能再替換。'; }
     catch (error) {
-      if (isSessionExpired(error)) { await studentApi.endSession(); sessionExpired = true; notice = '登入已失效；未儲存檔案內容，請回到學生首頁重新加入課堂。'; }
+      if (isSessionExpired(error)) { realtime?.stop(); await studentApi.endSession(); sessionExpired = true; notice = '登入已失效；未儲存檔案內容，請回到學生首頁重新加入課堂。'; }
       else notice = error instanceof Error && error.message === 'UPLOAD_ABORTED' ? '已取消上傳；未儲存檔案內容。' : '上傳失敗；未儲存檔案內容，請在期限內重新選擇後上傳。';
     }
     finally { uploadController = undefined; uploading = false; }
@@ -51,6 +67,7 @@
 <svelte:head><title>繳交作業｜LAN 課堂互動平台</title></svelte:head>
 <main>
   <a class="skip" href="#content">跳到主要內容</a>
+  {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="connection">即時更新暫時中斷，作業狀態仍會定時重新確認。</p>{/if}
   {#if view && !sessionExpired}
     <section id="content" aria-labelledby="task-title">
       <h1 id="task-title">{view.task.title}</h1>
@@ -77,6 +94,7 @@
 
 <style>
   main { max-width: 48rem; margin: auto; padding: 1rem; color: #172554; font: 1rem/1.55 system-ui, sans-serif; }
+  .connection { color: #475569; font-size: .9rem; }
   form { display:grid; gap:.7rem; } input, button { min-height:44px; font:inherit; } button { border:0; border-radius:.4rem; background:#075985; color:white; padding:.6rem 1rem; font-weight:700; } progress { width:100%; height:1.5rem; } .urgent { color:#9f1239; font-weight:700; } :focus-visible { outline:3px solid #f59e0b; outline-offset:2px; } .skip { position:absolute; left:-999px; } .skip:focus { left:1rem; top:1rem; background:#fff; padding:.5rem; }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
 </style>

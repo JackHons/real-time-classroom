@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
+  import { RealtimeClient, type RealtimeStatus } from '$lib/realtime/client';
   import QuestionAnswer from '$lib/student/QuestionAnswer.svelte';
   import { isSessionExpired, studentApi } from '$lib/student/api';
   import { createAnswerQueue, flushAnswers, type AnswerQueue } from '$lib/student/answer-queue';
   import type { AnswerPayload, QueuedAnswer, StudentQuestion } from '$lib/student/types';
 
   let queue: AnswerQueue | undefined;
+  let queueOwner = '';
   let view: StudentQuestion | undefined;
   let state: 'loading' | 'ready' | 'saving' | 'queued' | 'closed' | 'session-expired' | 'error' = 'loading';
   let notice = '';
@@ -15,14 +17,19 @@
   let generation = 0;
   let refreshController: AbortController | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let realtime: RealtimeClient | undefined;
+  let realtimeStatus: RealtimeStatus | undefined;
   const questionId = page.params.id ?? '';
 
   async function expireSession(): Promise<void> {
     if (refreshTimer !== undefined) clearInterval(refreshTimer);
     refreshTimer = undefined;
     refreshController?.abort();
+    realtime?.stop();
+    realtime = undefined;
     await queue?.discard();
     queue = undefined;
+    queueOwner = '';
     await studentApi.endSession();
     state = 'session-expired';
     notice = '登入已失效，為保護你的資料，本機未同步答案已捨棄。請回到學生首頁重新加入課堂。';
@@ -60,6 +67,23 @@
       else notice = '仍未能同步答案；答案安全保留在此裝置。';
     }
   }
+  /** A queue is replayed only after cookie session + REST both confirm it is open. */
+  async function resyncAfterRealtime(): Promise<void> {
+    const session = await studentApi.restoreSession();
+    if (session === undefined) { await expireSession(); return; }
+    if (session.queueOwner !== queueOwner) { await expireSession(); return; }
+    const latest = await refresh();
+    if (latest?.question.state === 'open') await reconnect();
+  }
+  function startRealtime(): void {
+    realtime?.stop();
+    realtime = new RealtimeClient({
+      resources: ['question'],
+      resync: resyncAfterRealtime,
+      onStatus: (status) => { if (mounted) realtimeStatus = status; }
+    });
+    realtime.start();
+  }
   async function poll(): Promise<void> {
     try { await refresh(); }
     catch (error) {
@@ -70,21 +94,23 @@
   }
   onMount(() => {
     mounted = true;
-    const online = () => { void reconnect(); };
+    const online = () => { void resyncAfterRealtime(); };
     window.addEventListener('online', online);
     void (async () => {
       try {
         const session = await studentApi.restoreSession();
         if (session === undefined) { state = 'session-expired'; notice = '登入已失效，請回到學生首頁重新加入課堂。'; return; }
-        queue = createAnswerQueue(session.queueOwner);
+        queueOwner = session.queueOwner;
+        queue = createAnswerQueue(queueOwner);
         await refresh(); if (state !== 'closed') state = 'ready'; await reconnect();
-        refreshTimer = setInterval(() => { void poll(); }, 15_000);
+        refreshTimer = setInterval(() => { if (!realtime?.isLive()) void poll(); }, 15_000);
+        startRealtime();
       } catch (error) {
         if (isSessionExpired(error)) await expireSession();
         else { state = 'error'; notice = '無法讀取題目，請檢查網路後按「重新整理」。'; }
       }
     })();
-    return () => { mounted = false; generation += 1; refreshController?.abort(); if (refreshTimer !== undefined) clearInterval(refreshTimer); window.removeEventListener('online', online); };
+    return () => { mounted = false; generation += 1; refreshController?.abort(); realtime?.stop(); if (refreshTimer !== undefined) clearInterval(refreshTimer); window.removeEventListener('online', online); };
   });
   async function submit(payload: AnswerPayload): Promise<void> {
     if (!view) return;
@@ -108,6 +134,7 @@
 <main>
   <a class="skip" href="#content">跳到主要內容</a>
   <div id="content" aria-live="polite" class="notice">{notice}</div>
+  {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="connection">即時更新暫時中斷，題目狀態仍會定時重新確認。</p>{/if}
   {#if view}<QuestionAnswer {view} onSubmit={submit} pending={state === 'saving'} />
   {#if state === 'queued'}<button class="discard" onclick={() => void (async () => { await queue?.discard(); state = 'ready'; notice = '本機未同步答案已捨棄。'; })()}>捨棄本機未同步答案</button>{/if}
   {:else if state === 'loading'}<p role="status">正在讀取題目…</p>
@@ -117,6 +144,7 @@
 <style>
   main { max-width: 48rem; margin: auto; padding: 1rem; color: #172554; font: 1rem/1.55 system-ui, sans-serif; }
   .notice { min-height: 1.5rem; color: #075985; font-weight: 600; }
+  .connection { color: #475569; font-size: .9rem; }
   button { min-height: 44px; padding: .6rem 1rem; color: white; background: #075985; border: 0; border-radius: .4rem; font: inherit; }
   .discard { display: block; margin-top: .75rem; background: #991b1b; }
   :focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
