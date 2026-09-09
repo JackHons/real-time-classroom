@@ -22,6 +22,8 @@ $scratch = Join-Path $env:TEMP ('lan-launcher-test-' + [guid]::NewGuid().ToStrin
 try {
   $repo = Join-Path $scratch 'repo'; $runtime = Join-Path $scratch 'runtime'; [IO.Directory]::CreateDirectory($repo) | Out-Null; [IO.Directory]::CreateDirectory($runtime) | Out-Null
   Assert-True ((Assert-LanRuntimeRoot -RuntimeRoot $runtime -RepositoryRoot $repo) -eq $null) 'sibling dedicated runtime should be accepted'
+  $settings = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
+  Assert-True (Test-Path -LiteralPath $settings -PathType Leaf) 'runtime preflight should create private launcher settings'
   $blocked = $false; try { Assert-LanRuntimeRoot -RuntimeRoot $scratch -RepositoryRoot $repo } catch { $blocked = $true }
   Assert-True $blocked 'a shared parent may not be used as RuntimeRoot'
   $statePath = Join-Path $runtime 'launcher-state.json'; Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = 1; workerPid = 2 }

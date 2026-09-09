@@ -67,9 +67,14 @@ function Test-LanPortAvailable {
 
 function Set-PrivateRuntimeAcl {
   param([Parameter(Mandatory)][string] $Path)
+  # `pnpm` launched from PowerShell 7 can pass its module search path to the
+  # supported Windows PowerShell 5.1 launcher.  Load the in-box module by
+  # absolute PSHOME path so Get-Acl cannot resolve the incompatible Core one.
+  Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security') -Force -ErrorAction Stop
   $acl = Get-Acl -LiteralPath $Path
   $acl.SetAccessRuleProtection($true, $false)
-  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $inheritance = if ((Get-Item -LiteralPath $Path).PSIsContainer) { 'ContainerInherit,ObjectInherit' } else { 'None' }
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', $inheritance, 'None', 'Allow')
   $acl.SetAccessRule($rule)
   Set-Acl -LiteralPath $Path -AclObject $acl
 }
@@ -83,13 +88,14 @@ function Initialize-LanRuntime {
   foreach ($directory in @($root, (Join-Path $root 'database'), (Join-Path $root 'uploads'), (Join-Path $root 'uploads\staging'), (Join-Path $root 'uploads\files'))) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
   Set-PrivateRuntimeAcl -Path $root
   $probe = Join-Path $root ('.write-probe-' + [guid]::NewGuid().ToString('N')); $stream = $null
-  try { $stream = [IO.File]::Open($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, [IO.FileOptions]::WriteThrough); $stream.WriteByte(0); $stream.Flush($true) } finally { if ($null -ne $stream) { $stream.Dispose() }; Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
-  $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($root).TrimEnd(':','\\'))
+  try { $stream = [IO.FileStream]::new($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough); $stream.WriteByte(0); $stream.Flush($true) } finally { if ($null -ne $stream) { $stream.Dispose() }; Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
+  $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($root).TrimEnd(':','\'))
   if ($drive.Free -lt $script:MinimumFreeBytes) { throw "At least $script:MinimumFreeBytes bytes free space is required for runtime data and upload reserve." }
   $settings = Join-Path $root 'launcher-settings.json'
   if (-not (Test-Path -LiteralPath $settings)) {
-    $bytes = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    [IO.File]::WriteAllText($settings, (@{ csrfSecret = [Convert]::ToHexString($bytes).ToLowerInvariant() } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    $bytes = [byte[]]::new(32); $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $random.GetBytes($bytes) } finally { $random.Dispose() }
+    [IO.File]::WriteAllText($settings, (@{ csrfSecret = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant() } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Set-PrivateRuntimeAcl -Path $settings
   }
   $settings
@@ -143,10 +149,10 @@ function Add-LanPrivateFirewallRule {
 
 function Assert-LanRuntimeRoot {
   param([Parameter(Mandatory)][string] $RuntimeRoot, [Parameter(Mandatory)][string] $RepositoryRoot)
-  $root = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\\'); $repo = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\\')
+  $root = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\'); $repo = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
   $rootPrefix = "$root$([IO.Path]::DirectorySeparatorChar)"; $repoPrefix = "$repo$([IO.Path]::DirectorySeparatorChar)"
-  if ($root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\\') -or $root -eq $repo -or $root.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or $repo.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'RuntimeRoot must be a dedicated leaf outside, and not containing, the source checkout.' }
-  foreach ($broad in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:ProgramData)) { if ($null -ne $broad -and $root -eq [IO.Path]::GetFullPath($broad).TrimEnd('\\')) { throw 'RuntimeRoot must be a dedicated leaf directory, not a profile or shared parent.' } }
+  if ($root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\') -or $root -eq $repo -or $root.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or $repo.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'RuntimeRoot must be a dedicated leaf outside, and not containing, the source checkout.' }
+  foreach ($broad in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:ProgramData)) { if ($null -ne $broad -and $root -eq [IO.Path]::GetFullPath($broad).TrimEnd('\')) { throw 'RuntimeRoot must be a dedicated leaf directory, not a profile or shared parent.' } }
 }
 
 function ConvertTo-LanWindowsArgument {
