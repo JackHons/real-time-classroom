@@ -6,6 +6,8 @@ export type StoredTeacherSession = TeacherSession;
 
 export interface AuthSessionRepository {
   teacherPasswordHash(): string | undefined;
+  /** Atomically claims the one shared-teacher credential slot. */
+  setTeacherPasswordHashIfAbsent(hash: string, now: IsoUtc): boolean;
   createTeacherSession(input: StoredTeacherSession): void;
   createStudentSession(input: StoredStudentSession): void;
   findTeacherSession(tokenHash: string): StoredTeacherSession | undefined;
@@ -30,6 +32,11 @@ export class SqliteAuthSessionRepository implements AuthSessionRepository {
 
   teacherPasswordHash(): string | undefined {
     return (this.database.prepare("SELECT value FROM app_settings WHERE key='teacher_shared_password_hash'").get() as { value: string } | undefined)?.value;
+  }
+
+  setTeacherPasswordHashIfAbsent(hash: string, now: IsoUtc): boolean {
+    const result = this.database.prepare("INSERT INTO app_settings (key,value,created_at_utc,updated_at_utc) VALUES ('teacher_shared_password_hash',?,?,?) ON CONFLICT(key) DO NOTHING").run(hash, now, now);
+    return result.changes === 1;
   }
 
   createTeacherSession(input: StoredTeacherSession): void {

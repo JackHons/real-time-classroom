@@ -7,6 +7,7 @@ class MemoryRepository implements AuthSessionRepository {
   readonly teacher = new Map<string, TeacherSession>();
   readonly student = new Map<string, StudentSession>();
   teacherPasswordHash(): string | undefined { return undefined; }
+  setTeacherPasswordHashIfAbsent(): boolean { return false; }
   createTeacherSession(input: TeacherSession): void { this.teacher.set(input.tokenHash, input); }
   createStudentSession(input: StudentSession): void {
     if ([...this.student.values()].some((session) => session.studentId === input.studentId && session.revokedAtUtc === null)) throw new Error('STUDENT_SESSION_ALREADY_ACTIVE');

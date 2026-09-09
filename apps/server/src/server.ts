@@ -13,7 +13,9 @@ export type ServerOptions = Readonly<{
   host?: string;
   port?: number;
   /** Bootstrap may expose a health-only, explicitly non-ready host. */
-  health?: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string }>;
+  health?: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string; version?: string; schemaVersion?: string; upgradeReady?: boolean }>;
+  /** Pre-application first-run surface. It must self-authorize every request. */
+  bootstrapHandler?: HttpRouteHandler;
   /** API routes share this host and take precedence over the SvelteKit handler. */
   apiHandler?: HttpRouteHandler;
   webHandler?: HttpRequestListener;
@@ -59,10 +61,11 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, opti
     if (request.method === 'GET' && request.url === '/health') {
       const health = options.health ?? { status: 200, state: 'ready' };
       response.writeHead(health.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      response.end(JSON.stringify({ status: health.state === 'ready' ? 'ok' : 'not_ready', service: 'lan-classroom-platform', ...(health.reason === undefined ? {} : { reason: health.reason }) }));
+      response.end(JSON.stringify({ status: health.state === 'ready' ? 'ok' : 'not_ready', service: 'lan-classroom-platform', ...(health.reason === undefined ? {} : { reason: health.reason }), ...(health.version === undefined ? {} : { version: health.version }), ...(health.schemaVersion === undefined ? {} : { schemaVersion: health.schemaVersion }), ...(health.upgradeReady === undefined ? {} : { upgradeReady: health.upgradeReady }) }));
       return;
     }
 
+    if (options.bootstrapHandler !== undefined && await options.bootstrapHandler(request, response)) return;
     if (options.apiHandler !== undefined && await options.apiHandler(request, response)) return;
 
     if (options.webHandler !== undefined) {

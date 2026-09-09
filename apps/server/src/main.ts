@@ -1,7 +1,10 @@
 import { createApplication, FirstRunSetupRequiredError } from './application.js';
 import { openSqlite } from './db/connection.js';
+import { SqliteAuthSessionRepository } from './db/auth-session-repository.js';
+import { migrationReadiness } from './db/migrator.js';
+import { createFirstRunSetupHandler } from './first-run-setup.js';
 import { readRuntimeConfig } from './runtime-config.js';
-import { startServer, type HttpRequestListener } from './server.js';
+import { startServer, type HttpRequestListener, type HttpRouteHandler } from './server.js';
 import type { RealtimeGatewayOptions, RealtimeNotificationBus } from './realtime/gateway.js';
 
 const webModule = (await import(
@@ -14,7 +17,8 @@ let apiHandler;
 let realtime: RealtimeGatewayOptions | undefined;
 let realtimeNotifications: RealtimeNotificationBus | undefined;
 let flushTaskCloseNotifications: (() => void) | undefined;
-let health: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string }> = { status: 200, state: 'ready' };
+let bootstrapHandler: HttpRouteHandler | undefined;
+let health: Readonly<{ status: 200 | 503; state: 'ready' | 'not_ready'; reason?: string; version?: string; schemaVersion?: string; upgradeReady?: boolean }> = { status: 200, state: 'ready' };
 try {
   const application = createApplication({
     database,
@@ -32,24 +36,27 @@ try {
   flushTaskCloseNotifications = application.flushTaskCloseNotifications;
 } catch (error) {
   if (error instanceof FirstRunSetupRequiredError) {
-    // The first-run setup flow is intentionally not implemented in this task.
-    // Do not serve UI or API routes until a loopback-only setup has stored a hash.
+    // No application or LAN route is attached until the direct-loopback setup
+    // handler wins the atomic password insert. This deliberately does not
+    // trust a forwarded client address or a LAN Host header.
     health = { status: 503, state: 'not_ready', reason: 'FIRST_RUN_SETUP_REQUIRED' };
-    console.error('FIRST_RUN_SETUP_REQUIRED: only GET /health is available until teacher setup completes.');
-    database.close();
+    bootstrapHandler = createFirstRunSetupHandler({ repository: new SqliteAuthSessionRepository(database) });
+    console.error('FIRST_RUN_SETUP_REQUIRED: only direct loopback /setup and GET /health are available until teacher setup completes.');
   } else if (isUploadStorageStartupError(error)) {
     // Storage reconciliation is a readiness prerequisite. Keep the process
     // observable but fail closed: no UI or API is attached while durable state
     // and private files disagree.
     health = { status: 503, state: 'not_ready', reason: 'UPLOAD_STORAGE_NOT_READY' };
     console.error('UPLOAD_STORAGE_NOT_READY: only GET /health is available until storage integrity is restored.');
-    database.close();
   } else throw error;
 }
+const readiness = migrationReadiness(database);
+health = { ...health, version: '0.1.0', schemaVersion: readiness.schemaVersion, upgradeReady: readiness.upgradeReady };
 const server = await startServer({
   host: config.host,
   port: config.port,
   health,
+  ...(bootstrapHandler === undefined ? {} : { bootstrapHandler }),
   ...(apiHandler === undefined
     ? {}
     : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => { realtimeNotifications?.attach(gateway); flushTaskCloseNotifications?.(); } }) })

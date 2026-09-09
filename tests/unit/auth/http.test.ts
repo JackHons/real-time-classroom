@@ -9,6 +9,7 @@ import type { ClassId, IsoUtc, Student, StudentId, StudentSession, TeacherSessio
 class TestRepository implements AuthSessionRepository {
   readonly teachers = new Map<string, TeacherSession>(); readonly students = new Map<string, StudentSession>();
   teacherPasswordHash(): string | undefined { return '$argon2id$fake'; }
+  setTeacherPasswordHashIfAbsent(): boolean { return false; }
   createTeacherSession(value: TeacherSession): void { this.teachers.set(value.tokenHash, value); }
   createStudentSession(value: StudentSession): void { if ([...this.students.values()].some((existing) => existing.studentId === value.studentId && existing.revokedAtUtc === null)) throw new Error('STUDENT_SESSION_ALREADY_ACTIVE'); this.students.set(value.tokenHash, value); }
   findTeacherSession(hash: string): TeacherSession | undefined { return this.teachers.get(hash); } findStudentSession(hash: string): StudentSession | undefined { return this.students.get(hash); }
