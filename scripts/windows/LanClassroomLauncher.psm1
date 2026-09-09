@@ -1,5 +1,6 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:MinimumFreeBytes = 5 * 1GB + 2 * 100000000
 
 function Test-PrivateIPv4 {
   param([Parameter(Mandatory)][string] $Address)
@@ -78,13 +79,13 @@ function Initialize-LanRuntime {
   param([Parameter(Mandatory)][string] $RuntimeRoot, [Parameter(Mandatory)][string] $RepositoryRoot)
   $root = [IO.Path]::GetFullPath($RuntimeRoot)
   $repo = [IO.Path]::GetFullPath($RepositoryRoot)
-  if ($root.StartsWith($repo, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime data must be outside the source checkout.' }
-  New-Item -ItemType Directory -Force -LiteralPath $root, (Join-Path $root 'database'), (Join-Path $root 'uploads'), (Join-Path $root 'uploads\staging'), (Join-Path $root 'uploads\files') | Out-Null
+  Assert-LanRuntimeRoot -RuntimeRoot $root -RepositoryRoot $repo
+  foreach ($directory in @($root, (Join-Path $root 'database'), (Join-Path $root 'uploads'), (Join-Path $root 'uploads\staging'), (Join-Path $root 'uploads\files'))) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
   Set-PrivateRuntimeAcl -Path $root
   $probe = Join-Path $root ('.write-probe-' + [guid]::NewGuid().ToString('N')); $stream = $null
   try { $stream = [IO.File]::Open($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, [IO.FileOptions]::WriteThrough); $stream.WriteByte(0); $stream.Flush($true) } finally { if ($null -ne $stream) { $stream.Dispose() }; Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
   $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($root).TrimEnd(':','\\'))
-  if ($drive.Free -lt (5GB + 200MB)) { throw 'At least 5.2 GB free space is required for runtime data and upload reserve.' }
+  if ($drive.Free -lt $script:MinimumFreeBytes) { throw "At least $script:MinimumFreeBytes bytes free space is required for runtime data and upload reserve." }
   $settings = Join-Path $root 'launcher-settings.json'
   if (-not (Test-Path -LiteralPath $settings)) {
     $bytes = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
@@ -133,16 +134,58 @@ function Add-LanPrivateFirewallRule {
   if ($existing.Count -gt 1) { throw "More than one firewall rule is named $name. Remove the duplicate rules before starting." }
   if ($existing.Count -eq 1) {
     $rule = $existing[0]
-    $portFilter = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop)
-    $appFilter = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop)
-    $isExact = $rule.Direction -eq 'Inbound' -and $rule.Action -eq 'Allow' -and $rule.Profile -eq 'Private' -and
-      $portFilter.Count -eq 1 -and $portFilter[0].Protocol -eq 'TCP' -and $portFilter[0].LocalPort -eq "$Port" -and
-      $appFilter.Count -eq 1 -and $appFilter[0].Program -eq $NodeProgram
-    if ($isExact) { return [pscustomobject]@{ Name = $name; Created = $false } }
+    if (Test-LanFirewallRuleExact -Rule $rule -NodeProgram $NodeProgram -Port $Port) { return [pscustomobject]@{ Name = $name; Created = $false } }
     throw "Firewall rule $name already exists but does not match this exact Node program and TCP port. Review or remove it before starting."
   }
   New-NetFirewallRule -Name $name -DisplayName "LAN Classroom private LAN ($Port)" -Direction Inbound -Action Allow -Profile Private -Program $NodeProgram -Protocol TCP -LocalPort $Port -RemoteAddress LocalSubnet | Out-Null
   [pscustomobject]@{ Name = $name; Created = $true }
 }
 
-Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule
+function Assert-LanRuntimeRoot {
+  param([Parameter(Mandatory)][string] $RuntimeRoot, [Parameter(Mandatory)][string] $RepositoryRoot)
+  $root = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\\'); $repo = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\\')
+  $rootPrefix = "$root$([IO.Path]::DirectorySeparatorChar)"; $repoPrefix = "$repo$([IO.Path]::DirectorySeparatorChar)"
+  if ($root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\\') -or $root -eq $repo -or $root.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or $repo.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'RuntimeRoot must be a dedicated leaf outside, and not containing, the source checkout.' }
+  foreach ($broad in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:ProgramData)) { if ($null -ne $broad -and $root -eq [IO.Path]::GetFullPath($broad).TrimEnd('\\')) { throw 'RuntimeRoot must be a dedicated leaf directory, not a profile or shared parent.' } }
+}
+
+function ConvertTo-LanWindowsArgument {
+  param([Parameter(Mandatory)][string] $Value)
+  $builder = [Text.StringBuilder]::new(); [void]$builder.Append('"'); $slashes = 0
+  foreach ($character in $Value.ToCharArray()) {
+    if ($character -eq [char]92) { $slashes += 1; continue }
+    if ($character -eq [char]34) { [void]$builder.Append(([string][char]92 * ($slashes * 2 + 1))); [void]$builder.Append([char]34); $slashes = 0; continue }
+    if ($slashes -gt 0) { [void]$builder.Append(([string][char]92 * $slashes)); $slashes = 0 }
+    [void]$builder.Append($character)
+  }
+  if ($slashes -gt 0) { [void]$builder.Append(([string][char]92 * ($slashes * 2))) }
+  [void]$builder.Append([char]34); $builder.ToString()
+}
+
+function Write-LanLauncherState {
+  param([Parameter(Mandatory)][string] $StatePath, [Parameter(Mandatory)][object] $State)
+  $directory = Split-Path -Parent $StatePath; $temporary = Join-Path $directory ('.launcher-state-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  try {
+    [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    if (Test-Path -LiteralPath $StatePath) { [IO.File]::Replace($temporary, $StatePath, $null) } else { [IO.File]::Move($temporary, $StatePath) }
+  } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+}
+
+function Test-LanFirewallRuleExact {
+  param([Parameter(Mandatory)][object] $Rule, [Parameter(Mandatory)][string] $NodeProgram, [Parameter(Mandatory)][int] $Port)
+  $portFilter = @(Get-NetFirewallPortFilter -AssociatedNetFirewallRule $Rule -ErrorAction Stop); $appFilter = @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $Rule -ErrorAction Stop); $addressFilter = @(Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $Rule -ErrorAction Stop)
+  return $Rule.Enabled -eq 'True' -and $Rule.Direction -eq 'Inbound' -and $Rule.Action -eq 'Allow' -and $Rule.Profile -eq 'Private' -and $portFilter.Count -eq 1 -and $portFilter[0].Protocol -eq 'TCP' -and $portFilter[0].LocalPort -eq "$Port" -and $appFilter.Count -eq 1 -and [string]::Equals($appFilter[0].Program, $NodeProgram, [StringComparison]::OrdinalIgnoreCase) -and $addressFilter.Count -eq 1 -and $addressFilter[0].RemoteAddress -eq 'LocalSubnet'
+}
+
+function Test-LanProcessIdentity {
+  param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][string] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
+  $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
+  if ($null -eq $process) { return $false }
+  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::Parse($StartedAtUtc).ToUniversalTime()).TotalSeconds) -gt 2) { return $false }
+  $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
+  return $null -ne $cim -and $null -ne $cim.CommandLine -and $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
+function Remove-LanOwnedFirewallRule { param([string] $Name, [bool] $Owned); if ($Owned -and $Name -match '^LanClassroom-Private-\d{1,5}$') { Remove-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue } }
+
+Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Remove-LanOwnedFirewallRule
