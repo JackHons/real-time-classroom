@@ -8,10 +8,18 @@ param(
 Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 Import-Module (Join-Path $PSScriptRoot 'LanClassroomLauncher.psm1') -Force
+$runtime = [IO.Path]::GetFullPath($RuntimeRoot)
+# Establish the private root and acquire the single-instance marker before any
+# port probe, firewall mutation, or user-visible URL.
+$settingsPath = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
+$lockPath = Join-Path $runtime 'launcher.lock'
+$tokenBytes = [byte[]]::new(32); $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
+$launcherToken = [Convert]::ToBase64String($tokenBytes)
+try { $lockStream = [IO.FileStream]::new($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read); $lockText = @{ token = $launcherToken; pid = $PID; startedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress; $lockBytes = [Text.UTF8Encoding]::new($false).GetBytes($lockText); $lockStream.Write($lockBytes, 0, $lockBytes.Length); $lockStream.Flush($true); $lockStream.Dispose() } catch { throw 'Another LAN Classroom launcher is already starting or running.' }
+try { Set-PrivateRuntimeAcl -Path $lockPath } catch { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue; throw }
 $selected = Get-LanCandidateSelection -Candidates (Get-LanCandidates) -InterfaceIndex $InterfaceIndex
 $addresses = @('127.0.0.1', $selected.Address)
 Test-LanPortAvailable -Addresses $addresses -Port $Port
-$settingsPath = Initialize-LanRuntime -RuntimeRoot $RuntimeRoot -RepositoryRoot $repo
 Test-LanDeployment -RepositoryRoot $repo
 Test-LanSqlite -RepositoryRoot $repo -RuntimeRoot ([IO.Path]::GetFullPath($RuntimeRoot))
 $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
@@ -37,8 +45,8 @@ $supervisorArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (J
 # Start-Process so the launcher works on the supported in-box shell too.
 $supervisorCommand = (($supervisorArguments | ForEach-Object { ConvertTo-LanWindowsArgument ([string]$_) }) -join ' ')
 $powerShell = (Get-Command powershell -ErrorAction Stop).Source
-try { $process = Start-Process -FilePath $powerShell -ArgumentList $supervisorCommand -WorkingDirectory $repo -WindowStyle Hidden -PassThru } catch { Remove-LanOwnedFirewallRule -Name $(if ($null -eq $firewall) { '' } else { $firewall.Name }) -Owned ($null -ne $firewall -and $firewall.Owned) -NodeProgram $node -Port $Port; throw }
-if ($null -eq $process) { Remove-LanOwnedFirewallRule -Name $(if ($null -eq $firewall) { '' } else { $firewall.Name }) -Owned ($null -ne $firewall -and $firewall.Owned) -NodeProgram $node -Port $Port; throw 'Could not start the classroom supervisor.' }
+try { $process = Start-Process -FilePath $powerShell -ArgumentList $supervisorCommand -WorkingDirectory $repo -WindowStyle Hidden -PassThru } catch { Remove-LanOwnedFirewallRule -Name $(if ($null -eq $firewall) { '' } else { $firewall.Name }) -Owned ($null -ne $firewall -and $firewall.Owned) -NodeProgram $node -Port $Port; Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue; throw }
+if ($null -eq $process) { Remove-LanOwnedFirewallRule -Name $(if ($null -eq $firewall) { '' } else { $firewall.Name }) -Owned ($null -ne $firewall -and $firewall.Owned) -NodeProgram $node -Port $Port; Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue; throw 'Could not start the classroom supervisor.' }
 # Start never writes launcher-state.json: the supervisor is its sole atomic
 # writer and therefore cannot have a live workerPid overwritten by Start.
 Write-Host "Students: http://$($selected.Address):$Port"
