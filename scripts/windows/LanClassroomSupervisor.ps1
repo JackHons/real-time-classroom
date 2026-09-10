@@ -30,11 +30,20 @@ try {
   $psi.Environment['LAN_CLASSROOM_UPLOAD_STORAGE_PATH'] = Join-Path $RuntimeRoot 'uploads'
   $worker = [Diagnostics.Process]::Start($psi)
   if ($null -eq $worker) { throw 'Could not start the classroom server.' }
-  Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = $PID; supervisorStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); workerPid = $worker.Id; workerStartedAtUtc = $worker.StartTime.ToUniversalTime().ToString('o'); port = $Port; address = $Address; firewallRule = $(if ($FirewallRule) { $FirewallRule } else { $null }); firewallOwned = $FirewallOwned }
-  $worker.WaitForExit()
-  # Code 75 is emitted only after durable loopback first-run setup. The same
-  # private runtime paths and selected interface are reused, never recreated.
-  if ($worker.ExitCode -ne 75) { break }
+  try {
+    # State writing also revalidates its owner-only ACL.  If either operation
+    # fails after Process.Start, the finally below terminates this exact worker.
+    Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = $PID; supervisorStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); workerPid = $worker.Id; workerStartedAtUtc = $worker.StartTime.ToUniversalTime().ToString('o'); port = $Port; address = $Address; firewallRule = $(if ($FirewallRule) { $FirewallRule } else { $null }); firewallOwned = $FirewallOwned }
+    $worker.WaitForExit()
+    # Code 75 is emitted only after durable loopback first-run setup. The same
+    # private runtime paths and selected interface are reused, never recreated.
+    if ($worker.ExitCode -ne 75) { break }
+  } finally {
+    if ($null -ne $worker -and -not $worker.HasExited) {
+      Stop-Process -Id $worker.Id -Force -ErrorAction SilentlyContinue
+      $worker.WaitForExit()
+    }
+  }
   Start-Sleep -Milliseconds 100
   }
 } finally {

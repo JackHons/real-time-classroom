@@ -8,6 +8,24 @@ const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
 describe('runtime CSRF secret persistence', () => {
+  it.each(['0.0.0.0', '::', '::0', '::ffff:0:0', '::ffff:0000:0000', 'localhost', '8.8.8.8'])('rejects wildcard, unspecified, and non-private listener host %s', (host) => {
+    const directory = mkdtempSync(join(tmpdir(), 'lan-classroom-secret-')); directories.push(directory);
+    expect(() => readRuntimeConfig({
+      LAN_CLASSROOM_ALLOWED_ORIGIN: 'http://127.0.0.1:4173',
+      LAN_CLASSROOM_DATABASE_PATH: join(directory, 'classroom.sqlite'),
+      LAN_CLASSROOM_HOST: host
+    })).toThrow('RUNTIME_HOST_INVALID');
+  });
+
+  it.each(['127.0.0.1', '10.0.0.12', '172.16.0.1', '192.168.1.12', '::1', 'fd12:3456::1'])('accepts literal loopback or private host %s', (host) => {
+    const directory = mkdtempSync(join(tmpdir(), 'lan-classroom-secret-')); directories.push(directory);
+    expect(readRuntimeConfig({
+      LAN_CLASSROOM_ALLOWED_ORIGIN: 'http://127.0.0.1:4173',
+      LAN_CLASSROOM_DATABASE_PATH: join(directory, 'classroom.sqlite'),
+      LAN_CLASSROOM_HOST: host
+    }).hosts).toEqual([host]);
+  });
+
   it('atomically creates a canonical secret and reuses it on every later read', () => {
     const directory = mkdtempSync(join(tmpdir(), 'lan-classroom-secret-')); directories.push(directory);
     const environment = { LAN_CLASSROOM_ALLOWED_ORIGIN: 'http://127.0.0.1:4173', LAN_CLASSROOM_DATABASE_PATH: join(directory, 'classroom.sqlite') };

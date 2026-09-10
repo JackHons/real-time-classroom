@@ -71,12 +71,40 @@ function Set-PrivateRuntimeAcl {
   # supported Windows PowerShell 5.1 launcher.  Load the in-box module by
   # absolute PSHOME path so Get-Acl cannot resolve the incompatible Core one.
   Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security') -Force -ErrorAction Stop
-  $acl = Get-Acl -LiteralPath $Path
-  $acl.SetAccessRuleProtection($true, $false)
-  $inheritance = if ((Get-Item -LiteralPath $Path).PSIsContainer) { 'ContainerInherit,ObjectInherit' } else { 'None' }
-  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', $inheritance, 'None', 'Allow')
-  $acl.SetAccessRule($rule)
-  Set-Acl -LiteralPath $Path -AclObject $acl
+  $item = Get-Item -LiteralPath $Path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Runtime path may not be a reparse point: $Path" }
+  $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+  $permission = if ($item.PSIsContainer) { '(OI)(CI)F' } else { 'F' }
+  & icacls.exe $Path '/inheritance:r' '/remove:g' '*S-1-1-0' '*S-1-5-11' '*S-1-5-32-545' '/grant:r' "*$($owner.Value):$permission" "*S-1-5-18:$permission" "*S-1-5-32-544:$permission" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Could not secure runtime ACL: $Path" }
+  & icacls.exe $Path '/verify' | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Runtime ACL verification failed: $Path" }
+  Assert-PrivateRuntimeAcl -Path $Path
+}
+
+function Assert-PrivateRuntimeAcl {
+  param([Parameter(Mandatory)][string] $Path)
+  $acl = Get-Acl -LiteralPath $Path; $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $allowed = @($owner, 'S-1-5-18', 'S-1-5-32-544')
+  if (-not $acl.AreAccessRulesProtected -or ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw "Runtime ACL owner or inheritance is unsafe: $Path" }
+  foreach ($entry in @($acl.Access)) {
+    $sid = $entry.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($entry.IsInherited -or $entry.AccessControlType -ne 'Allow' -or $sid -notin $allowed -or (($entry.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne [Security.AccessControl.FileSystemRights]::FullControl)) { throw "Runtime ACL is not owner-only: $Path" }
+  }
+  foreach ($sid in $allowed) { if (@($acl.Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $sid }).Count -eq 0) { throw "Runtime ACL is incomplete: $Path" } }
+}
+
+function Assert-PrivateRuntimeTree {
+  param([Parameter(Mandatory)][string] $RuntimeRoot)
+  $pending = [Collections.Generic.Stack[string]]::new(); $pending.Push($RuntimeRoot)
+  while ($pending.Count -gt 0) {
+    $path = $pending.Pop(); $item = Get-Item -LiteralPath $path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Runtime path may not be a reparse point: $path" }
+    Set-PrivateRuntimeAcl -Path $path
+    if ($item.PSIsContainer) {
+      foreach ($child in @(Get-ChildItem -LiteralPath $path -Force)) { $pending.Push($child.FullName) }
+    }
+  }
 }
 
 function Initialize-LanRuntime {
@@ -86,7 +114,7 @@ function Initialize-LanRuntime {
   $repo = [IO.Path]::GetFullPath($RepositoryRoot)
   Assert-LanRuntimeRoot -RuntimeRoot $root -RepositoryRoot $repo
   foreach ($directory in @($root, (Join-Path $root 'database'), (Join-Path $root 'uploads'), (Join-Path $root 'uploads\staging'), (Join-Path $root 'uploads\files'))) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
-  Set-PrivateRuntimeAcl -Path $root
+  Assert-PrivateRuntimeTree -RuntimeRoot $root
   $probe = Join-Path $root ('.write-probe-' + [guid]::NewGuid().ToString('N')); $stream = $null
   try { $stream = [IO.FileStream]::new($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough); $stream.WriteByte(0); $stream.Flush($true) } finally { if ($null -ne $stream) { $stream.Dispose() }; Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
   $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($root).TrimEnd(':','\'))
@@ -98,6 +126,7 @@ function Initialize-LanRuntime {
     [IO.File]::WriteAllText($settings, (@{ csrfSecret = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant() } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Set-PrivateRuntimeAcl -Path $settings
   }
+  Assert-PrivateRuntimeTree -RuntimeRoot $root
   $settings
 }
 
@@ -133,26 +162,83 @@ function Test-LanSqlite {
 function Test-LanAdministrator { ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) }
 
 function Add-LanPrivateFirewallRule {
-  param([Parameter(Mandatory)][string] $NodeProgram, [Parameter(Mandatory)][ValidateRange(1,65535)][int] $Port)
+  param([Parameter(Mandatory)][string] $NodeProgram, [Parameter(Mandatory)][ValidateRange(1,65535)][int] $Port, [bool] $PriorOwned = $false)
   if (-not (Test-LanAdministrator)) { throw 'Administrator rights are required to add a firewall rule.' }
   $name = "LanClassroom-Private-$Port"
   $existing = @(Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue)
   if ($existing.Count -gt 1) { throw "More than one firewall rule is named $name. Remove the duplicate rules before starting." }
   if ($existing.Count -eq 1) {
     $rule = $existing[0]
-    if (Test-LanFirewallRuleExact -Rule $rule -NodeProgram $NodeProgram -Port $Port) { return [pscustomobject]@{ Name = $name; Created = $false } }
+    if (Test-LanFirewallRuleExact -Rule $rule -NodeProgram $NodeProgram -Port $Port) { return [pscustomobject]@{ Name = $name; Created = $false; Owned = $PriorOwned } }
     throw "Firewall rule $name already exists but does not match this exact Node program and TCP port. Review or remove it before starting."
   }
   New-NetFirewallRule -Name $name -DisplayName "LAN Classroom private LAN ($Port)" -Direction Inbound -Action Allow -Profile Private -Program $NodeProgram -Protocol TCP -LocalPort $Port -RemoteAddress LocalSubnet | Out-Null
-  [pscustomobject]@{ Name = $name; Created = $true }
+  [pscustomobject]@{ Name = $name; Created = $true; Owned = $true }
 }
 
 function Assert-LanRuntimeRoot {
   param([Parameter(Mandatory)][string] $RuntimeRoot, [Parameter(Mandatory)][string] $RepositoryRoot)
-  $root = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\'); $repo = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
+  $root = Get-LanCanonicalPath -Path $RuntimeRoot; $repo = Get-LanCanonicalPath -Path $RepositoryRoot
   $rootPrefix = "$root$([IO.Path]::DirectorySeparatorChar)"; $repoPrefix = "$repo$([IO.Path]::DirectorySeparatorChar)"
   if ($root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\') -or $root -eq $repo -or $root.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or $repo.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'RuntimeRoot must be a dedicated leaf outside, and not containing, the source checkout.' }
   foreach ($broad in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:ProgramData)) { if ($null -ne $broad -and $root -eq [IO.Path]::GetFullPath($broad).TrimEnd('\')) { throw 'RuntimeRoot must be a dedicated leaf directory, not a profile or shared parent.' } }
+  Assert-LanNoReparseAncestor -Path $RuntimeRoot
+  # Both directions are checked after resolving final filesystem paths, so a
+  # junction cannot make a sibling spelling alias the checkout or its parent.
+  if ((Test-LanPathContains -Parent $root -Child $repo) -or (Test-LanPathContains -Parent $repo -Child $root)) { throw 'RuntimeRoot must not resolve inside, or contain, the source checkout.' }
+}
+
+function Test-LanPathContains {
+  param([Parameter(Mandatory)][string] $Parent, [Parameter(Mandatory)][string] $Child)
+  $parentWithSeparator = $Parent.TrimEnd('\') + '\'
+  return $Child.Equals($Parent, [StringComparison]::OrdinalIgnoreCase) -or $Child.StartsWith($parentWithSeparator, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-LanNoReparseAncestor {
+  param([Parameter(Mandatory)][string] $Path)
+  $candidate = [IO.Path]::GetFullPath($Path)
+  while ($true) {
+    if (Test-Path -LiteralPath $candidate) {
+      $item = Get-Item -LiteralPath $candidate -Force
+      if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "RuntimeRoot may not use a junction, symlink, or other reparse point: $candidate" }
+    }
+    $parent = Split-Path -Parent $candidate
+    if ([string]::IsNullOrEmpty($parent) -or $parent -eq $candidate) { break }
+    $candidate = $parent
+  }
+}
+
+function Get-LanCanonicalPath {
+  param([Parameter(Mandatory)][string] $Path)
+  $full = [IO.Path]::GetFullPath($Path); Assert-LanNoReparseAncestor -Path $full
+  $missing = [Collections.Generic.List[string]]::new(); $existing = $full
+  while (-not (Test-Path -LiteralPath $existing)) {
+    $leaf = Split-Path -Leaf $existing; if ([string]::IsNullOrEmpty($leaf)) { throw "Runtime path has no existing canonical ancestor: $Path" }
+    $missing.Insert(0, $leaf); $existing = Split-Path -Parent $existing
+  }
+  if ($null -eq ('LanClassroomNativePath' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class LanClassroomNativePath {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+}
+'@ -ErrorAction Stop
+  }
+  $handle = [LanClassroomNativePath]::CreateFile($existing, [uint32]::Parse('80000000', [Globalization.NumberStyles]::HexNumber), 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+  if ($handle.IsInvalid) { throw "Could not resolve final canonical runtime path: $existing" }
+  try {
+    $buffer = [Text.StringBuilder]::new(32768); $length = [LanClassroomNativePath]::GetFinalPathNameByHandle($handle, $buffer, [uint32]$buffer.Capacity, 0)
+    if ($length -eq 0 -or $length -ge $buffer.Capacity) { throw "Could not resolve final canonical runtime path: $existing" }
+    $canonical = $buffer.ToString(); if ($canonical.StartsWith('\\?\')) { $canonical = $canonical.Substring(4) }
+  } finally { $handle.Dispose() }
+  foreach ($segment in $missing) { $canonical = Join-Path $canonical $segment }
+  return $canonical.TrimEnd('\')
 }
 
 function ConvertTo-LanWindowsArgument {
@@ -174,6 +260,7 @@ function Write-LanLauncherState {
   try {
     [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     if (Test-Path -LiteralPath $StatePath) { [IO.File]::Replace($temporary, $StatePath, $null) } else { [IO.File]::Move($temporary, $StatePath) }
+    Set-PrivateRuntimeAcl -Path $StatePath
   } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
 }
 
@@ -194,4 +281,4 @@ function Test-LanProcessIdentity {
 
 function Remove-LanOwnedFirewallRule { param([string] $Name, [bool] $Owned); if ($Owned -and $Name -match '^LanClassroom-Private-\d{1,5}$') { Remove-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue } }
 
-Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Remove-LanOwnedFirewallRule
+Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Remove-LanOwnedFirewallRule

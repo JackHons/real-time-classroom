@@ -2,6 +2,7 @@ import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, rea
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
 import { env as processEnvironment } from 'node:process';
 import { DEFAULT_MINIMUM_FREE_BYTES } from './uploads/storage.js';
@@ -29,6 +30,8 @@ export function readRuntimeConfig(environment: Environment = processEnvironment)
   const allowedOrigin = environment.LAN_CLASSROOM_ALLOWED_ORIGIN;
   const databasePath = environment.LAN_CLASSROOM_DATABASE_PATH ?? defaultDatabasePath(environment);
   if (allowedOrigin === undefined) throw new Error('RUNTIME_SECURITY_CONFIGURATION_REQUIRED');
+  const host = environment.LAN_CLASSROOM_HOST ?? '127.0.0.1';
+  const hosts = parseHosts(environment.LAN_CLASSROOM_HOSTS, host);
   const csrfSecret = environment.LAN_CLASSROOM_CSRF_SECRET ?? readOrCreateCsrfSecret(dirname(databasePath));
   if (csrfSecret.length < 32) throw new Error('RUNTIME_SECURITY_CONFIGURATION_REQUIRED');
   const port = environment.LAN_CLASSROOM_PORT === undefined ? 4173 : Number(environment.LAN_CLASSROOM_PORT);
@@ -38,15 +41,30 @@ export function readRuntimeConfig(environment: Environment = processEnvironment)
     ? DEFAULT_MINIMUM_FREE_BYTES
     : Number(environment.LAN_CLASSROOM_UPLOAD_MINIMUM_FREE_BYTES);
   if (!Number.isSafeInteger(uploadStorageMinimumFreeBytes) || uploadStorageMinimumFreeBytes < DEFAULT_MINIMUM_FREE_BYTES) throw new Error('RUNTIME_UPLOAD_STORAGE_RESERVE_INVALID');
-  const host = environment.LAN_CLASSROOM_HOST ?? '127.0.0.1';
-  const hosts = parseHosts(environment.LAN_CLASSROOM_HOSTS, host);
   return { databasePath, uploadStoragePath, uploadStorageMinimumFreeBytes, allowedOrigin, csrfSecret, host, hosts, port };
 }
 
 function parseHosts(value: string | undefined, fallback: string): readonly string[] {
   const hosts = (value ?? fallback).split(',').map((host) => host.trim()).filter((host) => host.length > 0);
-  if (hosts.length === 0 || hosts.some((host) => host === '0.0.0.0' || host === '::')) throw new Error('RUNTIME_HOST_INVALID');
+  if (hosts.length === 0 || hosts.some((host) => !isPermittedHost(host))) throw new Error('RUNTIME_HOST_INVALID');
   return [...new Set(hosts)];
+}
+
+/** The listener is deliberately limited to a literal loopback or private LAN address. */
+function isPermittedHost(host: string): boolean {
+  const family = isIP(host);
+  if (family === 4) {
+    const octets = host.split('.').map(Number);
+    return octets[0] === 127
+      || octets[0] === 10
+      || (octets[0] === 172 && (octets[1] ?? -1) >= 16 && (octets[1] ?? -1) <= 31)
+      || (octets[0] === 192 && octets[1] === 168);
+  }
+  if (family !== 6) return false;
+  const normalized = host.toLowerCase();
+  // Reject unspecified forms, including IPv4-mapped 0.0.0.0 (::ffff:0:0).
+  if (normalized === '::' || normalized === '::0' || normalized === '::ffff:0:0') return false;
+  return normalized === '::1' || /^f[cd][0-9a-f:]*$/i.test(normalized);
 }
 
 function readOrCreateCsrfSecret(directory: string): string {
@@ -128,12 +146,13 @@ function ensurePrivateFile(filename: string): void {
 }
 function isWindows(): boolean { return processEnvironment.OS === 'Windows_NT'; }
 function applyWindowsOwnerOnlyAcl(path: string, permission: string, code: string): void {
-  const username = processEnvironment.USERNAME;
-  if (username === undefined || username.length === 0) throw new Error(code);
   try {
-    // No shell or inherited proxy identity is involved. Every startup repairs
-    // the ACL in case an operator or an upgrade loosened it between runs.
-    execFileSync('icacls', [path, '/inheritance:r', '/grant:r', `${username}:${permission}`], { windowsHide: true, stdio: 'ignore' });
+    const username = processEnvironment.USERNAME;
+    if (username === undefined || username.length === 0) throw new Error('USERNAME_REQUIRED');
+    // Reset inherited permissions, then retain only the owner and Windows
+    // recovery principals.  Explicit broad principals are removed every run.
+    execFileSync('icacls.exe', [path, '/inheritance:r', '/remove:g', '*S-1-1-0', '*S-1-5-11', '*S-1-5-32-545', '/grant:r', `${username}:${permission}`, `*S-1-5-18:${permission}`, `*S-1-5-32-544:${permission}`], { windowsHide: true, stdio: 'ignore' });
+    execFileSync('icacls.exe', [path, '/verify'], { windowsHide: true, stdio: 'ignore' });
   } catch (error) { throw new Error(code, { cause: error }); }
 }
 function cleanupStaleTemporarySecrets(directory: string): void {

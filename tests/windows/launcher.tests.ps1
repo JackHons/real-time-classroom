@@ -24,10 +24,16 @@ try {
   Assert-True ((Assert-LanRuntimeRoot -RuntimeRoot $runtime -RepositoryRoot $repo) -eq $null) 'sibling dedicated runtime should be accepted'
   $settings = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
   Assert-True (Test-Path -LiteralPath $settings -PathType Leaf) 'runtime preflight should create private launcher settings'
+  Assert-True ((Assert-PrivateRuntimeAcl -Path $runtime) -eq $null) 'runtime root ACL must be verified owner-only'
+  Assert-True ((Assert-PrivateRuntimeAcl -Path $settings) -eq $null) 'runtime secret ACL must be verified owner-only'
   $blocked = $false; try { Assert-LanRuntimeRoot -RuntimeRoot $scratch -RepositoryRoot $repo } catch { $blocked = $true }
   Assert-True $blocked 'a shared parent may not be used as RuntimeRoot'
+  $link = Join-Path $scratch 'runtime-link'; New-Item -ItemType Junction -Path $link -Target $runtime | Out-Null
+  $blocked = $false; try { Assert-LanRuntimeRoot -RuntimeRoot $link -RepositoryRoot $repo } catch { $blocked = $true }
+  Assert-True $blocked 'runtime junction must be rejected before canonical containment checks'
   $statePath = Join-Path $runtime 'launcher-state.json'; Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = 1; workerPid = 2 }
   Assert-True ((Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json).workerPid -eq 2) 'atomic launcher state write failed'
+  Assert-True ((Assert-PrivateRuntimeAcl -Path $statePath) -eq $null) 'new launcher state ACL must be verified owner-only'
 } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
 function Get-NetFirewallPortFilter { @([pscustomobject]@{ Protocol = 'TCP'; LocalPort = '4173' }) }
 function Get-NetFirewallApplicationFilter { @([pscustomobject]@{ Program = 'C:\Program Files\nodejs\node.exe' }) }
