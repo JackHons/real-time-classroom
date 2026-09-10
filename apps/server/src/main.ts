@@ -1,5 +1,5 @@
 import { createApplication, FirstRunSetupRequiredError } from './application.js';
-import { exit } from 'node:process';
+import process, { exit } from 'node:process';
 import { setTimeout } from 'node:timers';
 import { openSqlite } from './db/connection.js';
 import { SqliteAuthSessionRepository } from './db/auth-session-repository.js';
@@ -73,6 +73,18 @@ const server = await startServer({
     : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => { realtimeNotifications?.attach(gateway); flushTaskCloseNotifications?.(); } }) })
 });
 console.info(`LAN Classroom host listening at ${server.hosts.map((host) => `http://${host}:${server.port}`).join(', ')}`);
+
+let stopping = false;
+async function gracefulShutdown(): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  // server.close stops accepts first and waits for active HTTP/Socket.IO work.
+  const deadline = setTimeout(() => process.exit(1), 8_000); deadline.unref();
+  try { await server.close(); database.close(); process.exit(0); }
+  catch { process.exit(1); }
+}
+process.once('SIGTERM', () => { void gracefulShutdown(); });
+process.once('SIGINT', () => { void gracefulShutdown(); });
 
 function isUploadStorageStartupError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;

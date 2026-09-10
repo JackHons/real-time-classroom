@@ -12,9 +12,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $statePath = Join-Path $RuntimeRoot 'launcher-state.json'
+$lockPath = Join-Path $RuntimeRoot 'launcher.lock'
 Import-Module (Join-Path $PSScriptRoot 'LanClassroomLauncher.psm1') -Force
 
+$lock = $null
 try {
+  # The supervisor owns this lock for the complete probe-to-worker lifetime.
+  # A second launch cannot inherit or remove the first launch's firewall state.
+  try { $lock = [IO.FileStream]::new($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None) }
+  catch { throw 'Another LAN Classroom launcher is already starting or running.' }
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes("$PID|$((Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'))")
+  $lock.Write($bytes, 0, $bytes.Length); $lock.Flush($true); Set-PrivateRuntimeAcl -Path $lockPath
   while ($true) {
   $psi = [Diagnostics.ProcessStartInfo]::new()
   $psi.FileName = $NodeProgram; $psi.WorkingDirectory = $RepositoryRoot; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
@@ -33,7 +41,7 @@ try {
   try {
     # State writing also revalidates its owner-only ACL.  If either operation
     # fails after Process.Start, the finally below terminates this exact worker.
-    Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = $PID; supervisorStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); workerPid = $worker.Id; workerStartedAtUtc = $worker.StartTime.ToUniversalTime().ToString('o'); port = $Port; address = $Address; firewallRule = $(if ($FirewallRule) { $FirewallRule } else { $null }); firewallOwned = $FirewallOwned }
+    Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = $PID; supervisorStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); workerPid = $worker.Id; workerStartedAtUtc = $worker.StartTime.ToUniversalTime().ToString('o'); port = $Port; address = $Address; nodeProgram = $NodeProgram; firewallRule = $(if ($FirewallRule) { $FirewallRule } else { $null }); firewallOwned = $FirewallOwned }
     $worker.WaitForExit()
     # Code 75 is emitted only after durable loopback first-run setup. The same
     # private runtime paths and selected interface are reused, never recreated.
@@ -49,7 +57,8 @@ try {
 } finally {
   # A worker crash must not leave an apparent live installation or a launcher-
   # owned firewall hole.  Do not remove a pre-existing administrator rule.
-  Remove-LanOwnedFirewallRule -Name $FirewallRule -Owned $FirewallOwned
+  Remove-LanOwnedFirewallRule -Name $FirewallRule -Owned $FirewallOwned -NodeProgram $NodeProgram -Port $Port
   $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
   if ($null -ne $state -and $state.supervisorPid -eq $PID) { Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue }
+  if ($null -ne $lock) { $lock.Dispose(); Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }
 }

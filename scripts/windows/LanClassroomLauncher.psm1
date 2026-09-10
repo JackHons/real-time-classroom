@@ -279,6 +279,13 @@ function Test-LanProcessIdentity {
   return $null -ne $cim -and $null -ne $cim.CommandLine -and $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -ge 0
 }
 
-function Remove-LanOwnedFirewallRule { param([string] $Name, [bool] $Owned); if ($Owned -and $Name -match '^LanClassroom-Private-\d{1,5}$') { Remove-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue } }
+function Remove-LanOwnedFirewallRule {
+  param([string] $Name, [bool] $Owned, [string] $NodeProgram, [int] $Port)
+  if (-not $Owned -or $Name -notmatch '^LanClassroom-Private-\d{1,5}$' -or [string]::IsNullOrEmpty($NodeProgram) -or $Port -lt 1) { return $false }
+  $rules = @(Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue)
+  if ($rules.Count -ne 1 -or -not (Test-LanFirewallRuleExact -Rule $rules[0] -NodeProgram $NodeProgram -Port $Port)) { Write-Warning "Launcher-owned firewall marker was not removed because $Name no longer exactly matches its recorded rule."; return $false }
+  Remove-NetFirewallRule -Name $Name -ErrorAction Stop
+  return $true
+}
 
 Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Remove-LanOwnedFirewallRule
