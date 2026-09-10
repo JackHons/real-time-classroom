@@ -4,6 +4,7 @@ import {
   type Server as HttpServer,
   type ServerResponse
 } from 'node:http';
+import { setTimeout } from 'node:timers';
 import { attachRealtimeGateway, type RealtimeGateway, type RealtimeGatewayOptions } from './realtime/gateway.js';
 
 export type HttpRequestListener = (request: IncomingMessage, response: ServerResponse) => void;
@@ -24,6 +25,9 @@ export type ServerOptions = Readonly<{
   /** Socket.IO is attached to this same HTTP server; it has no mutation routes. */
   realtime?: RealtimeGatewayOptions;
   onRealtimeGateway?: (gateway: RealtimeGateway) => void;
+  /** Local launcher control surface; never exposed through application routes. */
+  shutdownToken?: string;
+  onShutdown?: () => void;
 }>;
 
 export type RunningServer = Readonly<{
@@ -81,6 +85,15 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
 
 async function dispatch(request: IncomingMessage, response: ServerResponse, options: ServerOptions): Promise<void> {
   try {
+    if (request.method === 'POST' && request.url === '/internal/shutdown') {
+      const peer = request.socket.remoteAddress;
+      const host = request.headers.host;
+      const direct = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+      const literalHost = host === '127.0.0.1' || host === '127.0.0.1:4173' || host === '[::1]' || host === '[::1]:4173';
+      if (!direct || !literalHost || request.headers['x-lan-shutdown-token'] !== options.shutdownToken) { response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
+      response.writeHead(202, { 'cache-control': 'no-store' }); response.end();
+      setTimeout(() => options.onShutdown?.(), 0).unref(); return;
+    }
     if (request.method === 'GET' && request.url === '/health') {
       const health = options.health ?? { status: 200, state: 'ready' };
       response.writeHead(health.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });

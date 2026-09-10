@@ -14,6 +14,7 @@ const webModule = (await import(
 )) as Readonly<{ handler: HttpRequestListener }>;
 
 const config = readRuntimeConfig();
+const shutdownToken = process.env.LAN_CLASSROOM_SHUTDOWN_TOKEN;
 const database = openSqlite(config.databasePath);
 let apiHandler;
 let realtime: RealtimeGatewayOptions | undefined;
@@ -70,7 +71,8 @@ const server = await startServer({
   ...(bootstrapHandler === undefined ? {} : { bootstrapHandler }),
   ...(apiHandler === undefined
     ? {}
-    : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => { realtimeNotifications?.attach(gateway); flushTaskCloseNotifications?.(); } }) })
+    : { apiHandler, webHandler: webModule.handler, ...(realtime === undefined ? {} : { realtime, onRealtimeGateway: (gateway) => { realtimeNotifications?.attach(gateway); flushTaskCloseNotifications?.(); } }) }),
+  ...(shutdownToken === undefined ? {} : { shutdownToken, onShutdown: () => { void gracefulShutdown(); } })
 });
 console.info(`LAN Classroom host listening at ${server.hosts.map((host) => `http://${host}:${server.port}`).join(', ')}`);
 
