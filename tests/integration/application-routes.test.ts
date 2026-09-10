@@ -114,7 +114,7 @@ describe('Task 3 composed API routes', () => {
 
     const pending = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Unauthorised', studentNumber: 'S2' }) });
     expect(pending.status).toBe(202);
-    const request = await pending.json() as { request: { id: string } };
+    expect(await pending.json()).toEqual({ outcome: 'accepted' });
     const denied = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
     expect(denied.status).toBe(403);
     expect(await denied.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
@@ -124,7 +124,8 @@ describe('Task 3 composed API routes', () => {
     expect(unknown.status).toBe(denied.status);
     expect(await unknown.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
 
-    const approved = await fetch(`${base}/api/pending-student-requests/${request.request.id}/approve`, { method: 'POST', headers: teacherHeaders(login) });
+    const request = database?.prepare("SELECT id FROM pending_student_requests WHERE class_id=? AND normalized_student_number=? AND status='pending'").get(classroom.id, 'S2') as { id: string };
+    const approved = await fetch(`${base}/api/pending-student-requests/${request.id}/approve`, { method: 'POST', headers: teacherHeaders(login) });
     expect(approved.status).toBe(201);
     const approvedJoin = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
     expect(approvedJoin.status).toBe(200);
@@ -145,12 +146,14 @@ describe('Task 3 composed API routes', () => {
     // Exact roster matches release their reservations, so the same identity can
     // immediately use the session-producing route.
     const publicMatch = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Ada', studentNumber: 'A1' }) });
-    expect(publicMatch.status).toBe(200);
+    expect(publicMatch.status).toBe(202);
+    expect(await publicMatch.json()).toEqual({ outcome: 'accepted' });
     const authMatch = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Ada', studentNumber: 'A1' }) });
     expect(authMatch.status).toBe(200);
 
     const publicPending = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Unapproved', studentNumber: 'S2' }) });
     expect(publicPending.status).toBe(202);
+    expect(await publicPending.json()).toEqual({ outcome: 'accepted' });
     const bypassAttempt = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unapproved', studentNumber: 'S2' }) });
     expect(bypassAttempt.status).toBe(429);
     expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 1 });

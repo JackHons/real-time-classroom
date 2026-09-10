@@ -7,6 +7,14 @@ import {
 import { setTimeout } from 'node:timers';
 import { attachRealtimeGateway, type RealtimeGateway, type RealtimeGatewayOptions } from './realtime/gateway.js';
 
+// These are assigned on every explicit address binding. JSON commands enforce
+// their own 30-second body deadline; the server-level request timeout remains
+// long enough for the separately bounded streamed-upload route.
+const HEADERS_TIMEOUT_MS = 30_000;
+const KEEP_ALIVE_TIMEOUT_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 5 * 60_000;
+const MAX_CONNECTIONS_PER_ADDRESS = 256;
+
 export type HttpRequestListener = (request: IncomingMessage, response: ServerResponse) => void;
 export type HttpRouteHandler = (request: IncomingMessage, response: ServerResponse) => boolean | Promise<boolean>;
 
@@ -45,7 +53,16 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const host = options.host ?? options.hosts?.[0] ?? '127.0.0.1';
   const hosts = [...new Set(options.hosts ?? [host])];
   const port = options.port ?? 4173;
-  const servers = hosts.map(() => createServer((request, response) => { void dispatch(request, response, options); }));
+  const servers = hosts.map(() => {
+    const server = createServer((request, response) => { void dispatch(request, response, options); });
+    // Node applies maxConnections independently to each Server instance, which
+    // is precisely our explicit-address admission boundary.
+    server.headersTimeout = HEADERS_TIMEOUT_MS;
+    server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+    server.requestTimeout = REQUEST_TIMEOUT_MS;
+    server.maxConnections = MAX_CONNECTIONS_PER_ADDRESS;
+    return server;
+  });
   const realtime = options.realtime === undefined ? [] : servers.map((server) => attachRealtimeGateway(server, options.realtime as RealtimeGatewayOptions));
   for (const gateway of realtime) options.onRealtimeGateway?.(gateway);
 

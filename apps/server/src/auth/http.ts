@@ -5,6 +5,7 @@ import type { AuthSessionRepository } from '../db/auth-session-repository.js';
 import type { ClassId, Student } from '../domain/types.js';
 import { verifyTeacherPassword } from './password.js';
 import { AuthSessions, STUDENT_SESSION_COOKIE, TEACHER_SESSION_COOKIE } from './session.js';
+import { readBoundedJsonObject } from '../http/bounded-json.js';
 
 const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
 const MAX_BODY_BYTES = 8 * 1024;
@@ -17,6 +18,7 @@ export interface StudentJoinPort {
 }
 
 export type PasswordVerifier = (password: string, storedHash: string | undefined) => Promise<boolean>;
+export type PasswordVerificationLimiter = Readonly<{ reserve: () => PasswordVerificationAdmission }>;
 export type AuthHttpHandlerOptions = Readonly<{
   sessions: AuthSessions;
   sessionRepository: Pick<AuthSessionRepository, 'teacherPasswordHash'>;
@@ -25,6 +27,8 @@ export type AuthHttpHandlerOptions = Readonly<{
   allowedOrigin: string;
   csrfSecret: string;
   passwordVerifier?: PasswordVerifier;
+  /** Defaults to the process-wide Argon2 admission gate. */
+  passwordVerificationLimiter?: PasswordVerificationLimiter;
   loginRateLimiter?: LoginRateLimiter;
   studentJoinRateLimiter?: StudentJoinRateLimiter;
   /** Receives a private reason for a deliberately generic student-facing denial. */
@@ -134,6 +138,71 @@ export class LoginRateLimiter {
 
 export type RateLimitReservation = Readonly<{ release: () => void; fail: () => void; succeed: () => void }>;
 
+export type PasswordVerificationAdmission = Readonly<{ reservation: Promise<PasswordVerificationReservation | undefined>; cancel: () => void }>;
+export type PasswordVerificationReservation = Readonly<{ release: () => void }>;
+
+/**
+ * A bounded asynchronous semaphore for deliberately expensive password work.
+ * The default instance below is process-global: changing source addresses must
+ * not turn the per-IP rate limiter into an Argon2 parallelism bypass.
+ */
+export class BoundedPasswordVerificationLimiter implements PasswordVerificationLimiter {
+  private active = 0;
+  private readonly waiting: Array<Readonly<{ grant: (reservation: PasswordVerificationReservation | undefined) => void; cancelled: () => boolean }>> = [];
+
+  constructor(private readonly maximumActive = 3, private readonly maximumQueued = 21) {
+    if (!Number.isSafeInteger(maximumActive) || !Number.isSafeInteger(maximumQueued) || maximumActive < 2 || maximumActive > 4 || maximumQueued < 0) throw new Error('PASSWORD_VERIFICATION_LIMIT_INVALID');
+  }
+
+  reserve(): PasswordVerificationAdmission {
+    let reservation: PasswordVerificationReservation | undefined;
+    let cancelled = false;
+    let grant!: (value: PasswordVerificationReservation | undefined) => void;
+    let queued: Readonly<{ grant: (reservation: PasswordVerificationReservation | undefined) => void; cancelled: () => boolean }> | undefined;
+    const pending = new Promise<PasswordVerificationReservation | undefined>((resolve) => { grant = resolve; });
+    const give = (): void => {
+      if (cancelled) { grant(undefined); return; }
+      this.active += 1;
+      let released = false;
+      reservation = { release: () => {
+        if (released) return;
+        released = true;
+        this.active -= 1;
+        this.drain();
+      } };
+      grant(reservation);
+    };
+    if (this.active < this.maximumActive) give();
+    else if (this.waiting.length >= this.maximumQueued) grant(undefined);
+    else {
+      queued = { grant: () => give(), cancelled: () => cancelled };
+      this.waiting.push(queued);
+    }
+    return {
+      reservation: pending,
+      cancel: () => {
+        if (cancelled) return;
+        cancelled = true;
+        if (reservation !== undefined) reservation.release();
+        else {
+          const index = this.waiting.findIndex((entry) => entry === queued);
+          if (index >= 0) this.waiting.splice(index, 1);
+          grant(undefined);
+        }
+      }
+    };
+  }
+
+  private drain(): void {
+    while (this.active < this.maximumActive && this.waiting.length > 0) {
+      const next = this.waiting.shift()!;
+      if (!next.cancelled()) next.grant(undefined);
+    }
+  }
+}
+
+const processPasswordVerificationLimiter = new BoundedPasswordVerificationLimiter();
+
 /** Shared limiter for both public student-join routes. Identity is scoped to a
  * class; the higher class/IP backstop remains friendly to a classroom NAT. */
 export class StudentJoinRateLimiter {
@@ -173,6 +242,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
   // IP-only failure budget still limits broad credential spraying.
   const studentJoinRateLimiter = options.studentJoinRateLimiter ?? new StudentJoinRateLimiter();
   const verifyPassword = options.passwordVerifier ?? verifyTeacherPassword;
+  const passwordVerificationLimiter = options.passwordVerificationLimiter ?? processPasswordVerificationLimiter;
   return async (request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://auth.local').pathname;
     if (!pathname.startsWith('/api/auth/')) { json(response, 404, { error: 'NOT_FOUND' }); return; }
@@ -189,12 +259,17 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         const rateKey = `teacher:${remoteAddress(request)}`;
         const reservation = rateLimiter.reserve(rateKey, now);
         if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        const admission = passwordVerificationLimiter.reserve();
         let verified: boolean;
-        const releaseOnAbort = () => reservation.release();
+        let verifierReservation: PasswordVerificationReservation | undefined;
+        const releaseOnAbort = () => { admission.cancel(); reservation.release(); };
         request.once('aborted', releaseOnAbort);
-        try { verified = await verifyPassword(body.password, options.sessionRepository.teacherPasswordHash()); }
-        catch (error) { reservation.release(); throw error; }
-        finally { request.removeListener('aborted', releaseOnAbort); }
+        try {
+          verifierReservation = await admission.reservation;
+          if (verifierReservation === undefined) { reservation.release(); if (!request.aborted) json(response, 429, { error: 'RATE_LIMITED' }); return; }
+          verified = await verifyPassword(body.password, options.sessionRepository.teacherPasswordHash());
+        } catch (error) { reservation.release(); throw error; }
+        finally { verifierReservation?.release(); request.removeListener('aborted', releaseOnAbort); }
         if (request.aborted) return;
         if (!verified) {
           reservation.fail();
@@ -311,15 +386,8 @@ function isStudentJoinBody(body: StudentJoinBody): body is Readonly<{ classId: s
 
 class RequestBodyError extends Error {}
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
-    size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new RequestBodyError();
-    chunks.push(buffer);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T;
+  try { return await readBoundedJsonObject(request, MAX_BODY_BYTES) as T; }
+  catch { throw new RequestBodyError(); }
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {

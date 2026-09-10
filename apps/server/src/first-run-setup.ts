@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import argon2 from 'argon2';
 import { TEACHER_PASSWORD_ARGON2_POLICY } from './auth/password.js';
 import type { AuthSessionRepository } from './db/auth-session-repository.js';
+import { readBoundedJsonObject } from './http/bounded-json.js';
 import type { HttpRouteHandler } from './server.js';
 
 const MAX_BODY_BYTES = 2_048;
@@ -80,7 +81,7 @@ export function createFirstRunSetupHandler(options: FirstRunSetupOptions): HttpR
       sendJson(response, 201, { status: 'configured' });
       return true;
     } catch (error) {
-      if (error instanceof SyntaxError || error instanceof BodyTooLarge) { sendJson(response, 400, { error: 'INVALID_REQUEST' }); return true; }
+      if (error instanceof SyntaxError || error instanceof Error && error.message.startsWith('REQUEST_BODY_')) { sendJson(response, 400, { error: 'INVALID_REQUEST' }); return true; }
       sendJson(response, 500, { error: 'SETUP_INTERNAL_ERROR' }); return true;
     }
   };
@@ -122,11 +123,8 @@ function parseCookie(header: string | undefined, name: string): string | undefin
   }
   return undefined;
 }
-class BodyTooLarge extends Error {}
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of request) { const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string); size += buffer.length; if (size > MAX_BODY_BYTES) throw new BodyTooLarge(); chunks.push(buffer); }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return readBoundedJsonObject(request, MAX_BODY_BYTES);
 }
 function sendJson(response: ServerResponse, status: number, body: unknown): void { response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); }
 function sendSetupPage(response: ServerResponse): void {

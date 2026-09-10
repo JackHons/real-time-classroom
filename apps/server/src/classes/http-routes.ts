@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { Buffer } from 'node:buffer';
 import type { ClassId, PendingStudentRequestId } from '../domain/types.js';
 import { StudentJoinRateLimiter } from '../auth/http.js';
 import { ClassService } from './class-service.js';
+import { readBoundedJsonObject } from '../http/bounded-json.js';
 
 const MAX_BODY_BYTES = 8 * 1024;
 
@@ -64,7 +64,10 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
       catch (error) { reservation.release(); throw error; }
       // A pending outcome is deliberately not a student session or authorization.
       if (result.outcome === 'matched') reservation.succeed(); else reservation.fail();
-      json(response, result.outcome === 'matched' ? 200 : 202, result);
+      // This route may create/reuse a pending request, but it is public. Never
+      // make a roster match distinguishable from a pending identity, nor expose
+      // the student/pending identifiers or their timestamps here.
+      json(response, 202, { outcome: 'accepted' });
       return true;
     }
     const approveMatch = /^\/api\/pending-student-requests\/([^/]+)\/approve$/.exec(url.pathname);
@@ -78,58 +81,7 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
 
 function remoteAddress(request: IncomingMessage): string { return request.socket.remoteAddress ?? 'unknown'; }
 
-function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let raw = '';
-    let size = 0;
-    let settled = false;
-
-    const stopReading = (): void => {
-      request.removeListener('data', onData);
-      request.removeListener('end', onEnd);
-    };
-    const rejectOnce = (error: Error): void => {
-      if (settled) return;
-      settled = true;
-      stopReading();
-      // Continue draining without retaining chunks so an oversized keep-alive
-      // request cannot keep this route's data handler consuming CPU/memory.
-      request.resume();
-      reject(error);
-    };
-    const resolveOnce = (body: Record<string, unknown>): void => {
-      if (settled) return;
-      settled = true;
-      stopReading();
-      resolve(body);
-    };
-    const onData = (chunk: string): void => {
-      if (settled) return;
-      size += Buffer.byteLength(chunk);
-      if (size > MAX_BODY_BYTES) { rejectOnce(new Error('REQUEST_BODY_TOO_LARGE')); return; }
-      raw += chunk;
-    };
-    const onEnd = (): void => {
-      if (settled) return;
-      try {
-        const parsed: unknown = raw.length === 0 ? {} : JSON.parse(raw);
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('REQUEST_BODY_OBJECT_REQUIRED');
-        resolveOnce(parsed as Record<string, unknown>);
-      } catch (error) { rejectOnce(error instanceof Error ? error : new Error('REQUEST_BODY_INVALID')); }
-    };
-    // Keep these listeners installed after an early rejection. A stream error or
-    // abort may race with the oversized chunk, but must neither double-settle the
-    // promise nor become an unhandled EventEmitter error.
-    const onError = (error: Error): void => { rejectOnce(error); };
-    const onAborted = (): void => { rejectOnce(new Error('REQUEST_ABORTED')); };
-
-    request.setEncoding('utf8');
-    request.on('data', onData);
-    request.on('end', onEnd);
-    request.on('error', onError);
-    request.on('aborted', onAborted);
-  });
-}
+function readJson(request: IncomingMessage): Promise<Record<string, unknown>> { return readBoundedJsonObject(request, MAX_BODY_BYTES); }
 
 function stringField(body: Record<string, unknown>, field: string): string {
   const value = body[field];

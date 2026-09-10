@@ -60,7 +60,10 @@ export const studentApi = {
       const joined = await request<{ outcome?: string }>(fetcher, `/api/classes/${encodeURIComponent(classId)}/join`, {
         method: 'POST', body: JSON.stringify({ displayName, studentNumber })
       });
-      if (joined.outcome !== 'matched') return 'pending';
+      // The public endpoint intentionally never reveals roster membership.
+      // Only the session-creating authorization boundary can decide whether
+      // this browser may proceed.
+      if (joined.outcome !== 'accepted') throw new ApiError(500, 'JOIN_RESPONSE_INVALID');
       const session = await request<{ csrfToken?: string; sessionId?: string }>(fetcher, '/api/auth/student/join', {
         method: 'POST', body: JSON.stringify({ classId, displayName, studentNumber })
       });

@@ -1,21 +1,26 @@
 import { PassThrough } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
-import { Buffer } from 'node:buffer';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { readBoundedJsonObject } from '../../../apps/server/src/http/bounded-json.js';
 
-function request(): PassThrough & IncomingMessage { return new PassThrough() as PassThrough & IncomingMessage; }
+function stream(): PassThrough & IncomingMessage { return new PassThrough() as PassThrough & IncomingMessage; }
 
-describe('bounded JSON HTTP reader', () => {
-  it('rejects an oversized stream once while safely draining terminal races', async () => {
-    const input = request();
-    const reading = readBoundedJsonObject(input, 16);
-    input.write(Buffer.alloc(17));
-    await expect(reading).rejects.toThrow('REQUEST_BODY_TOO_LARGE');
-    // These may race with the rejected chunk on a real socket. They must not
-    // throw or change the already-settled result while the stream is drained.
-    expect(() => input.emit('error', new Error('socket failure'))).not.toThrow();
-    expect(() => input.emit('aborted')).not.toThrow();
-    input.end();
+describe('bounded JSON body reader', () => {
+  it('destroys an idle slow-body stream instead of retaining the connection', async () => {
+    const request = stream();
+    const reading = readBoundedJsonObject(request, 1024, { idleMs: 10, absoluteMs: 30 });
+    await expect(reading).rejects.toThrow('REQUEST_BODY_IDLE_TIMEOUT');
+    expect(request.destroyed).toBe(true);
+  });
+
+  it('enforces the absolute deadline even while a peer drips bytes', async () => {
+    const request = stream();
+    const reading = readBoundedJsonObject(request, 1024, { idleMs: 15, absoluteMs: 20 });
+    request.write('{');
+    await delay(8);
+    request.write('"a"');
+    await expect(reading).rejects.toThrow('REQUEST_BODY_DEADLINE_EXCEEDED');
+    expect(request.destroyed).toBe(true);
   });
 });
