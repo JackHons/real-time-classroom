@@ -107,6 +107,9 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, opti
     // errors) so a handler cannot accidentally omit a browser boundary.
     // SvelteKit emits external module and stylesheet assets, so this stays
     // compatible without permitting eval or inline script execution.
+    // JSON, setup, health, and error responses receive this baseline. The
+    // SvelteKit adapter deliberately replaces it for dynamic HTML with its
+    // matching per-response nonce policy from svelte.config.js.
     response.setHeader('content-security-policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:");
     response.setHeader('x-frame-options', 'DENY');
     response.setHeader('referrer-policy', 'no-referrer');

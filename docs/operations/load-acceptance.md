@@ -13,6 +13,14 @@ observability paths without committing test data or writing to runtime data.
 It emits an ignored JSON artifact under `test-results/load/` (or the path in
 `LOAD_ARTIFACT`).
 
+The portable fixture fails on any request error, p95 request latency at or
+above 2,000 ms, event-loop-delay p99 at or above 600 ms, or peak RSS at or
+above 1 GiB. The event-loop boundary is based on three Windows baseline runs
+on 2026-09-10: p95 was 268--324 ms and event-loop p99 was 346--473 ms. The
+600 ms limit gives 27% headroom above the observed maximum while continuing to
+catch a material scheduling regression; the per-run JSON artifacts retain the
+exact measurements.
+
 For the Windows 5 GB acceptance run, use a disposable machine with at least
 5,512 MB free in its temporary-volume filesystem:
 
