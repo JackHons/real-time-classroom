@@ -34,6 +34,22 @@ try {
   $statePath = Join-Path $runtime 'launcher-state.json'; Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = 1; workerPid = 2 }
   Assert-True ((Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json).workerPid -eq 2) 'atomic launcher state write failed'
   Assert-True ((Assert-PrivateRuntimeAcl -Path $statePath) -eq $null) 'new launcher state ACL must be verified owner-only'
+  $lockPath = Join-Path $runtime 'launcher.lock'; $first = New-LanOwnerToken
+  Acquire-LanLaunchLock -LockPath $lockPath -OwnerToken $first -OwnerPid $PID -CommandToken 'launcher.tests.ps1'
+  $blocked = $false; try { Acquire-LanLaunchLock -LockPath $lockPath -OwnerToken (New-LanOwnerToken) -OwnerPid $PID -CommandToken 'launcher.tests.ps1' } catch { $blocked = $true }
+  Assert-True $blocked 'an active matching launcher lock must not be stolen'
+  Assert-True (-not (Remove-LanLockIfOwned -LockPath $lockPath -OwnerToken 'substituted-owner')) 'a substituted owner token must not delete the active lock'
+  Assert-True (Test-Path -LiteralPath $lockPath) 'failed exact-token cleanup must retain the lock'
+  Assert-True (Update-LanLaunchLockOwner -LockPath $lockPath -OwnerToken $first -OwnerPid $PID -CommandToken 'launcher.tests.ps1') 'the exact owner must be able to atomically transfer its process identity'
+  Remove-LanLockIfOwned -LockPath $lockPath -OwnerToken $first | Out-Null
+  # A crashed starter has no state file.  Its dead, identity-shaped lock is
+  # recoverable; this is intentionally different from a PID mismatch.
+  $dead = @{ ownerToken = 'dead-owner'; pid = 2147483646; startedAtUtc = '2020-01-01T00:00:00.0000000Z'; commandToken = 'Start-LanClassroom.ps1' } | ConvertTo-Json -Compress
+  [IO.File]::WriteAllText($lockPath, $dead, [Text.UTF8Encoding]::new($false))
+  & (Get-Module LanClassroomLauncher) { param($p) Set-PrivateRuntimeAcl -Path $p } $lockPath
+  $recovered = New-LanOwnerToken; Acquire-LanLaunchLock -LockPath $lockPath -OwnerToken $recovered -OwnerPid $PID -CommandToken 'launcher.tests.ps1'
+  Assert-True (Test-LanLockOwned -LockPath $lockPath -OwnerToken $recovered) 'a dead stale lock without state must be recovered by its new owner'
+  Remove-LanLockIfOwned -LockPath $lockPath -OwnerToken $recovered | Out-Null
 } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
 function Get-NetFirewallPortFilter { @([pscustomobject]@{ Protocol = 'TCP'; LocalPort = '4173' }) }
 function Get-NetFirewallApplicationFilter { @([pscustomobject]@{ Program = 'C:\Program Files\nodejs\node.exe' }) }

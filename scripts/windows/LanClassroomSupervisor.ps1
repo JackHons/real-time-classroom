@@ -9,56 +9,57 @@ param(
   [string] $FirewallRule,
   [bool] $FirewallOwned
 )
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'
 $statePath = Join-Path $RuntimeRoot 'launcher-state.json'
 $lockPath = Join-Path $RuntimeRoot 'launcher.lock'
+$handoffPath = Join-Path $RuntimeRoot 'supervisor-handoff.json'
 Import-Module (Join-Path $PSScriptRoot 'LanClassroomLauncher.psm1') -Force
+$ownsLaunch = $false; $ownerToken = $null
 
 try {
-  # The supervisor owns this lock for the complete probe-to-worker lifetime.
-  # A second launch cannot inherit or remove the first launch's firewall state.
-  if (-not (Test-Path -LiteralPath $lockPath)) { throw 'Launcher lock was not present for supervisor adoption.' }
-  Assert-PrivateRuntimeAcl -Path $lockPath
-  $launchLock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
-  if ([string]::IsNullOrEmpty([string]$launchLock.token)) { throw 'Launcher lock token is invalid.' }
+  # Authentication is completed before this process can create a worker,
+  # write state, or remove a firewall rule.  In particular, a substituted
+  # handoff/lock must not grant cleanup rights over another launch.
+  $handoff = Read-LanJsonPrivateFile -Path $handoffPath
+  $ownerToken = [string]$handoff.ownerToken
+  if ([string]::IsNullOrEmpty($ownerToken) -or -not (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken)) { throw 'Supervisor handoff did not match the launcher lock.' }
+  if (-not (Update-LanLaunchLockOwner -LockPath $lockPath -OwnerToken $ownerToken -OwnerPid $PID -CommandToken 'LanClassroomSupervisor.ps1')) { throw 'Supervisor could not adopt the launcher lock.' }
+  # Delete only the matching handoff after the durable lock adoption.  It is no
+  # longer needed and therefore cannot leak a reusable Start-to-supervisor key.
+  $currentHandoff = Read-LanJsonPrivateFile -Path $handoffPath
+  if ([string]$currentHandoff.ownerToken -ne $ownerToken) { throw 'Supervisor handoff changed during adoption.' }
+  Remove-Item -LiteralPath $handoffPath -Force -ErrorAction Stop
+  $ownsLaunch = $true
   while ($true) {
-  $psi = [Diagnostics.ProcessStartInfo]::new()
-  $psi.FileName = $NodeProgram; $psi.WorkingDirectory = $RepositoryRoot; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
-  # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell 5.1.
-  # This path is repository-relative and contains no caller-supplied text.
-  $psi.Arguments = 'apps/server/dist/main.js'
-  $psi.Environment['LAN_CLASSROOM_HOST'] = $Address
-  $psi.Environment['LAN_CLASSROOM_HOSTS'] = "127.0.0.1,$Address"
-  $psi.Environment['LAN_CLASSROOM_PORT'] = "$Port"
-  $psi.Environment['LAN_CLASSROOM_ALLOWED_ORIGIN'] = "http://$Address`:$Port"
-  $psi.Environment['LAN_CLASSROOM_CSRF_SECRET'] = $CsrfSecret
-  $psi.Environment['LAN_CLASSROOM_DATABASE_PATH'] = Join-Path $RuntimeRoot 'database\classroom.sqlite'
-  $psi.Environment['LAN_CLASSROOM_UPLOAD_STORAGE_PATH'] = Join-Path $RuntimeRoot 'uploads'
-  $psi.Environment['LAN_CLASSROOM_SHUTDOWN_TOKEN'] = [string]$launchLock.token
-  $worker = [Diagnostics.Process]::Start($psi)
-  if ($null -eq $worker) { throw 'Could not start the classroom server.' }
-  try {
-    # State writing also revalidates its owner-only ACL.  If either operation
-    # fails after Process.Start, the finally below terminates this exact worker.
-    Write-LanLauncherState -StatePath $statePath -State @{ supervisorPid = $PID; supervisorStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); workerPid = $worker.Id; workerStartedAtUtc = $worker.StartTime.ToUniversalTime().ToString('o'); port = $Port; address = $Address; nodeProgram = $NodeProgram; shutdownToken = [string]$launchLock.token; firewallRule = $(if ($FirewallRule) { $FirewallRule } else { $null }); firewallOwned = $FirewallOwned }
-    $worker.WaitForExit()
-    # Code 75 is emitted only after durable loopback first-run setup. The same
-    # private runtime paths and selected interface are reused, never recreated.
-    if ($worker.ExitCode -ne 75) { break }
-  } finally {
-    if ($null -ne $worker -and -not $worker.HasExited) {
-      Stop-Process -Id $worker.Id -Force -ErrorAction SilentlyContinue
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $NodeProgram; $psi.WorkingDirectory = $RepositoryRoot; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell 5.1.
+    $psi.Arguments = 'apps/server/dist/main.js'
+    $psi.Environment['LAN_CLASSROOM_HOST'] = $Address
+    $psi.Environment['LAN_CLASSROOM_HOSTS'] = "127.0.0.1,$Address"
+    $psi.Environment['LAN_CLASSROOM_PORT'] = "$Port"
+    $psi.Environment['LAN_CLASSROOM_ALLOWED_ORIGIN'] = "http://$Address`:$Port"
+    $psi.Environment['LAN_CLASSROOM_CSRF_SECRET'] = $CsrfSecret
+    $psi.Environment['LAN_CLASSROOM_DATABASE_PATH'] = Join-Path $RuntimeRoot 'database\classroom.sqlite'
+    $psi.Environment['LAN_CLASSROOM_UPLOAD_STORAGE_PATH'] = Join-Path $RuntimeRoot 'uploads'
+    $psi.Environment['LAN_CLASSROOM_SHUTDOWN_TOKEN'] = $ownerToken
+    $worker = [Diagnostics.Process]::Start($psi)
+    if ($null -eq $worker) { throw 'Could not start the classroom server.' }
+    try {
+      Write-LanLauncherState -StatePath $statePath -State @{ ownerToken = $ownerToken; supervisorPid = $PID; supervisorStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); workerPid = $worker.Id; workerStartedAtUtc = $worker.StartTime.ToUniversalTime().ToString('o'); port = $Port; address = $Address; nodeProgram = $NodeProgram; shutdownToken = $ownerToken; firewallRule = $(if ($FirewallRule) { $FirewallRule } else { $null }); firewallOwned = $FirewallOwned }
       $worker.WaitForExit()
+      if ($worker.ExitCode -ne 75) { break }
+    } finally {
+      if ($null -ne $worker -and -not $worker.HasExited) { Stop-Process -Id $worker.Id -Force -ErrorAction SilentlyContinue; $worker.WaitForExit() }
     }
-  }
-  Start-Sleep -Milliseconds 100
+    Start-Sleep -Milliseconds 100
   }
 } finally {
-  # A worker crash must not leave an apparent live installation or a launcher-
-  # owned firewall hole.  Do not remove a pre-existing administrator rule.
-  Remove-LanOwnedFirewallRule -Name $FirewallRule -Owned $FirewallOwned -NodeProgram $NodeProgram -Port $Port
-  $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { $null }
-  if ($null -ne $state -and $state.supervisorPid -eq $PID) { Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue }
-  Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+  if ($ownsLaunch -and -not [string]::IsNullOrEmpty($ownerToken) -and (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken)) {
+    Remove-LanOwnedFirewallRule -Name $FirewallRule -Owned $FirewallOwned -NodeProgram $NodeProgram -Port $Port
+    if (Test-Path -LiteralPath $statePath) {
+      try { $state = Read-LanJsonPrivateFile -Path $statePath; if ([string]$state.ownerToken -eq $ownerToken -and [int]$state.supervisorPid -eq $PID) { Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue } } catch { }
+    }
+    Remove-LanLockIfOwned -LockPath $lockPath -OwnerToken $ownerToken | Out-Null
+  }
 }

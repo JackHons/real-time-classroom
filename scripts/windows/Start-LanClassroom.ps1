@@ -9,46 +9,58 @@ Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 Import-Module (Join-Path $PSScriptRoot 'LanClassroomLauncher.psm1') -Force
 $runtime = [IO.Path]::GetFullPath($RuntimeRoot)
-# Establish the private root and acquire the single-instance marker before any
-# port probe, firewall mutation, or user-visible URL.
-$settingsPath = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
 $lockPath = Join-Path $runtime 'launcher.lock'
-$tokenBytes = [byte[]]::new(32); $rng = [Security.Cryptography.RandomNumberGenerator]::Create(); try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
-$launcherToken = [Convert]::ToBase64String($tokenBytes)
-try { $lockStream = [IO.FileStream]::new($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read); $lockText = @{ token = $launcherToken; pid = $PID; startedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress; $lockBytes = [Text.UTF8Encoding]::new($false).GetBytes($lockText); $lockStream.Write($lockBytes, 0, $lockBytes.Length); $lockStream.Flush($true); $lockStream.Dispose() } catch { throw 'Another LAN Classroom launcher is already starting or running.' }
-try { Set-PrivateRuntimeAcl -Path $lockPath } catch { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue; throw }
-$selected = Get-LanCandidateSelection -Candidates (Get-LanCandidates) -InterfaceIndex $InterfaceIndex
-$addresses = @('127.0.0.1', $selected.Address)
-Test-LanPortAvailable -Addresses $addresses -Port $Port
-Test-LanDeployment -RepositoryRoot $repo
-Test-LanSqlite -RepositoryRoot $repo -RuntimeRoot ([IO.Path]::GetFullPath($RuntimeRoot))
-$settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
-$node = (Get-Command node -ErrorAction Stop).Source
-$firewall = $null
-$priorOwned = $false; $priorStatePath = Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) 'launcher-state.json'
-if (Test-Path -LiteralPath $priorStatePath) {
-  try {
-    Assert-PrivateRuntimeAcl -Path $priorStatePath
-    $prior = Get-Content -LiteralPath $priorStatePath -Raw | ConvertFrom-Json
-    $priorOwned = $prior.firewallOwned -eq $true -and $prior.firewallRule -eq "LanClassroom-Private-$Port" -and $prior.nodeProgram -eq $node
-  } catch { throw 'Existing launcher state is invalid; stop or repair it before starting.' }
+$handoffPath = Join-Path $runtime 'supervisor-handoff.json'
+$ownerToken = New-LanOwnerToken
+$ownsLock = $false; $handoffWritten = $false; $firewall = $null; $node = $null
+
+try {
+  # Runtime initialization is the minimum prerequisite for an owner-only lock.
+  # All later preflight, port, firewall, and process work is covered by the
+  # lock and by the failure cleanup below.
+  $settingsPath = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
+  Acquire-LanLaunchLock -LockPath $lockPath -OwnerToken $ownerToken -OwnerPid $PID -CommandToken 'Start-LanClassroom.ps1'
+  $ownsLock = $true
+  $selected = Get-LanCandidateSelection -Candidates (Get-LanCandidates) -InterfaceIndex $InterfaceIndex
+  $addresses = @('127.0.0.1', $selected.Address)
+  Test-LanPortAvailable -Addresses $addresses -Port $Port
+  Test-LanDeployment -RepositoryRoot $repo
+  Test-LanSqlite -RepositoryRoot $repo -RuntimeRoot $runtime
+  $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+  $node = (Get-Command node -ErrorAction Stop).Source
+  $priorOwned = $false; $priorStatePath = Join-Path $runtime 'launcher-state.json'
+  if (Test-Path -LiteralPath $priorStatePath) {
+    try { $prior = Read-LanJsonPrivateFile -Path $priorStatePath; $priorOwned = $prior.firewallOwned -eq $true -and $prior.firewallRule -eq "LanClassroom-Private-$Port" -and $prior.nodeProgram -eq $node } catch { throw 'Existing launcher state is invalid; stop or repair it before starting.' }
+  }
+  if ($ConfigureFirewall) { $firewall = Add-LanPrivateFirewallRule -NodeProgram $node -Port $Port -PriorOwned $priorOwned }
+  $firewall = if ($null -eq $firewall -and $priorOwned) { [pscustomobject]@{ Name = [string]$prior.firewallRule; Owned = $true } } else { $firewall }
+  # Never put this secret on a PowerShell command line.  The supervisor reads
+  # and consumes this owner-only file before touching a worker or firewall.
+  Write-LanSupervisorHandoff -Path $handoffPath -OwnerToken $ownerToken; $handoffWritten = $true
+  $supervisorArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'LanClassroomSupervisor.ps1'), '-RepositoryRoot', $repo, '-RuntimeRoot', $runtime, '-NodeProgram', $node, '-Address', $selected.Address, '-Port', "$Port", '-CsrfSecret', ([string]$settings.csrfSecret), '-FirewallRule', ($(if ($null -eq $firewall) { '' } else { [string]$firewall.Name })), '-FirewallOwned', ($(if ($null -ne $firewall -and $firewall.Owned) { 'true' } else { 'false' })))
+  $supervisorCommand = (($supervisorArguments | ForEach-Object { ConvertTo-LanWindowsArgument ([string]$_) }) -join ' ')
+  $powerShell = (Get-Command powershell -ErrorAction Stop).Source
+  $process = Start-Process -FilePath $powerShell -ArgumentList $supervisorCommand -WorkingDirectory $repo -WindowStyle Hidden -PassThru
+  if ($null -eq $process) { throw 'Could not start the classroom supervisor.' }
+  # Do not let the starter disappear while the supervisor is adopting the lock.
+  $until = [DateTime]::UtcNow.AddSeconds(8); $adopted = $false
+  while ([DateTime]::UtcNow -lt $until) {
+    if (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken) {
+      $lock = Read-LanJsonPrivateFile -Path $lockPath
+      if ([int]$lock.pid -ne $PID) { $ownsLock = $false }
+      if ([int]$lock.pid -eq $process.Id -and (Test-LanProcessIdentity -Id $process.Id -StartedAtUtc ([string]$lock.startedAtUtc) -CommandToken 'LanClassroomSupervisor.ps1')) { $adopted = $true; break }
+    }
+    if ($process.HasExited) { break }; Start-Sleep -Milliseconds 100
+  }
+  if (-not $adopted) { throw 'The classroom supervisor did not securely adopt the launcher lock.' }
+  $ownsLock = $false; $handoffWritten = $false
+  Write-Host "Students: http://$($selected.Address):$Port"
+  Write-Warning 'HTTP is only for this teacher-confirmed trusted Private LAN. It does not protect against local interception or session-token theft. Do not use Public/Domain networks or expose this port to the Internet.'
+  Write-Host "To stop without deleting data: .\scripts\windows\Stop-LanClassroom.ps1 -RuntimeRoot '$RuntimeRoot'"
+} catch {
+  if ($ownsLock -and $null -ne $firewall) { Remove-LanOwnedFirewallRule -Name ([string]$firewall.Name) -Owned ($firewall.Owned -eq $true) -NodeProgram $node -Port $Port }
+  throw
+} finally {
+  if ($handoffWritten -and (Test-Path -LiteralPath $handoffPath)) { try { $handoff = Read-LanJsonPrivateFile -Path $handoffPath; if ([string]$handoff.ownerToken -eq $ownerToken) { Remove-Item -LiteralPath $handoffPath -Force -ErrorAction SilentlyContinue } } catch { } }
+  if ($ownsLock) { Remove-LanLockIfOwned -LockPath $lockPath -OwnerToken $ownerToken | Out-Null }
 }
-if ($ConfigureFirewall) {
-  # A previous supervisor state is an owner-only file.  Its marker is the only
-  # evidence that an otherwise identical existing rule belongs to this launcher.
-  # Do not expose a listener after a requested firewall setup has failed.
-  $firewall = Add-LanPrivateFirewallRule -NodeProgram $node -Port $Port -PriorOwned $priorOwned
-}
-$firewall = if ($null -eq $firewall -and $priorOwned) { [pscustomobject]@{ Name = [string]$prior.firewallRule; Owned = $true } } else { $firewall }
-$supervisorArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'LanClassroomSupervisor.ps1'), '-RepositoryRoot', $repo, '-RuntimeRoot', ([IO.Path]::GetFullPath($RuntimeRoot)), '-NodeProgram', $node, '-Address', $selected.Address, '-Port', "$Port", '-CsrfSecret', ([string]$settings.csrfSecret), '-FirewallRule', ($(if ($null -eq $firewall) { '' } else { [string]$firewall.Name })), '-FirewallOwned', ($(if ($null -ne $firewall -and $firewall.Owned) { 'true' } else { 'false' })))
-# Windows PowerShell 5.1 does not expose ProcessStartInfo.ArgumentList; use
-# Start-Process so the launcher works on the supported in-box shell too.
-$supervisorCommand = (($supervisorArguments | ForEach-Object { ConvertTo-LanWindowsArgument ([string]$_) }) -join ' ')
-$powerShell = (Get-Command powershell -ErrorAction Stop).Source
-try { $process = Start-Process -FilePath $powerShell -ArgumentList $supervisorCommand -WorkingDirectory $repo -WindowStyle Hidden -PassThru } catch { Remove-LanOwnedFirewallRule -Name $(if ($null -eq $firewall) { '' } else { $firewall.Name }) -Owned ($null -ne $firewall -and $firewall.Owned) -NodeProgram $node -Port $Port; Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue; throw }
-if ($null -eq $process) { Remove-LanOwnedFirewallRule -Name $(if ($null -eq $firewall) { '' } else { $firewall.Name }) -Owned ($null -ne $firewall -and $firewall.Owned) -NodeProgram $node -Port $Port; Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue; throw 'Could not start the classroom supervisor.' }
-# Start never writes launcher-state.json: the supervisor is its sole atomic
-# writer and therefore cannot have a live workerPid overwritten by Start.
-Write-Host "Students: http://$($selected.Address):$Port"
-Write-Warning 'HTTP is only for this teacher-confirmed trusted Private LAN. It does not protect against local interception or session-token theft. Do not use Public/Domain networks or expose this port to the Internet.'
-Write-Host "To stop without deleting data: .\scripts\windows\Stop-LanClassroom.ps1 -RuntimeRoot '$RuntimeRoot'"

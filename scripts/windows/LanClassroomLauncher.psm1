@@ -272,11 +272,7 @@ function Test-LanFirewallRuleExact {
 
 function Test-LanProcessIdentity {
   param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][string] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
-  $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
-  if ($null -eq $process) { return $false }
-  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::Parse($StartedAtUtc).ToUniversalTime()).TotalSeconds) -gt 2) { return $false }
-  $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
-  return $null -ne $cim -and $null -ne $cim.CommandLine -and $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -ge 0
+  return (Get-LanProcessIdentityStatus -Id $Id -StartedAtUtc $StartedAtUtc -CommandToken $CommandToken) -eq 'Running'
 }
 
 function Remove-LanOwnedFirewallRule {
@@ -288,4 +284,94 @@ function Remove-LanOwnedFirewallRule {
   return $true
 }
 
-Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Remove-LanOwnedFirewallRule
+function New-LanOwnerToken {
+  $bytes = [byte[]]::new(32); $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $random.GetBytes($bytes); return [Convert]::ToBase64String($bytes) } finally { $random.Dispose() }
+}
+
+function Read-LanJsonPrivateFile {
+  param([Parameter(Mandatory)][string] $Path)
+  Assert-PrivateRuntimeAcl -Path $Path
+  Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+}
+
+function Get-LanProcessIdentityStatus {
+  param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][string] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
+  $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
+  if ($null -eq $process) { return 'Absent' }
+  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::Parse($StartedAtUtc).ToUniversalTime()).TotalSeconds) -gt 2) { return 'Mismatch' }
+  $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
+  if ($null -eq $cim -or $null -eq $cim.CommandLine -or $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return 'Mismatch' }
+  return 'Running'
+}
+
+function Test-LanLockRecord {
+  param([Parameter(Mandatory)][object] $Lock)
+  return -not [string]::IsNullOrEmpty([string]$Lock.ownerToken) -and $null -ne $Lock.pid -and -not [string]::IsNullOrEmpty([string]$Lock.startedAtUtc) -and -not [string]::IsNullOrEmpty([string]$Lock.commandToken)
+}
+
+function Test-LanLockOwned {
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken)
+  if (-not (Test-Path -LiteralPath $LockPath)) { return $false }
+  try { $lock = Read-LanJsonPrivateFile -Path $LockPath; return (Test-LanLockRecord -Lock $lock) -and [string]::Equals([string]$lock.ownerToken, $OwnerToken, [StringComparison]::Ordinal) } catch { return $false }
+}
+
+function Remove-LanLockIfOwned {
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken)
+  # Re-read immediately before deletion.  This is deliberately fail-closed if
+  # another launcher substituted a lock after our first observation.
+  if (-not (Test-LanLockOwned -LockPath $LockPath -OwnerToken $OwnerToken)) { return $false }
+  Remove-Item -LiteralPath $LockPath -Force -ErrorAction Stop
+  return $true
+}
+
+function Write-LanLaunchLock {
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken, [Parameter(Mandatory)][int] $OwnerPid, [Parameter(Mandatory)][string] $CommandToken)
+  $record = @{ ownerToken = $OwnerToken; pid = $OwnerPid; startedAtUtc = (Get-Process -Id $OwnerPid).StartTime.ToUniversalTime().ToString('o'); commandToken = $CommandToken }
+  $stream = $null
+  try {
+    $stream = [IO.FileStream]::new($LockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($record | ConvertTo-Json -Compress)); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+  } finally { if ($null -ne $stream) { $stream.Dispose() } }
+  Set-PrivateRuntimeAcl -Path $LockPath
+}
+
+function Acquire-LanLaunchLock {
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken, [Parameter(Mandatory)][int] $OwnerPid, [Parameter(Mandatory)][string] $CommandToken)
+  for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
+    try { Write-LanLaunchLock -LockPath $LockPath -OwnerToken $OwnerToken -OwnerPid $OwnerPid -CommandToken $CommandToken; return }
+    catch [System.IO.IOException] {
+      # A stale lock may be recovered even when no state file was ever written,
+      # but never when its owner is alive or its identity is ambiguous.
+      try { $existing = Read-LanJsonPrivateFile -Path $LockPath } catch { throw 'Existing launcher lock could not be validated; refusing to replace it.' }
+      if (-not (Test-LanLockRecord -Lock $existing)) { throw 'Existing launcher lock is invalid; refusing to replace it.' }
+      $status = Get-LanProcessIdentityStatus -Id ([int]$existing.pid) -StartedAtUtc ([string]$existing.startedAtUtc) -CommandToken ([string]$existing.commandToken)
+      if ($status -eq 'Running') { throw 'Another LAN Classroom launcher is already starting or running.' }
+      if ($status -ne 'Absent') { throw 'Existing launcher lock PID was reused or did not match its command; refusing to replace it.' }
+      # Check the token again before removal, so a different owner's replacement
+      # is never cleaned up by stale-lock recovery.
+      if (-not (Remove-LanLockIfOwned -LockPath $LockPath -OwnerToken ([string]$existing.ownerToken))) { throw 'Launcher lock changed during stale recovery; retry the start.' }
+    }
+  }
+  throw 'Could not acquire the LAN Classroom launcher lock.'
+}
+
+function Update-LanLaunchLockOwner {
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken, [Parameter(Mandatory)][int] $OwnerPid, [Parameter(Mandatory)][string] $CommandToken)
+  if (-not (Test-LanLockOwned -LockPath $LockPath -OwnerToken $OwnerToken)) { return $false }
+  $temporary = Join-Path (Split-Path -Parent $LockPath) ('.launcher-lock-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  $backup = Join-Path (Split-Path -Parent $LockPath) ('.launcher-lock-' + [guid]::NewGuid().ToString('N') + '.bak')
+  try {
+    $record = @{ ownerToken = $OwnerToken; pid = $OwnerPid; startedAtUtc = (Get-Process -Id $OwnerPid).StartTime.ToUniversalTime().ToString('o'); commandToken = $CommandToken }
+    [IO.File]::WriteAllText($temporary, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); Set-PrivateRuntimeAcl -Path $temporary
+    if (-not (Test-LanLockOwned -LockPath $LockPath -OwnerToken $OwnerToken)) { return $false }
+    [IO.File]::Replace($temporary, $LockPath, $backup); Set-PrivateRuntimeAcl -Path $LockPath; return $true
+  } finally { Remove-Item -LiteralPath $temporary, $backup -Force -ErrorAction SilentlyContinue }
+}
+
+function Write-LanSupervisorHandoff {
+  param([Parameter(Mandatory)][string] $Path, [Parameter(Mandatory)][string] $OwnerToken)
+  [IO.File]::WriteAllText($Path, (@{ ownerToken = $OwnerToken } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); Set-PrivateRuntimeAcl -Path $Path
+}
+
+Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Get-LanProcessIdentityStatus, New-LanOwnerToken, Read-LanJsonPrivateFile, Test-LanLockOwned, Remove-LanLockIfOwned, Acquire-LanLaunchLock, Update-LanLaunchLockOwner, Write-LanSupervisorHandoff, Remove-LanOwnedFirewallRule
