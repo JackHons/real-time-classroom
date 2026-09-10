@@ -88,9 +88,13 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, opti
     if (request.method === 'POST' && request.url === '/internal/shutdown') {
       const peer = request.socket.remoteAddress;
       const host = request.headers.host;
+      const port = request.socket.localPort;
       const direct = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
-      const literalHost = host === '127.0.0.1' || host === '127.0.0.1:4173' || host === '[::1]' || host === '[::1]:4173';
-      if (!direct || !literalHost || request.headers['x-lan-shutdown-token'] !== options.shutdownToken) { response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
+      const literalHost = host === `127.0.0.1:${port}` || host === `[::1]:${port}`;
+      const origin = request.headers.origin;
+      const permittedOrigin = origin === undefined || origin === `http://${host}`;
+      const proxied = request.headers.forwarded !== undefined || request.headers.via !== undefined || request.headers['x-forwarded-for'] !== undefined || request.headers['x-forwarded-host'] !== undefined || request.headers['x-forwarded-proto'] !== undefined || request.headers['x-real-ip'] !== undefined;
+      if (!direct || !literalHost || !permittedOrigin || proxied || request.headers['x-lan-shutdown-token'] !== options.shutdownToken) { response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
       response.writeHead(202, { 'cache-control': 'no-store' }); response.end();
       setTimeout(() => options.onShutdown?.(), 0).unref(); return;
     }
