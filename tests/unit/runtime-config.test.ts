@@ -55,4 +55,11 @@ describe('runtime CSRF secret persistence', () => {
     expect(config.csrfSecret).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(existsSync(temporary)).toBe(false);
   });
+
+  it('refuses a broad upload root but accepts a dedicated sibling leaf', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'lan-classroom-storage-')); directories.push(directory);
+    const base = { LAN_CLASSROOM_ALLOWED_ORIGIN: 'http://127.0.0.1:4173', LAN_CLASSROOM_DATABASE_PATH: join(directory, 'classroom.sqlite') };
+    expect(() => readRuntimeConfig({ ...base, LAN_CLASSROOM_UPLOAD_STORAGE_PATH: directory })).toThrow('RUNTIME_UPLOAD_STORAGE_PATH_INVALID');
+    expect(readRuntimeConfig({ ...base, LAN_CLASSROOM_UPLOAD_STORAGE_PATH: join(directory, 'private-uploads') }).uploadStoragePath).toBe(join(directory, 'private-uploads'));
+  });
 });

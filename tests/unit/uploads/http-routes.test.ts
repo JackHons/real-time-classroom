@@ -1,4 +1,9 @@
 import { PassThrough } from 'node:stream';
+import { Buffer } from 'node:buffer';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { createUploadRoutes } from '../../../apps/server/src/uploads/http-routes.js';
@@ -64,5 +69,27 @@ describe('upload HTTP routes', () => {
     try { await expect(handler(input, response())).rejects.toThrow('UPLOAD_REQUEST_DEADLINE_EXCEEDED'); }
     finally { globalThis.clearInterval(interval); }
     expect(input.destroyed).toBe(true);
+  });
+
+  it('pins a single download handle and frees the export slot when the receiver closes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lan-download-abort-'));
+    try {
+      const storage = new UploadStorage(directory, { minimumFreeBytes: 0 }); await storage.ensureReady();
+      const key = randomUUID(); const bytes = Buffer.from('x'.repeat(128 * 1024));
+      await writeFile(storage.finalPath(key), bytes);
+      const submission = { storageKey: key, byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), displayFilename: 'answer.bin' };
+      const routes = createUploadRoutes({
+        pipeline: { ingest: async () => ({ byteLength: 0, sha256: '', receivedCompleteAtUtc: '' }) },
+        repository: { task: () => ({ id: 'task-1', classId: 'class-1', state: 'closed' }) as never, studentSubmission: () => submission as never, exportSubmissions: () => [] },
+        storage, studentContext: () => ({ studentId: 'student-1' as never, classId: 'class-1' as never }), teacherContext: () => ({})
+      });
+      const request = new PassThrough() as PassThrough & IncomingMessage; request.method = 'GET'; request.url = '/api/classes/class-1/file-tasks/task-1/submissions/student-1/download'; request.headers = {};
+      const aborted = new PassThrough() as PassThrough & { writeHead: ReturnType<typeof vi.fn> }; aborted.writeHead = vi.fn(); aborted.on('error', () => undefined);
+      const pending = routes(request, aborted as never);
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0)); aborted.destroy();
+      await expect(pending).rejects.toThrow();
+      const retry = new PassThrough() as PassThrough & { writeHead: ReturnType<typeof vi.fn> }; retry.writeHead = vi.fn(); retry.resume();
+      await expect(routes(request, retry as never)).resolves.toBe(true);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

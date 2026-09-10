@@ -103,6 +103,15 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
 
 async function dispatch(request: IncomingMessage, response: ServerResponse, options: ServerOptions): Promise<void> {
   try {
+    // Apply these before any route (including SvelteKit assets, setup and
+    // errors) so a handler cannot accidentally omit a browser boundary.
+    // SvelteKit emits external module and stylesheet assets, so this stays
+    // compatible without permitting eval or inline script execution.
+    response.setHeader('content-security-policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:");
+    response.setHeader('x-frame-options', 'DENY');
+    response.setHeader('referrer-policy', 'no-referrer');
+    response.setHeader('permissions-policy', 'accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()');
+    response.setHeader('x-content-type-options', 'nosniff');
     if (request.method === 'POST' && request.url === '/internal/shutdown') {
       const peer = request.socket.remoteAddress;
       const host = request.headers.host;

@@ -1,4 +1,6 @@
-import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import type { FileHandle } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ClassId, FileSubmissionTaskId, StudentId } from '../domain/types.js';
 import type { FileTaskRepository } from '../file-tasks/types.js';
@@ -60,15 +62,24 @@ export function createUploadRoutes(dependencies: UploadRouteDependencies): (requ
       const submission = dependencies.repository.studentSubmission(taskId, decodeURIComponent(download[3]!) as StudentId);
       await withExportSlot(async () => {
         await dependencies.storage.ensureReady();
-        if (submission === undefined || !await dependencies.storage.verifyFinal(submission.storageKey, submission.byteLength, submission.sha256)) throw new Error('FILE_SUBMISSION_NOT_FOUND');
-        response.writeHead(200, {
-          'cache-control': 'no-store',
-          'content-type': 'application/octet-stream',
-          'content-disposition': attachmentDisposition(submission.displayFilename),
-          'x-content-type-options': 'nosniff',
-          'content-length': String(submission.byteLength)
-        });
-        await pipe(createReadStream(dependencies.storage.finalPath(submission.storageKey)), response);
+        if (submission === undefined) throw new Error('FILE_SUBMISSION_NOT_FOUND');
+        // Keep this exact descriptor pinned from open through the last byte.
+        // In particular, do not verify a path and then reopen that path to
+        // stream it: an attacker could replace it between those operations.
+        const handle = await dependencies.storage.openVerifiedFinal(submission.storageKey);
+        try {
+          response.writeHead(200, {
+            'cache-control': 'no-store',
+            'content-type': 'application/octet-stream',
+            'content-disposition': attachmentDisposition(submission.displayFilename),
+            'x-content-type-options': 'nosniff',
+            'content-length': String(submission.byteLength)
+          });
+          await streamVerifiedDownload(handle, submission.byteLength, submission.sha256, response);
+        } catch (error) {
+          if (!response.destroyed) response.destroy(error instanceof Error ? error : undefined);
+          throw error;
+        } finally { await handle.close().catch(() => undefined); }
       });
       return true;
     }
@@ -156,6 +167,31 @@ function mediaType(value: string | string[] | undefined): string | null {
   return type.length > 0 && type.length <= 255 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : null;
 }
 function json(response: ServerResponse, status: number, body: unknown): void { response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); }
-function pipe(input: ReturnType<typeof createReadStream>, response: ServerResponse): Promise<void> {
-  return new Promise((resolve, reject) => { input.once('error', reject); response.once('error', reject); response.once('finish', resolve); input.pipe(response); });
+async function streamVerifiedDownload(handle: FileHandle, expectedBytes: number, expectedSha256: string, response: ServerResponse): Promise<void> {
+  const hash = createHash('sha256'); let count = 0;
+  const stream = handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024, start: 0 });
+  let closed = response.destroyed;
+  const close = () => { closed = true; stream.destroy(); };
+  response.once('close', close);
+  try {
+    for await (const chunk of stream) {
+      if (closed || response.destroyed) throw new Error('FILE_EXPORT_ABORTED');
+      count += chunk.length;
+      if (count > expectedBytes) throw new Error('FILE_EXPORT_INTEGRITY_FAILED');
+      hash.update(chunk);
+      await write(response, chunk);
+    }
+    if (closed || count !== expectedBytes || hash.digest('hex') !== expectedSha256) throw new Error('FILE_EXPORT_INTEGRITY_FAILED');
+    response.end();
+  } finally { response.off('close', close); }
+}
+async function write(response: ServerResponse, bytes: Uint8Array): Promise<void> {
+  if (response.destroyed) throw new Error('FILE_EXPORT_ABORTED');
+  if (!response.write(bytes)) {
+    await Promise.race([
+      once(response, 'drain'),
+      once(response, 'close').then(() => { throw new Error('FILE_EXPORT_ABORTED'); }),
+      once(response, 'error').then(([error]) => { throw error; })
+    ]);
+  }
 }

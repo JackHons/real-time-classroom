@@ -1,8 +1,10 @@
-import { constants, createReadStream, lstatSync, renameSync, rmSync } from 'node:fs';
+import { chmodSync, constants, lstatSync, renameSync, rmSync } from 'node:fs';
 import { lstat, mkdir, open, readdir, rename, rm, statfs } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { basename, resolve, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { env as processEnvironment } from 'node:process';
 import type { FileStorageDeletion, FileStoragePort } from '../file-tasks/types.js';
 
 const UUID_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -27,6 +29,7 @@ export class UploadStorage implements FileStoragePort {
   private readonly deletingRoot: string;
   private readonly minimumFreeBytes: number;
   private readonly freeSpaceBytes: (root: string) => Promise<number>;
+  private preparing: Promise<void> | undefined;
 
   constructor(root: string, options: UploadStorageOptions = {}) {
     this.root = resolve(root);
@@ -43,8 +46,25 @@ export class UploadStorage implements FileStoragePort {
 
   /** Fails closed for an unsafe/reparsed private root or an unavailable capacity probe. */
   async ensureReady(): Promise<void> {
+    // Coalesce concurrent upload/export admission checks. A later independent
+    // call still performs the complete ACL/reparse verification again.
+    if (this.preparing !== undefined) return this.preparing;
+    const work = this.ensureReadyDirect(); this.preparing = work;
+    try { await work; } finally { if (this.preparing === work) this.preparing = undefined; }
+  }
+
+  private async ensureReadyDirect(): Promise<void> {
+    // Never call chmod or mkdir through a pre-existing reparse point. Doing so
+    // could repair permissions on an attacker-selected external directory.
+    await assertAbsentOrPrivateDirectory(this.root);
     await mkdir(this.root, { recursive: true, mode: 0o700 });
-    await Promise.all([mkdir(this.stagingRoot, { recursive: true, mode: 0o700 }), mkdir(this.finalRoot, { recursive: true, mode: 0o700 }), mkdir(this.deletingRoot, { recursive: true, mode: 0o700 })]);
+    for (const directory of [this.stagingRoot, this.finalRoot, this.deletingRoot]) {
+      await assertAbsentOrPrivateDirectory(directory);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+    }
+    // mkdir's mode is affected by umask and does not repair an existing
+    // directory. Repair and then verify every dedicated child on each start.
+    await Promise.all([this.root, this.stagingRoot, this.finalRoot, this.deletingRoot].map(securePrivateDirectory));
     await this.assertPrivateDirectories();
     let free: number;
     try { free = await this.freeSpaceBytes(this.root); } catch (error) { throw new Error('UPLOAD_STORAGE_PROBE_FAILED', { cause: error }); }
@@ -72,7 +92,10 @@ export class UploadStorage implements FileStoragePort {
    */
   async openVerifiedFinal(key: string): Promise<FileHandle> {
     await this.assertPrivateDirectories();
-    const path = this.finalPath(key);
+    return this.openVerifiedPath(this.finalPath(key));
+  }
+
+  private async openVerifiedPath(path: string): Promise<FileHandle> {
     let before: Awaited<ReturnType<typeof lstat>>;
     try { before = await lstat(path); } catch { throw new Error('FILE_EXPORT_INTEGRITY_FAILED'); }
     if (!before.isFile() || before.isSymbolicLink()) throw new Error('FILE_EXPORT_INTEGRITY_FAILED');
@@ -158,9 +181,22 @@ export class UploadStorage implements FileStoragePort {
 
   /** Re-reads a surviving staged file incrementally before restart recovery moves it. */
   async verifyStaging(key: string, expectedBytes: number, expectedSha256: string): Promise<boolean> {
+    if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || !/^[a-f0-9]{64}$/.test(expectedSha256)) return false;
+    await this.assertPrivateDirectories();
     const hash = createHash('sha256'); let count = 0;
-    for await (const chunk of createReadStream(this.stagingPath(key))) { count += chunk.length; hash.update(chunk); }
-    return count === expectedBytes && hash.digest('hex') === expectedSha256;
+    let handle: FileHandle | undefined;
+    try {
+      // Recovery is privileged too: never follow a staged symlink or verify
+      // one object then later move a replacement.
+      handle = await this.openVerifiedPath(this.stagingPath(key));
+      for await (const chunk of handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024 })) {
+        count += chunk.length;
+        if (count > expectedBytes) return false;
+        hash.update(chunk);
+      }
+      return count === expectedBytes && hash.digest('hex') === expectedSha256;
+    } catch { return false; }
+    finally { await handle?.close().catch(() => undefined); }
   }
 
   private tombstonePath(submissionId: string, storageKey: string): string {
@@ -199,5 +235,32 @@ async function isRegularFile(path: string): Promise<boolean> { try { return (awa
 function sameFileIdentity(left: Awaited<ReturnType<typeof lstat>>, right: Awaited<ReturnType<FileHandle['stat']>>): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }
-async function assertPrivateDirectory(path: string): Promise<void> { const info = await lstat(path); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('UPLOAD_STORAGE_PATH_UNSAFE'); }
-function assertPrivateDirectorySync(path: string): void { const info = lstatSync(path); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('UPLOAD_STORAGE_PATH_UNSAFE'); }
+async function assertPrivateDirectory(path: string): Promise<void> {
+  const info = await lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink() || (!isWindows() && (info.mode & 0o077) !== 0)) throw new Error('UPLOAD_STORAGE_PATH_UNSAFE');
+}
+async function assertAbsentOrPrivateDirectory(path: string): Promise<void> {
+  try {
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('UPLOAD_STORAGE_PATH_UNSAFE');
+  } catch (error) {
+    if (isErrorCode(error, 'ENOENT')) return;
+    throw error;
+  }
+}
+function assertPrivateDirectorySync(path: string): void {
+  const info = lstatSync(path);
+  if (!info.isDirectory() || info.isSymbolicLink() || (!isWindows() && (info.mode & 0o077) !== 0)) throw new Error('UPLOAD_STORAGE_PATH_UNSAFE');
+}
+async function securePrivateDirectory(path: string): Promise<void> {
+  try { chmodSync(path, 0o700); } catch (error) { throw new Error('UPLOAD_STORAGE_PATH_UNSAFE', { cause: error }); }
+  if (!isWindows()) return;
+  try {
+    const username = processEnvironment.USERNAME;
+    if (username === undefined || username.length === 0) throw new Error('USERNAME_REQUIRED');
+    execFileSync('icacls.exe', [path, '/inheritance:r', '/remove:g', '*S-1-1-0', '*S-1-5-11', '*S-1-5-32-545', '/grant:r', `${username}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F'], { windowsHide: true, stdio: 'ignore' });
+    execFileSync('icacls.exe', [path, '/verify'], { windowsHide: true, stdio: 'ignore' });
+  } catch (error) { throw new Error('UPLOAD_STORAGE_PATH_UNSAFE', { cause: error }); }
+}
+function isWindows(): boolean { return processEnvironment.OS === 'Windows_NT'; }
+function isErrorCode(error: unknown, code: string): boolean { return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === code; }

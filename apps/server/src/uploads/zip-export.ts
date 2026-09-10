@@ -50,8 +50,15 @@ export async function exportZip(response: ServerResponse, storage: UploadStorage
     response.writeHead(200, secureHeaders('submissions.zip'));
     let offset = 0;
     const central: Central[] = [];
+    // A close can happen while the file iterator is waiting on disk rather
+    // than only while write() is backpressured. Keep one explicit lifecycle
+    // signal so every branch unwinds its pinned descriptors and export slot.
+    let receiverClosed = response.destroyed;
+    const receiverClose = () => { if (!response.writableEnded) receiverClosed = true; };
+    response.once('close', receiverClose);
     try {
       for (const entry of prepared) {
+        if (receiverClosed || response.destroyed) throw new Error('FILE_EXPORT_ABORTED');
         const name = UTF8.encode(entry.name);
         const localOffset = offset;
         const local = localHeader(name); offset += local.length;
@@ -59,6 +66,7 @@ export async function exportZip(response: ServerResponse, storage: UploadStorage
         let crc = 0xffffffff; let written = 0;
         const hash = createHash('sha256');
         for await (const chunk of entry.handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024, start: 0 })) {
+          if (receiverClosed || response.destroyed) throw new Error('FILE_EXPORT_ABORTED');
           crc = crc32(chunk, crc); written += chunk.length; hash.update(chunk);
           await write(response, chunk); offset += chunk.length;
         }
@@ -79,7 +87,10 @@ export async function exportZip(response: ServerResponse, storage: UploadStorage
       // Do not emit filenames, paths, or database keys after ZIP has started.
       if (!response.destroyed) response.destroy(error instanceof Error ? error : undefined);
       throw error;
-    } finally { await closePrepared(prepared); }
+    } finally {
+      response.off('close', receiverClose);
+      await closePrepared(prepared);
+    }
   });
 }
 

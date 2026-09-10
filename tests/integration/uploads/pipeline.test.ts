@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import process from 'node:process';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openSqlite, type SqliteDatabase } from '../../../apps/server/src/db/connection.js';
@@ -282,5 +283,18 @@ describe('upload byte pipeline', () => {
     await expect(insufficient.ensureReady()).rejects.toThrow('UPLOAD_STORAGE_INSUFFICIENT_SPACE');
     const ready = new UploadStorage(directory, { minimumFreeBytes: 10, freeSpaceBytes: async () => 10 });
     await expect(ready.ensureReady()).resolves.toBeUndefined();
+  });
+
+  it('repairs a broad dedicated directory mode and refuses a staged symlink during recovery', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lan-upload-private-')); directories.push(directory);
+    await chmod(directory, 0o777);
+    const storage = new UploadStorage(directory, { minimumFreeBytes: 0 });
+    await storage.ensureReady();
+    if (process.platform !== 'win32') expect((await (await import('node:fs/promises')).lstat(directory)).mode & 0o077).toBe(0);
+    const id = randomUUID(); const key = storage.stagingKey(id); const outside = join(directory, 'outside-part');
+    await writeFile(outside, 'not a staging payload');
+    try { await symlink(outside, storage.stagingPath(key), 'file'); }
+    catch (error: unknown) { if ((error as { code?: string }).code === 'EPERM') return; throw error; }
+    await expect(storage.verifyStaging(key, 21, createHash('sha256').update('not a staging payload').digest('hex'))).resolves.toBe(false);
   });
 });

@@ -3,8 +3,8 @@ import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
-import { dirname, join } from 'node:path';
-import { env as processEnvironment } from 'node:process';
+import { dirname, join, parse, relative, resolve, sep } from 'node:path';
+import { cwd, env as processEnvironment } from 'node:process';
 import { DEFAULT_MINIMUM_FREE_BYTES } from './uploads/storage.js';
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -28,7 +28,7 @@ export type RuntimeConfig = Readonly<{
  */
 export function readRuntimeConfig(environment: Environment = processEnvironment): RuntimeConfig {
   const allowedOrigin = environment.LAN_CLASSROOM_ALLOWED_ORIGIN;
-  const databasePath = environment.LAN_CLASSROOM_DATABASE_PATH ?? defaultDatabasePath(environment);
+  const databasePath = resolve(environment.LAN_CLASSROOM_DATABASE_PATH ?? defaultDatabasePath(environment));
   if (allowedOrigin === undefined) throw new Error('RUNTIME_SECURITY_CONFIGURATION_REQUIRED');
   const host = environment.LAN_CLASSROOM_HOST ?? '127.0.0.1';
   const hosts = parseHosts(environment.LAN_CLASSROOM_HOSTS, host);
@@ -36,12 +36,33 @@ export function readRuntimeConfig(environment: Environment = processEnvironment)
   if (csrfSecret.length < 32) throw new Error('RUNTIME_SECURITY_CONFIGURATION_REQUIRED');
   const port = environment.LAN_CLASSROOM_PORT === undefined ? 4173 : Number(environment.LAN_CLASSROOM_PORT);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('RUNTIME_PORT_INVALID');
-  const uploadStoragePath = environment.LAN_CLASSROOM_UPLOAD_STORAGE_PATH ?? join(dirname(databasePath), 'uploads');
+  const uploadStoragePath = privateUploadStoragePath(environment.LAN_CLASSROOM_UPLOAD_STORAGE_PATH, dirname(databasePath));
   const uploadStorageMinimumFreeBytes = environment.LAN_CLASSROOM_UPLOAD_MINIMUM_FREE_BYTES === undefined
     ? DEFAULT_MINIMUM_FREE_BYTES
     : Number(environment.LAN_CLASSROOM_UPLOAD_MINIMUM_FREE_BYTES);
   if (!Number.isSafeInteger(uploadStorageMinimumFreeBytes) || uploadStorageMinimumFreeBytes < DEFAULT_MINIMUM_FREE_BYTES) throw new Error('RUNTIME_UPLOAD_STORAGE_RESERVE_INVALID');
   return { databasePath, uploadStoragePath, uploadStorageMinimumFreeBytes, allowedOrigin, csrfSecret, host, hosts, port };
+}
+
+/**
+ * An override is a dedicated leaf, not a convenient way to point the file
+ * store at a drive root, the runtime parent, or the checkout.  resolve() also
+ * makes later containment checks independent of the launch working directory.
+ */
+function privateUploadStoragePath(configured: string | undefined, runtimeDirectory: string): string {
+  const path = resolve(configured ?? join(runtimeDirectory, 'uploads'));
+  if (path === parse(path).root || path === runtimeDirectory || isAncestor(path, runtimeDirectory) || isAncestor(path, resolve(cwd()))) {
+    throw new Error('RUNTIME_UPLOAD_STORAGE_PATH_INVALID');
+  }
+  // A path that names an existing non-leaf source such as "C:\\data\\.."
+  // resolves above and is rejected by the ancestor tests. Require a real leaf
+  // as a second defence against accidentally mounting a data parent.
+  if (parse(path).base.length === 0 || parse(path).base === '.' || parse(path).base === '..') throw new Error('RUNTIME_UPLOAD_STORAGE_PATH_INVALID');
+  return path;
+}
+function isAncestor(candidate: string, path: string): boolean {
+  const relation = relative(candidate, path);
+  return relation === '' || (!relation.startsWith(`..${sep}`) && relation !== '..' && !parse(relation).root);
 }
 
 function parseHosts(value: string | undefined, fallback: string): readonly string[] {
