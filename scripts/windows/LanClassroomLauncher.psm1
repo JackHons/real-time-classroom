@@ -325,22 +325,47 @@ function Remove-LanLockIfOwned {
   return $true
 }
 
+function Remove-LanFreshLockIfTokenMatches {
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken)
+  # This is only used while unwinding a CreateNew lock whose ACL setup failed.
+  # ACL verification cannot be relied on in that failure mode, so compare the
+  # durable token again and fail closed if the name has been substituted.
+  if (-not (Test-Path -LiteralPath $LockPath)) { return $true }
+  try {
+    $current = Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Json
+    if (-not (Test-LanLockRecord -Lock $current) -or -not [string]::Equals([string]$current.ownerToken, $OwnerToken, [StringComparison]::Ordinal)) { return $false }
+    Remove-Item -LiteralPath $LockPath -Force -ErrorAction Stop
+    return -not (Test-Path -LiteralPath $LockPath)
+  } catch { return $false }
+}
+
 function Write-LanLaunchLock {
-  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken, [Parameter(Mandatory)][int] $OwnerPid, [Parameter(Mandatory)][string] $CommandToken)
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken, [Parameter(Mandatory)][int] $OwnerPid, [Parameter(Mandatory)][string] $CommandToken, [scriptblock] $AclProvisioner = { param($Path) Set-PrivateRuntimeAcl -Path $Path })
   $record = @{ ownerToken = $OwnerToken; pid = $OwnerPid; startedAtUtc = (Get-Process -Id $OwnerPid).StartTime.ToUniversalTime().ToString('o'); commandToken = $CommandToken }
-  $stream = $null
+  $stream = $null; $created = $false
   try {
     $stream = [IO.FileStream]::new($LockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($record | ConvertTo-Json -Compress)); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+    $stream.Dispose(); $stream = $null; $created = $true
+    & $AclProvisioner $LockPath
+  } catch {
+    $failure = $_
+    if ($created) {
+      if (-not (Remove-LanFreshLockIfTokenMatches -LockPath $LockPath -OwnerToken $OwnerToken)) {
+        throw "Launcher lock ACL provisioning failed ($($failure.Exception.Message)); the newly-created lock at $LockPath could not be safely removed because its owner token changed or cleanup failed. Remove it manually only after confirming it is not owned by a live launcher."
+      }
+      $failure.Exception.Data['LanLaunchLockProvisioningFailure'] = $true
+    }
+    throw
   } finally { if ($null -ne $stream) { $stream.Dispose() } }
-  Set-PrivateRuntimeAcl -Path $LockPath
 }
 
 function Acquire-LanLaunchLock {
-  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken, [Parameter(Mandatory)][int] $OwnerPid, [Parameter(Mandatory)][string] $CommandToken)
+  param([Parameter(Mandatory)][string] $LockPath, [Parameter(Mandatory)][string] $OwnerToken, [Parameter(Mandatory)][int] $OwnerPid, [Parameter(Mandatory)][string] $CommandToken, [scriptblock] $AclProvisioner = { param($Path) Set-PrivateRuntimeAcl -Path $Path })
   for ($attempt = 0; $attempt -lt 3; $attempt += 1) {
-    try { Write-LanLaunchLock -LockPath $LockPath -OwnerToken $OwnerToken -OwnerPid $OwnerPid -CommandToken $CommandToken; return }
+    try { Write-LanLaunchLock -LockPath $LockPath -OwnerToken $OwnerToken -OwnerPid $OwnerPid -CommandToken $CommandToken -AclProvisioner $AclProvisioner; return }
     catch [System.IO.IOException] {
+      if ($_.Exception.Data['LanLaunchLockProvisioningFailure'] -eq $true) { throw }
       # A stale lock may be recovered even when no state file was ever written,
       # but never when its owner is alive or its identity is ambiguous.
       try { $existing = Read-LanJsonPrivateFile -Path $LockPath } catch { throw 'Existing launcher lock could not be validated; refusing to replace it.' }

@@ -50,6 +50,21 @@ try {
   $recovered = New-LanOwnerToken; Acquire-LanLaunchLock -LockPath $lockPath -OwnerToken $recovered -OwnerPid $PID -CommandToken 'launcher.tests.ps1'
   Assert-True (Test-LanLockOwned -LockPath $lockPath -OwnerToken $recovered) 'a dead stale lock without state must be recovered by its new owner'
   Remove-LanLockIfOwned -LockPath $lockPath -OwnerToken $recovered | Out-Null
+  $failureLock = Join-Path $runtime 'acl-provision-failure.lock'; $provisionFailed = $false
+  try { Acquire-LanLaunchLock -LockPath $failureLock -OwnerToken (New-LanOwnerToken) -OwnerPid $PID -CommandToken 'launcher.tests.ps1' -AclProvisioner { param($p) throw 'injected ACL provisioning failure' } } catch { $provisionFailed = $_.Exception.Message -match 'injected ACL provisioning failure' }
+  Assert-True $provisionFailed 'ACL provisioning failure must retain its original cause'
+  Assert-True (-not (Test-Path -LiteralPath $failureLock)) 'a post-create ACL failure must clean up its exact newly-created lock'
+  $replacementLock = Join-Path $runtime 'acl-replacement.lock'; $replacement = 'other-process-token'; $replacementFailure = $null
+  try {
+    Acquire-LanLaunchLock -LockPath $replacementLock -OwnerToken (New-LanOwnerToken) -OwnerPid $PID -CommandToken 'launcher.tests.ps1' -AclProvisioner {
+      param($p)
+      [IO.File]::WriteAllText($p, (@{ ownerToken = $replacement; pid = 2147483646; startedAtUtc = '2020-01-01T00:00:00.0000000Z'; commandToken = 'other.ps1' } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+      throw 'injected ACL replacement failure'
+    }
+  } catch { $replacementFailure = $_.Exception.Message }
+  Assert-True ($replacementFailure -match 'injected ACL replacement failure' -and $replacementFailure -match 'could not be safely removed') 'failed cleanup must report both provisioning and manual-recovery context'
+  Assert-True ((Get-Content -LiteralPath $replacementLock -Raw | ConvertFrom-Json).ownerToken -eq $replacement) 'post-create cleanup must not delete a replacement owner lock'
+  Remove-Item -LiteralPath $replacementLock -Force
 } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
 function Get-NetFirewallPortFilter { @([pscustomobject]@{ Protocol = 'TCP'; LocalPort = '4173' }) }
 function Get-NetFirewallApplicationFilter { @([pscustomobject]@{ Program = 'C:\Program Files\nodejs\node.exe' }) }
