@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -85,6 +86,20 @@ describe('Task 3 composed API routes', () => {
     const noOrigin = await fetch(`${base}/api/classes/${classroom.id}`, { method: 'DELETE', headers: { cookie: login.cookie, 'x-csrf-token': login.csrf, 'content-type': 'application/json' }, body: JSON.stringify({ confirmed: true, impactAcknowledged: true }) });
     expect(noOrigin.status).toBe(403);
   });
+
+  it('promptly closes unauthorized upload and teacher-mutation bodies at 1 byte and 100 MiB', async () => {
+    const base = await applicationBase();
+    const port = Number(new URL(base).port);
+    const responses = await Promise.all([
+      rawRejectedBody(port, '/api/classes/not-a-class/file-tasks/not-a-task/upload', 1, true),
+      rawRejectedBody(port, '/api/classes/not-a-class/file-tasks/not-a-task/upload', 100_000_000, false),
+      rawRejectedBody(port, '/api/classes', 100_000_000, false)
+    ]);
+    for (const response of responses) {
+      expect(response).toMatch(/^HTTP\/1\.1 401 /);
+      expect(response).toMatch(/\r\nconnection: close\r\n/i);
+    }
+  }, 10_000);
 
   it('does not refresh a teacher idle session for rejected Origin or CSRF requests', async () => {
     const clock = new MutableClock(new Date('2026-09-07T00:00:00.000Z'));
@@ -347,6 +362,23 @@ describe('Task 3 composed API routes', () => {
     expect(missing.headers.get('content-type')).toContain('application/json');
   });
 });
+
+function rawRejectedBody(port: number, path: string, contentLength: number, writeOneByte: boolean): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    let received = '';
+    const timeout = globalThis.setTimeout(() => {
+      socket.destroy(); reject(new Error('unauthorized body stream did not close promptly'));
+    }, 2_000);
+    socket.setEncoding('utf8');
+    socket.once('error', reject);
+    socket.on('data', (chunk) => { received += chunk; });
+    socket.once('end', () => { globalThis.clearTimeout(timeout); resolve(received); });
+    socket.once('connect', () => {
+      socket.write(`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nOrigin: ${origin}\r\nContent-Type: application/octet-stream\r\nContent-Length: ${contentLength}\r\n\r\n${writeOneByte ? 'x' : ''}`);
+    });
+  });
+}
 
 /** Read central-directory names instead of trusting the byte stream as text. */
 function zipEntryNames(archive: Buffer): readonly string[] {

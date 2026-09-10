@@ -6,6 +6,7 @@ import {
 } from 'node:http';
 import { setTimeout } from 'node:timers';
 import { attachRealtimeGateway, type RealtimeGateway, type RealtimeGatewayOptions } from './realtime/gateway.js';
+import { closeUnconsumedRequestBody } from './http/rejected-request.js';
 
 // These are assigned on every explicit address binding. JSON commands enforce
 // their own 30-second body deadline; the server-level request timeout remains
@@ -111,7 +112,7 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, opti
       const origin = request.headers.origin;
       const permittedOrigin = origin === undefined || origin === `http://${host}`;
       const proxied = request.headers.forwarded !== undefined || request.headers.via !== undefined || request.headers['x-forwarded-for'] !== undefined || request.headers['x-forwarded-host'] !== undefined || request.headers['x-forwarded-proto'] !== undefined || request.headers['x-real-ip'] !== undefined;
-      if (!direct || !literalHost || !permittedOrigin || proxied || request.headers['x-lan-shutdown-token'] !== options.shutdownToken) { response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
+      if (!direct || !literalHost || !permittedOrigin || proxied || request.headers['x-lan-shutdown-token'] !== options.shutdownToken) { closeUnconsumedRequestBody(request, response); response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
       response.writeHead(202, { 'cache-control': 'no-store' }); response.end();
       setTimeout(() => options.onShutdown?.(), 0).unref(); return;
     }
@@ -130,10 +131,12 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, opti
       return;
     }
 
+    closeUnconsumedRequestBody(request, response);
     response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
     response.end(JSON.stringify({ error: 'NOT_IMPLEMENTED' }));
   } catch {
     if (!response.headersSent) {
+      closeUnconsumedRequestBody(request, response);
       response.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       response.end(JSON.stringify({ error: 'INTERNAL_ERROR' }));
     } else if (!response.writableEnded) {

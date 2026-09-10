@@ -26,6 +26,7 @@ import { RealtimeNotificationBus, type RealtimeGatewayOptions } from './realtime
 import { createUploadRoutes } from './uploads/http-routes.js';
 import { UploadPipeline } from './uploads/pipeline.js';
 import { UploadStorage, type UploadStorageOptions } from './uploads/storage.js';
+import { closeUnconsumedRequestBody } from './http/rejected-request.js';
 
 export type ApplicationOptions = Readonly<{
   database: SqliteDatabase;
@@ -205,21 +206,21 @@ export function createApplication(options: ApplicationOptions): Application {
       if (pathname.startsWith('/api/teacher/') || pathname === '/api/student/activities') {
         try {
           const handled = activityHandler(request, response);
-          if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
-        } catch (error) { sendError(response, error); }
+          if (!handled) sendJson(request, response, 404, { error: 'NOT_FOUND' });
+        } catch (error) { sendError(request, response, error); }
         return true;
       }
       if (pathname === '/api/classes' || pathname.startsWith('/api/classes/') || pathname.startsWith('/api/pending-student-requests/')) {
         // Public class listing is read-only. All public join requests and every
         // mutation require the configured first-party Origin before parsing a body.
         if (request.method !== 'GET') {
-          try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(response, error); return true; }
+          try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(request, response, error); return true; }
         }
         try {
-          if (pathname.includes('/file-tasks/') && !uploadsReady) { sendJson(response, 503, { error: 'UPLOADS_INITIALIZING' }); return true; }
+          if (pathname.includes('/file-tasks/') && !uploadsReady) { sendJson(request, response, 503, { error: 'UPLOADS_INITIALIZING' }); return true; }
           const handled = await exportHandler(request, response) || await classHandler(request, response) || await questionBankHandler(request, response) || await fileTaskHandler(request, response) || await uploadHandler(request, response);
-          if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
-        } catch (error) { sendError(response, error); }
+          if (!handled) sendJson(request, response, 404, { error: 'NOT_FOUND' });
+        } catch (error) { sendError(request, response, error); }
         return true;
       }
       if (pathname.startsWith('/api/question-templates') || pathname.startsWith('/api/questions/')) {
@@ -227,14 +228,14 @@ export function createApplication(options: ApplicationOptions): Application {
         // service call. Origin is checked here before an untrusted mutation body
         // is parsed, consistently with the existing public class boundary.
         if (request.method !== 'GET') {
-          try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(response, error); return true; }
+          try { requireAllowedOrigin(request, options.allowedOrigin); } catch (error) { sendError(request, response, error); return true; }
         }
         try {
           const handled = await exportHandler(request, response) || (pathname.startsWith('/api/question-templates')
             ? await questionBankHandler(request, response)
             : await liveQuestionHandler(request, response));
-          if (!handled) sendJson(response, 404, { error: 'NOT_FOUND' });
-        } catch (error) { sendError(response, error); }
+          if (!handled) sendJson(request, response, 404, { error: 'NOT_FOUND' });
+        } catch (error) { sendError(request, response, error); }
         return true;
       }
       return false;
@@ -280,22 +281,23 @@ class HttpError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); }
 }
 
-function sendError(response: ServerResponse, error: unknown): void {
-  if (error instanceof HttpError) { sendJson(response, error.status, { error: error.code }); return; }
+function sendError(request: IncomingMessage, response: ServerResponse, error: unknown): void {
+  if (error instanceof HttpError) { sendJson(request, response, error.status, { error: error.code }); return; }
   const code = error instanceof Error ? error.message : 'INVALID_REQUEST';
   // Cursor and limit syntax must not disclose which route or backing fields
   // rejected an opaque token.
-  if (code === 'REQUEST_CURSOR_INVALID') { sendJson(response, 400, { error: 'INVALID_REQUEST' }); return; }
-  if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED' || code.endsWith('_NOT_FOUND') || code === 'ANSWER_NOT_FOUND') { sendJson(response, 404, { error: code }); return; }
-  if (code === 'REQUEST_BODY_TOO_LARGE' || code === 'UPLOAD_TOO_LARGE') { sendJson(response, 413, { error: code }); return; }
-  if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(response, 403, { error: code }); return; }
-  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT' || code === 'QUESTION_EXPORT_CLOSED_REQUIRED' || code === 'FILE_SUBMISSION_ALREADY_EXISTS' || code === 'FILE_TASK_TRANSITION_CONFLICT') { sendJson(response, 409, { error: code }); return; }
-  if (code === 'UPLOAD_STREAM_LIMIT_REACHED') { sendJson(response, 429, { error: 'UPLOAD_REJECTED' }); return; }
-  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
-  sendJson(response, 500, { error: 'CLASS_INTERNAL_ERROR' });
+  if (code === 'REQUEST_CURSOR_INVALID') { sendJson(request, response, 400, { error: 'INVALID_REQUEST' }); return; }
+  if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED' || code.endsWith('_NOT_FOUND') || code === 'ANSWER_NOT_FOUND') { sendJson(request, response, 404, { error: code }); return; }
+  if (code === 'REQUEST_BODY_TOO_LARGE' || code === 'UPLOAD_TOO_LARGE') { sendJson(request, response, 413, { error: code }); return; }
+  if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(request, response, 403, { error: code }); return; }
+  if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT' || code === 'QUESTION_EXPORT_CLOSED_REQUIRED' || code === 'FILE_SUBMISSION_ALREADY_EXISTS' || code === 'FILE_TASK_TRANSITION_CONFLICT') { sendJson(request, response, 409, { error: code }); return; }
+  if (code === 'UPLOAD_STREAM_LIMIT_REACHED') { sendJson(request, response, 429, { error: 'UPLOAD_REJECTED' }); return; }
+  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(request, response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
+  sendJson(request, response, 500, { error: 'CLASS_INTERNAL_ERROR' });
 }
 
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
+function sendJson(request: IncomingMessage, response: ServerResponse, status: number, body: unknown): void {
+  closeUnconsumedRequestBody(request, response);
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
 }

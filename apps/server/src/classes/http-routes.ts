@@ -27,21 +27,24 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
       return true;
     }
     if (request.method === 'POST' && url.pathname === '/api/classes') {
+      const teacher = dependencies.teacherContext(request);
       const body = await readJson(request);
-      json(response, 201, dependencies.service.createClass(dependencies.teacherContext(request), stringField(body, 'name')));
+      json(response, 201, dependencies.service.createClass(teacher, stringField(body, 'name')));
       return true;
     }
     const match = /^\/api\/classes\/([^/]+)$/.exec(url.pathname);
     if (request.method === 'DELETE' && match?.[1] !== undefined) {
+      const teacher = dependencies.teacherContext(request);
       const body = await readJson(request);
-      dependencies.service.deleteClass(dependencies.teacherContext(request), decodeURIComponent(match[1]) as ClassId, confirmation(body));
+      dependencies.service.deleteClass(teacher, decodeURIComponent(match[1]) as ClassId, confirmation(body));
       json(response, 204, undefined);
       return true;
     }
     const importMatch = /^\/api\/classes\/([^/]+)\/roster\/import$/.exec(url.pathname);
     if (request.method === 'POST' && importMatch?.[1] !== undefined) {
+      const teacher = dependencies.teacherContext(request);
       const body = await readJson(request);
-      const result = dependencies.service.importRosterCsv(dependencies.teacherContext(request), decodeURIComponent(importMatch[1]) as ClassId, stringField(body, 'csv'));
+      const result = dependencies.service.importRosterCsv(teacher, decodeURIComponent(importMatch[1]) as ClassId, stringField(body, 'csv'));
       json(response, result.issues.length === 0 ? 200 : 422, result);
       return true;
     }

@@ -59,6 +59,23 @@ describe('auth HTTP listener', () => {
     expect((await invalid()).status).toBe(429);
   });
 
+  it('closes 256 slow unauthorized body streams without retaining keep-alive sockets', async () => {
+    const base = await authServer({ join: () => undefined });
+    const port = Number(new URL(base).port);
+    const responses: string[] = [];
+    for (let offset = 0; offset < 256; offset += 16) {
+      responses.push(...await Promise.all(Array.from({ length: 16 }, (_, index) => {
+        const ordinal = offset + index;
+        return slowRejectedRequest(port, ordinal % 2 === 0 ? 1 : 100_000_000, ordinal % 2 === 0);
+      })));
+    }
+    expect(responses).toHaveLength(256);
+    for (const response of responses) {
+      expect(response).toMatch(/^HTTP\/1\.1 403 /);
+      expect(response).toMatch(/\r\nconnection: close\r\n/i);
+    }
+  }, 10_000);
+
   it('reserves teacher capacity before concurrent password verification', async () => {
     let verifierCalls = 0;
     const base = await authServer(
@@ -168,6 +185,23 @@ function rawTeacherLogin(port: number, localAddress: string): Promise<number> {
     });
     socket.once('connect', () => {
       socket.write(`POST /api/auth/teacher/login HTTP/1.1\r\nHost: classroom.test\r\nOrigin: http://classroom.test\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+    });
+  });
+}
+
+function slowRejectedRequest(port: number, contentLength: number, writeOneByte: boolean): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    let received = '';
+    const timeout = globalThis.setTimeout(() => {
+      socket.destroy(); reject(new Error('unauthorized request did not close promptly'));
+    }, 2_000);
+    socket.setEncoding('utf8');
+    socket.once('error', reject);
+    socket.on('data', (chunk) => { received += chunk; });
+    socket.once('end', () => { globalThis.clearTimeout(timeout); resolve(received); });
+    socket.once('connect', () => {
+      socket.write(`POST /api/auth/teacher/login HTTP/1.1\r\nHost: classroom.test\r\nContent-Type: application/json\r\nContent-Length: ${contentLength}\r\n\r\n${writeOneByte ? 'x' : ''}`);
     });
   });
 }

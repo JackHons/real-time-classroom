@@ -5,6 +5,7 @@ import argon2 from 'argon2';
 import { TEACHER_PASSWORD_ARGON2_POLICY } from './auth/password.js';
 import type { AuthSessionRepository } from './db/auth-session-repository.js';
 import { readBoundedJsonObject } from './http/bounded-json.js';
+import { closeUnconsumedRequestBody } from './http/rejected-request.js';
 import type { HttpRouteHandler } from './server.js';
 
 const MAX_BODY_BYTES = 2_048;
@@ -35,14 +36,16 @@ export function createFirstRunSetupHandler(options: FirstRunSetupOptions): HttpR
     // value. IPv6 loopback has its own bracketed authority; accepting a
     // different literal here would reintroduce Host/DNS rebinding ambiguity.
     const expectedHost = loopbackHost(request);
-    if (expectedHost === undefined) { sendJson(response, 404, { error: 'NOT_FOUND' }); return true; }
+    if (expectedHost === undefined) { closeUnconsumedRequestBody(request, response); sendJson(response, 404, { error: 'NOT_FOUND' }); return true; }
     const expectedOrigin = `http://${expectedHost}`;
     const pathname = new URL(request.url ?? '/', expectedOrigin).pathname;
     if (pathname !== '/setup' && pathname !== '/api/setup/csrf' && pathname !== '/api/setup/teacher-password') return false;
     if (request.headers.host !== expectedHost || hasProxyHeaders(request)) {
+      closeUnconsumedRequestBody(request, response);
       sendJson(response, 404, { error: 'NOT_FOUND' }); return true;
     }
     if (options.repository.teacherPasswordHash() !== undefined) {
+      closeUnconsumedRequestBody(request, response);
       sendJson(response, 410, { error: 'SETUP_GONE' }); return true;
     }
     if (pathname === '/setup' && request.method === 'GET') { sendSetupPage(response); return true; }
@@ -53,12 +56,12 @@ export function createFirstRunSetupHandler(options: FirstRunSetupOptions): HttpR
       response.setHeader('set-cookie', `${SETUP_COOKIE}=${encodeURIComponent(bootstrapSecret)}; Max-Age=600; Path=/api/setup; HttpOnly; SameSite=Strict`);
       sendJson(response, 200, { csrfToken: csrfToken(bootstrapSecret) }); return true;
     }
-    if (pathname !== '/api/setup/teacher-password' || request.method !== 'POST') { sendJson(response, 404, { error: 'NOT_FOUND' }); return true; }
-    if (request.headers.origin !== expectedOrigin || !validCsrf(request, bootstrapSecret)) { sendJson(response, 403, { error: 'SETUP_CSRF_REQUIRED' }); return true; }
+    if (pathname !== '/api/setup/teacher-password' || request.method !== 'POST') { closeUnconsumedRequestBody(request, response); sendJson(response, 404, { error: 'NOT_FOUND' }); return true; }
+    if (request.headers.origin !== expectedOrigin || !validCsrf(request, bootstrapSecret)) { closeUnconsumedRequestBody(request, response); sendJson(response, 403, { error: 'SETUP_CSRF_REQUIRED' }); return true; }
     const address = request.socket.remoteAddress ?? 'unknown';
     const time = now().getTime();
     const prior = (attempts.get(address) ?? []).filter((item) => time - item < WINDOW_MS);
-    if (prior.length >= MAX_ATTEMPTS) { attempts.set(address, prior); sendJson(response, 429, { error: 'SETUP_RATE_LIMITED' }); return true; }
+    if (prior.length >= MAX_ATTEMPTS) { attempts.set(address, prior); closeUnconsumedRequestBody(request, response); sendJson(response, 429, { error: 'SETUP_RATE_LIMITED' }); return true; }
     // Consume the bounded attempt before parsing: malformed bodies cannot be
     // used to bypass the same local rate budget.
     prior.push(time); attempts.set(address, prior);

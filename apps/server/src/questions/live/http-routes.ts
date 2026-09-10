@@ -23,32 +23,36 @@ export function createLiveQuestionRoutes(dependencies: LiveQuestionRouteDependen
     }
     const open = /^\/api\/questions\/([^/]+)\/open$/.exec(url.pathname);
     if (request.method === 'POST' && open?.[1] !== undefined) {
+      const teacher = dependencies.teacherContext(request);
       requireEmptyObject(await readJson(request));
-      dependencies.service.open(dependencies.teacherContext(request), decodeURIComponent(open[1]) as QuestionId);
+      dependencies.service.open(teacher, decodeURIComponent(open[1]) as QuestionId);
       json(response, 204, undefined);
       return true;
     }
     const close = /^\/api\/questions\/([^/]+)\/close$/.exec(url.pathname);
     if (request.method === 'POST' && close?.[1] !== undefined) {
+      const teacher = dependencies.teacherContext(request);
       requireEmptyObject(await readJson(request));
-      json(response, 200, dependencies.service.close(dependencies.teacherContext(request), decodeURIComponent(close[1]) as QuestionId));
+      json(response, 200, dependencies.service.close(teacher, decodeURIComponent(close[1]) as QuestionId));
       return true;
     }
     const answer = /^\/api\/questions\/([^/]+)\/answers$/.exec(url.pathname);
     if ((request.method === 'POST' || request.method === 'PUT') && answer?.[1] !== undefined) {
+      const student = dependencies.studentContext(request);
       const body = await readJson(request);
       const input = answerInput(body);
       const id = decodeURIComponent(answer[1]) as QuestionId;
       const result = request.method === 'PUT'
-        ? dependencies.service.update(dependencies.studentContext(request), id, input)
-        : dependencies.service.answer(dependencies.studentContext(request), id, input);
+        ? dependencies.service.update(student, id, input)
+        : dependencies.service.answer(student, id, input);
       json(response, 200, result);
       return true;
     }
     const deleteMatch = /^\/api\/questions\/([^/]+)\/answers\/([^/]+)$/.exec(url.pathname);
     if (request.method === 'DELETE' && deleteMatch?.[1] !== undefined && deleteMatch[2] !== undefined) {
+      const teacher = dependencies.teacherContext(request);
       const body = await readJson(request);
-      dependencies.service.deleteAnswer(dependencies.teacherContext(request), decodeURIComponent(deleteMatch[1]) as QuestionId, decodeURIComponent(deleteMatch[2]) as StudentId, deleteConfirmation(body));
+      dependencies.service.deleteAnswer(teacher, decodeURIComponent(deleteMatch[1]) as QuestionId, decodeURIComponent(deleteMatch[2]) as StudentId, deleteConfirmation(body));
       json(response, 204, undefined);
       return true;
     }

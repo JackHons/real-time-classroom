@@ -6,6 +6,7 @@ import type { ClassId, Student } from '../domain/types.js';
 import { verifyTeacherPassword } from './password.js';
 import { AuthSessions, STUDENT_SESSION_COOKIE, TEACHER_SESSION_COOKIE } from './session.js';
 import { readBoundedJsonObject } from '../http/bounded-json.js';
+import { closeUnconsumedRequestBody } from '../http/rejected-request.js';
 
 const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
 const MAX_BODY_BYTES = 8 * 1024;
@@ -245,20 +246,20 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
   const passwordVerificationLimiter = options.passwordVerificationLimiter ?? processPasswordVerificationLimiter;
   return async (request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://auth.local').pathname;
-    if (!pathname.startsWith('/api/auth/')) { json(response, 404, { error: 'NOT_FOUND' }); return; }
+    if (!pathname.startsWith('/api/auth/')) { json(request, response, 404, { error: 'NOT_FOUND' }); return; }
 
     if (request.method === 'POST' && !hasAllowedOrigin(request, options.allowedOrigin)) {
-      json(response, 403, { error: 'ORIGIN_REQUIRED' }); return;
+      json(request, response, 403, { error: 'ORIGIN_REQUIRED' }); return;
     }
 
     try {
       if (request.method === 'POST' && pathname === '/api/auth/teacher/login') {
         const body = await readJson<LoginBody>(request);
-        if (typeof body.password !== 'string') { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
+        if (typeof body.password !== 'string') { json(request, response, 400, { error: 'INVALID_REQUEST' }); return; }
         const now = new Date();
         const rateKey = `teacher:${remoteAddress(request)}`;
         const reservation = rateLimiter.reserve(rateKey, now);
-        if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        if (reservation === undefined) { json(request, response, 429, { error: 'RATE_LIMITED' }); return; }
         const admission = passwordVerificationLimiter.reserve();
         let verified: boolean;
         let verifierReservation: PasswordVerificationReservation | undefined;
@@ -266,32 +267,32 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         request.once('aborted', releaseOnAbort);
         try {
           verifierReservation = await admission.reservation;
-          if (verifierReservation === undefined) { reservation.release(); if (!request.aborted) json(response, 429, { error: 'RATE_LIMITED' }); return; }
+          if (verifierReservation === undefined) { reservation.release(); if (!request.aborted) json(request, response, 429, { error: 'RATE_LIMITED' }); return; }
           verified = await verifyPassword(body.password, options.sessionRepository.teacherPasswordHash());
         } catch (error) { reservation.release(); throw error; }
         finally { verifierReservation?.release(); request.removeListener('aborted', releaseOnAbort); }
         if (request.aborted) return;
         if (!verified) {
           reservation.fail();
-          json(response, 401, { error: 'INVALID_CREDENTIALS' }); return;
+          json(request, response, 401, { error: 'INVALID_CREDENTIALS' }); return;
         }
         reservation.succeed();
         const login = options.sessions.createTeacherSession();
         setSessionCookie(response, TEACHER_SESSION_COOKIE, login.token);
-        json(response, 200, { actor: 'teacher', csrfToken: csrfToken(login.token, options.csrfSecret) }); return;
+        json(request, response, 200, { actor: 'teacher', csrfToken: csrfToken(login.token, options.csrfSecret) }); return;
       }
 
       if (request.method === 'POST' && pathname === '/api/auth/student/join') {
         const body = await readJson<StudentJoinBody>(request);
-        if (!isStudentJoinBody(body)) { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
+        if (!isStudentJoinBody(body)) { json(request, response, 400, { error: 'INVALID_REQUEST' }); return; }
         const now = new Date();
         const address = remoteAddress(request);
         const reservation = studentJoinRateLimiter.reserve(address, body, now);
-        if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return; }
+        if (reservation === undefined) { json(request, response, 429, { error: 'RATE_LIMITED' }); return; }
         const denyStudentJoin = (code: 'STUDENT_JOIN_NOT_APPROVED' | 'STUDENT_SESSION_ALREADY_ACTIVE') => {
           reservation.fail();
           options.auditStudentJoinDenial?.({ code, remoteAddress: address, classId: body.classId as ClassId });
-          json(response, 403, { error: 'STUDENT_ACCESS_DENIED' });
+          json(request, response, 403, { error: 'STUDENT_ACCESS_DENIED' });
         };
         let student: Student | undefined;
         const releaseOnAbort = () => reservation.release();
@@ -309,7 +310,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         }
         reservation.succeed();
         setSessionCookie(response, STUDENT_SESSION_COOKIE, login.token);
-        json(response, 200, { actor: 'student', csrfToken: csrfToken(login.token, options.csrfSecret), sessionId: login.session.id }); return;
+        json(request, response, 200, { actor: 'student', csrfToken: csrfToken(login.token, options.csrfSecret), sessionId: login.session.id }); return;
       }
 
       if (request.method === 'POST' && pathname === '/api/auth/logout') {
@@ -317,7 +318,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         const teacherToken = cookies[TEACHER_SESSION_COOKIE];
         const studentToken = cookies[STUDENT_SESSION_COOKIE];
         const token = teacherToken ?? studentToken;
-        if (token !== undefined && !isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) { json(response, 403, { error: 'CSRF_REQUIRED' }); return; }
+        if (token !== undefined && !isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) { json(request, response, 403, { error: 'CSRF_REQUIRED' }); return; }
         if (teacherToken !== undefined) options.sessions.logoutTeacher(teacherToken);
         if (studentToken !== undefined) options.sessions.logoutStudent(studentToken);
         clearSessionCookie(response, TEACHER_SESSION_COOKIE);
@@ -328,10 +329,10 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
       if (request.method === 'GET' && pathname === '/api/auth/session') {
         const cookies = parseCookies(request.headers.cookie);
         const teacher = options.sessions.authenticateTeacher(cookies[TEACHER_SESSION_COOKIE]);
-        if (teacher !== undefined) { json(response, 200, { actor: 'teacher' }); return; }
+        if (teacher !== undefined) { json(request, response, 200, { actor: 'teacher' }); return; }
         const student = options.sessions.authenticateStudent(cookies[STUDENT_SESSION_COOKIE]);
-        if (student !== undefined) { json(response, 200, { actor: 'student', classId: student.classId, sessionId: student.studentSessionId }); return; }
-        json(response, 401, { error: 'UNAUTHENTICATED' }); return;
+        if (student !== undefined) { json(request, response, 200, { actor: 'student', classId: student.classId, sessionId: student.studentSessionId }); return; }
+        json(request, response, 401, { error: 'UNAUTHENTICATED' }); return;
       }
 
       // A restored student page needs a CSRF token without putting any session
@@ -342,18 +343,18 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         // bootstrap protocol, not a permissive Origin fallback: the client
         // must opt in with a non-simple header and the browser must attest a
         // same-origin fetch. If Origin is present it must still match exactly.
-        if (!hasStudentCsrfBootstrapProof(request, options.allowedOrigin)) { json(response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
+        if (!hasStudentCsrfBootstrapProof(request, options.allowedOrigin)) { json(request, response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
         const token = parseCookies(request.headers.cookie)[STUDENT_SESSION_COOKIE];
         const student = options.sessions.authenticateStudent(token);
-        if (student === undefined) { json(response, 401, { error: 'STUDENT_AUTH_REQUIRED' }); return; }
+        if (student === undefined) { json(request, response, 401, { error: 'STUDENT_AUTH_REQUIRED' }); return; }
         // authenticateStudent succeeds only for a defined, still-active token.
-        json(response, 200, { csrfToken: csrfToken(token!, options.csrfSecret) }); return;
+        json(request, response, 200, { csrfToken: csrfToken(token!, options.csrfSecret) }); return;
       }
 
-      json(response, 404, { error: 'NOT_FOUND' });
+      json(request, response, 404, { error: 'NOT_FOUND' });
     } catch (error) {
-      if (error instanceof SyntaxError || error instanceof RequestBodyError) { json(response, 400, { error: 'INVALID_REQUEST' }); return; }
-      json(response, 500, { error: 'AUTH_INTERNAL_ERROR' });
+      if (error instanceof SyntaxError || error instanceof RequestBodyError) { json(request, response, 400, { error: 'INVALID_REQUEST' }); return; }
+      json(request, response, 500, { error: 'AUTH_INTERNAL_ERROR' });
     }
   };
 }
@@ -413,7 +414,8 @@ function clearSessionCookie(response: ServerResponse, name: string): void {
   response.setHeader('set-cookie', [...(Array.isArray(existing) ? existing : existing === undefined ? [] : [String(existing)]), clear]);
 }
 
-function json(response: ServerResponse, status: number, body: unknown): void {
+function json(request: IncomingMessage, response: ServerResponse, status: number, body: unknown): void {
+  closeUnconsumedRequestBody(request, response);
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
 }

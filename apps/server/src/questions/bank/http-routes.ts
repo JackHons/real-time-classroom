@@ -16,19 +16,19 @@ export function createQuestionBankRoutes(dependencies: QuestionBankRoutesDepende
       const id = templates[1] === undefined ? undefined : decodeURIComponent(templates[1]) as QuestionTemplateId;
       if (request.method === 'GET' && id === undefined) return respond(response, 200, dependencies.service.listTemplates(dependencies.teacherContext(request)));
       if (request.method === 'GET' && id !== undefined) return respond(response, 200, dependencies.service.getTemplate(dependencies.teacherContext(request), id));
-      if (request.method === 'POST' && id === undefined) return respond(response, 201, dependencies.service.createTemplate(dependencies.teacherContext(request), templateBody(await readJson(request))));
-      if (request.method === 'PUT' && id !== undefined) return respond(response, 200, dependencies.service.updateTemplate(dependencies.teacherContext(request), id, templateBody(await readJson(request))));
-      if (request.method === 'DELETE' && id !== undefined) { requireEmptyOrObject(await readJson(request)); dependencies.service.deleteTemplate(dependencies.teacherContext(request), id); return respond(response, 204); }
+      if (request.method === 'POST' && id === undefined) { const teacher = dependencies.teacherContext(request); return respond(response, 201, dependencies.service.createTemplate(teacher, templateBody(await readJson(request)))); }
+      if (request.method === 'PUT' && id !== undefined) { const teacher = dependencies.teacherContext(request); return respond(response, 200, dependencies.service.updateTemplate(teacher, id, templateBody(await readJson(request)))); }
+      if (request.method === 'DELETE' && id !== undefined) { const teacher = dependencies.teacherContext(request); requireEmptyOrObject(await readJson(request)); dependencies.service.deleteTemplate(teacher, id); return respond(response, 204); }
       return false;
     }
     const drafts = /^\/api\/classes\/([^/]+)\/question-drafts(?:\/([^/]+))?$/.exec(url.pathname);
     if (drafts === null) return false;
     const classId = decodeURIComponent(drafts[1]!) as ClassId;
     const id = drafts[2] === undefined ? undefined : decodeURIComponent(drafts[2]) as QuestionId;
-    if (request.method === 'POST' && id === undefined) return respond(response, 201, dependencies.service.createDraft(dependencies.teacherContext(request), classId, draftBody(await readJson(request))));
+    if (request.method === 'POST' && id === undefined) { const teacher = dependencies.teacherContext(request); return respond(response, 201, dependencies.service.createDraft(teacher, classId, draftBody(await readJson(request)))); }
     if (request.method === 'GET' && id !== undefined) return respond(response, 200, dependencies.service.getDraft(dependencies.teacherContext(request), classId, id));
-    if (request.method === 'PUT' && id !== undefined) return respond(response, 200, dependencies.service.updateDraft(dependencies.teacherContext(request), classId, id, templateBody(await readJson(request))));
-    if (request.method === 'DELETE' && id !== undefined) { requireEmptyOrObject(await readJson(request)); dependencies.service.deleteDraft(dependencies.teacherContext(request), classId, id); return respond(response, 204); }
+    if (request.method === 'PUT' && id !== undefined) { const teacher = dependencies.teacherContext(request); return respond(response, 200, dependencies.service.updateDraft(teacher, classId, id, templateBody(await readJson(request)))); }
+    if (request.method === 'DELETE' && id !== undefined) { const teacher = dependencies.teacherContext(request); requireEmptyOrObject(await readJson(request)); dependencies.service.deleteDraft(teacher, classId, id); return respond(response, 204); }
     return false;
   };
 }
