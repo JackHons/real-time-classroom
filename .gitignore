@@ -19,3 +19,4 @@ test-results/
 runtime-data/
 /runtime/
 /uploads/
+tests/.runtime-e2e/

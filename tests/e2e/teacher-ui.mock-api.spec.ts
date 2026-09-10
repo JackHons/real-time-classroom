@@ -1,11 +1,7 @@
 import { expect, test } from '@playwright/test';
 
-/**
- * Mock-API UI contract tests. They exercise the Svelte teacher workflow and
- * keyboard/a11y structure; a browser run against the real authenticated
- * server remains an integration test because it needs a provisioned password.
- */
-test.describe('teacher management UI (mock API)', () => {
+/** Focused client error/transition contracts; real-server coverage is in teacher-ui.spec.ts. */
+test.describe('teacher management UI (mock API contracts)', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/health', (route) => route.fulfill({ json: { status: 'ok' } }));
     await page.route('**/api/auth/teacher/login', (route) => route.fulfill({ json: { actor: 'teacher', csrfToken: 'mock-csrf' } }));
@@ -18,34 +14,7 @@ test.describe('teacher management UI (mock API)', () => {
     await page.route('**/api/classes/class-1/roster/preview', (route) => route.fulfill({ json: { rows: [{ displayName: '王小明', rawStudentNumber: 'S1', normalizedStudentNumber: 'S1' }], issues: [] } }));
   });
 
-  test('teacher logs in, previews a roster, and must confirm a destructive action', async ({ page }) => {
-    await page.goto('/');
-    await page.getByLabel('教師密碼').fill('correct');
-    await page.getByRole('button', { name: '登入' }).click();
-    await expect(page.getByRole('heading', { name: '教師管理' })).toBeVisible();
-    await page.getByLabel('CSV 內容').fill('姓名,學號\n王小明,S1');
-    await page.getByRole('button', { name: '預覽' }).click();
-    await expect(page.getByText('資料格式正確，共 1 筆。')).toBeVisible();
-    await page.getByRole('button', { name: '刪除班級' }).click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).not.toBeVisible();
-    await expect(page.getByRole('button', { name: '刪除班級' })).toBeFocused();
-  });
-
-  test('@a11y login and teacher controls have landmarks, labels, and adequate target sizing', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByRole('main')).toBeVisible();
-    await expect(page.getByLabel('教師密碼')).toBeVisible();
-    await page.getByLabel('教師密碼').fill('correct');
-    await page.getByRole('button', { name: '登入' }).click();
-    await expect(page.getByRole('navigation', { name: '教師功能' })).toBeVisible();
-    for (const label of ['班級名稱', '選擇班級', 'CSV 內容', '選擇題目', '選擇檔案作業']) await expect(page.getByLabel(label, { exact: true })).toBeVisible();
-    const box = await page.getByRole('button', { name: '重新整理班級' }).boundingBox();
-    expect(box?.height).toBeGreaterThanOrEqual(44);
-  });
-
-  test('requires confirmation before closing a question and restores focus on cancellation', async ({ page }) => {
+  test('retains the close-question cancellation contract', async ({ page }) => {
     await page.route('**/api/teacher/classes/class-1/questions', (route) => route.fulfill({ json: { items: [{ id: 'question-1', classId: 'class-1', kind: 'single_choice', prompt: '確認收答', state: 'open' }] } }));
     await page.goto('/');
     await page.getByLabel('教師密碼').fill('correct');
