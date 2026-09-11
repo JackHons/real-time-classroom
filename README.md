@@ -19,7 +19,7 @@ pnpm release:verify
 
 前者會產生 `release\LAN Classroom 0.1.0\`（版本號依 package metadata），包含已建置的 server、web UI、migrations hash manifest、Windows 啟動器、文件、授權資料及所有 production dependencies。它不含本專案的 application source。後者會把包移到原始碼外、名稱含空格及中文的暫存位置，確認不依賴原始碼或根目錄的 `node_modules`，並從該包啟動首次設定 UI（HTTP 200）。
 
-在教師電腦只需安裝 Windows x64 Node.js 22 或 24 LTS；不需 pnpm、原始碼或 Visual Studio。解壓發佈包後，從包根目錄執行 `scripts\windows\Start-LanClassroom.ps1`。包內有 `RELEASE-PREREQUISITES.md`；啟動器會先測試 SQLite/WAL，若原生檔不相容會安全停止。
+在教師電腦只需安裝 Windows x64 Node.js 22 或 24 LTS；不需 pnpm、原始碼或 Visual Studio。解壓發佈包後，可直接雙擊根目錄的 `Start Classroom.cmd`，它會在背景啟動本機 Web GUI 並開啟 `http://127.0.0.1:50165/`（首次使用會開啟 `/setup`）；雙擊 `Stop Classroom.cmd` 可安全停止同一個實例。包內有 `RELEASE-PREREQUISITES.md`；啟動器會先測試 SQLite/WAL，若原生檔不相容會安全停止。
 
 ## 開發環境
 

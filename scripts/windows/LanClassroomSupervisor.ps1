@@ -14,6 +14,22 @@ $lockPath = Join-Path $RuntimeRoot 'launcher.lock'
 $handoffPath = Join-Path $RuntimeRoot 'supervisor-handoff.json'
 Import-Module (Join-Path $PSScriptRoot 'LanClassroomLauncher.psm1') -Force
 $ownsLaunch = $false; $ownerToken = $null
+if ($null -eq ('LanClassroomLogPump' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+public sealed class LanClassroomLogPump {
+  private readonly string path;
+  public LanClassroomLogPump(string path) { this.path = path; }
+  public DataReceivedEventHandler Handler { get { return new DataReceivedEventHandler(Write); } }
+  public void Write(object sender, DataReceivedEventArgs e) {
+    if (e.Data != null) File.AppendAllText(path, e.Data + Environment.NewLine, new UTF8Encoding(false));
+  }
+}
+'@ -ErrorAction Stop
+}
 
 try {
   # Authentication is completed before this process can create a worker,
@@ -35,9 +51,12 @@ try {
   $settings = Read-LanJsonPrivateFile -Path (Join-Path $RuntimeRoot 'launcher-settings.json')
   $csrfSecret = [string]$settings.csrfSecret
   if ([string]::IsNullOrWhiteSpace($csrfSecret)) { throw 'Launcher settings did not contain a CSRF secret.' }
+  $stdoutLog = Initialize-LanLogFile -Path (Join-Path $RuntimeRoot 'server.stdout.log')
+  $stderrLog = Initialize-LanLogFile -Path (Join-Path $RuntimeRoot 'server.stderr.log')
   while ($true) {
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $NodeProgram; $psi.WorkingDirectory = $RepositoryRoot; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
     # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell 5.1.
     $psi.Arguments = 'apps/server/dist/main.js'
     $psi.Environment['LAN_CLASSROOM_HOST'] = $Address
@@ -50,12 +69,17 @@ try {
     $psi.Environment['LAN_CLASSROOM_SHUTDOWN_TOKEN'] = $ownerToken
     $worker = [Diagnostics.Process]::Start($psi)
     if ($null -eq $worker) { throw 'Could not start the classroom server.' }
+    $stdoutPump = [LanClassroomLogPump]::new($stdoutLog); $stderrPump = [LanClassroomLogPump]::new($stderrLog)
+    $stdoutHandler = $stdoutPump.Handler; $stderrHandler = $stderrPump.Handler
+    $worker.add_OutputDataReceived($stdoutHandler); $worker.add_ErrorDataReceived($stderrHandler)
+    $worker.BeginOutputReadLine(); $worker.BeginErrorReadLine()
     try {
       Write-LanLauncherState -StatePath $statePath -State @{ ownerToken = $ownerToken; supervisorPid = $PID; supervisorStartedAtUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); workerPid = $worker.Id; workerStartedAtUtc = $worker.StartTime.ToUniversalTime().ToString('o'); port = $Port; address = $Address; nodeProgram = $NodeProgram; shutdownToken = $ownerToken; firewallRule = $(if ($FirewallRule) { $FirewallRule } else { $null }); firewallOwned = $FirewallOwned }
       $worker.WaitForExit()
       if ($worker.ExitCode -ne 75) { break }
     } finally {
       if ($null -ne $worker -and -not $worker.HasExited) { Stop-Process -Id $worker.Id -Force -ErrorAction SilentlyContinue; $worker.WaitForExit() }
+      if ($null -ne $worker) { try { $worker.CancelOutputRead() } catch { }; try { $worker.CancelErrorRead() } catch { }; $worker.remove_OutputDataReceived($stdoutHandler); $worker.remove_ErrorDataReceived($stderrHandler); $worker.Dispose() }
     }
     Start-Sleep -Milliseconds 100
   }

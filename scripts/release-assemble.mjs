@@ -32,6 +32,8 @@ await cp(join(root, 'scripts', 'windows'), join(output, 'scripts', 'windows'), {
 await cp(join(root, 'docs'), join(output, 'docs'), { recursive: true });
 await cp(join(root, 'LICENSES'), join(output, 'LICENSES'), { recursive: true });
 await cp(join(root, 'README.md'), join(output, 'README.md'));
+await cp(join(root, 'Start Classroom.cmd'), join(output, 'Start Classroom.cmd'));
+await cp(join(root, 'Stop Classroom.cmd'), join(output, 'Stop Classroom.cmd'));
 
 const migrationDirectory = join(output, 'apps', 'server', 'dist', 'db', 'migrations');
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith('.sql')).sort().map(async (name) => ({
@@ -53,7 +55,7 @@ await writeFile(join(output, 'release-manifest.json'), `${JSON.stringify({
   nativeArtifacts: ['apps/server/node_modules/better-sqlite3/prebuilds/win32-x64.node'],
   productionDependencies: { server: ['argon2', 'better-sqlite3', 'socket.io'], web: ['socket.io-client'] }
 }, null, 2)}\n`);
-await writeFile(join(output, 'RELEASE-PREREQUISITES.md'), `# LAN 課堂平台發佈包\n\n此包不需要原始碼、pnpm 或 Visual Studio。請在 Windows 10/11 安裝 Node.js 22 或 24 LTS x64，再從本包根目錄執行 \`scripts\\windows\\Start-LanClassroom.ps1\`。\n\n包內已含 Windows x64 的 better-sqlite3 預建原生檔。啟動器會在啟動前進行 SQLite 開啟／WAL 寫入測試；失敗時會安全停止並顯示錯誤，請改用支援的 Node 22/24 x64 或取得相符發佈包，切勿在教師電腦上安裝編譯工具。\n`);
+await writeFile(join(output, 'RELEASE-PREREQUISITES.md'), `# LAN 課堂平台發佈包\n\n此包不需要原始碼、pnpm 或 Visual Studio。請在 Windows 10/11 安裝 Node.js 22 或 24 LTS x64。\n\n## 最簡單的本機 Web GUI 用法\n\n解壓後，直接雙擊包根目錄的 \`Start Classroom.cmd\`。它會在背景啟動服務，等待就緒後自動開啟 \`http://127.0.0.1:50165/\`；首次使用會自動改開 \`/setup\`。再次雙擊只會開啟已在執行的同一個服務。\n\n要關閉時，雙擊 \`Stop Classroom.cmd\`。它先要求該發佈包記錄的服務正常關閉，只有失敗時才對已驗證身分的該服務採用有限的強制停止；不會停止其他 Node.js 程序，也不會刪除資料庫或上傳檔案。日誌位於 \`%LOCALAPPDATA%\\LanClassroomPlatform\\server.stdout.log\` 和 \`server.stderr.log\`。這個本機 Web GUI 模式不會建立或修改 Windows 防火牆規則。\n\n## 私有 LAN 模式\n\n若需讓學生在受信任的 Private LAN 使用，請改從本包根目錄執行 \`scripts\\windows\\Start-LanClassroom.ps1\` 並明確選擇網卡。包內已含 Windows x64 的 better-sqlite3 預建原生檔。啟動器會在啟動前進行 SQLite 開啟／WAL 寫入測試；失敗時會安全停止並顯示錯誤，請改用支援的 Node 22/24 x64 或取得相符發佈包，切勿在教師電腦上安裝編譯工具。\n`);
 console.log(output);
 await runPnpm(['install', '--frozen-lockfile']);
 

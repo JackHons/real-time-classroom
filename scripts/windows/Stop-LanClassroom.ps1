@@ -35,8 +35,18 @@ if ($workerStatus -ne 'Absent' -or $supervisorStatus -ne 'Absent') {
   if ($supervisorStatus -eq 'Mismatch') { Write-Warning 'Supervisor PID was reused or did not match the recorded command; it was not stopped or cleaned up.' }
   Write-Warning 'Recorded launcher processes are still present; state, lock, and firewall were retained.'; exit 1
 }
-try { $finalState = Read-LanJsonPrivateFile -Path $statePath } catch { Write-Warning 'Launcher state changed during stop; refusing cleanup.'; exit 1 }
-if ([string]$finalState.ownerToken -ne $ownerToken -or -not (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken)) { Write-Warning 'Launcher ownership changed during stop; refusing cleanup.'; exit 1 }
+try { $finalState = Read-LanJsonPrivateFile -Path $statePath }
+catch {
+  # A graceful worker shutdown lets its verified supervisor remove both files.
+  # This is the expected race, not an ownership ambiguity; only accept the
+  # result once both ownership records have disappeared.
+  if (-not (Test-Path -LiteralPath $statePath) -and -not (Test-Path -LiteralPath $lockPath)) { Write-Host 'Server stopped. Runtime database and uploaded files were retained.'; exit 0 }
+  Write-Warning 'Launcher state changed during stop; refusing cleanup.'; exit 1
+}
+if ([string]$finalState.ownerToken -ne $ownerToken -or -not (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken)) {
+  if (-not (Test-Path -LiteralPath $statePath) -and -not (Test-Path -LiteralPath $lockPath)) { Write-Host 'Server stopped. Runtime database and uploaded files were retained.'; exit 0 }
+  Write-Warning 'Launcher ownership changed during stop; refusing cleanup.'; exit 1
+}
 Remove-LanOwnedFirewallRule -Name ([string]$finalState.firewallRule) -Owned ($finalState.firewallOwned -eq $true) -NodeProgram ([string]$finalState.nodeProgram) -Port ([int]$finalState.port)
 try { $lastState = Read-LanJsonPrivateFile -Path $statePath; if ([string]$lastState.ownerToken -ne $ownerToken) { throw 'state owner changed' }; Remove-Item -LiteralPath $statePath -Force -ErrorAction Stop } catch { Write-Warning 'Launcher state changed during cleanup; lock was retained.'; exit 1 }
 Remove-LanLockIfOwned -LockPath $lockPath -OwnerToken $ownerToken | Out-Null

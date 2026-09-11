@@ -159,10 +159,17 @@ function Test-LanSqlite {
   try {
     [Environment]::SetEnvironmentVariable('LAN_CLASSROOM_SQLITE_PREFLIGHT', $probe, 'Process')
     # Release packages intentionally have production dependencies beside the
-    # server package, not at their root.  Resolve better-sqlite3 from there.
-    Push-Location -LiteralPath (Join-Path $RepositoryRoot 'apps\server')
-    try { & $node '--input-type=module' '--eval' 'import Database from "better-sqlite3"; const db = new Database(process.env.LAN_CLASSROOM_SQLITE_PREFLIGHT); db.pragma("journal_mode = WAL"); db.close();'; if ($LASTEXITCODE -ne 0) { throw 'SQLite preflight failed.' } }
-    finally { Pop-Location }
+    # server package, not at their root.  Use ProcessStartInfo with our Windows
+    # argument encoder: Windows PowerShell otherwise strips the quoted module
+    # specifier from an inline ESM program before Node receives it.
+    $preflightSource = 'import Database from "better-sqlite3"; const db = new Database(process.env.LAN_CLASSROOM_SQLITE_PREFLIGHT); db.pragma("journal_mode = WAL"); db.close();'
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $node; $psi.WorkingDirectory = Join-Path $RepositoryRoot 'apps\server'; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi.Arguments = ((@('--input-type=module', '--eval', $preflightSource) | ForEach-Object { ConvertTo-LanWindowsArgument ([string]$_) }) -join ' ')
+    $process = [Diagnostics.Process]::Start($psi)
+    try { $process.WaitForExit(); if ($process.ExitCode -ne 0) { throw 'SQLite preflight failed.' } }
+    finally { $process.Dispose() }
   } finally {
     [Environment]::SetEnvironmentVariable('LAN_CLASSROOM_SQLITE_PREFLIGHT', $prior, 'Process')
     Remove-Item -LiteralPath $probe, "$probe-wal", "$probe-shm" -Force -ErrorAction SilentlyContinue
@@ -294,6 +301,16 @@ function Remove-LanOwnedFirewallRule {
   return $true
 }
 
+function Initialize-LanLogFile {
+  param([Parameter(Mandatory)][string] $Path)
+  # The runtime tree was secured before the launcher lock was acquired.  Make
+  # a durable, owner-only log file before the hidden worker starts so users
+  # have a safe place to inspect a startup failure.
+  [IO.File]::Open($Path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read).Dispose()
+  Set-PrivateRuntimeAcl -Path $Path
+  return $Path
+}
+
 function New-LanOwnerToken {
   $bytes = [byte[]]::new(32); $random = [Security.Cryptography.RandomNumberGenerator]::Create()
   try { $random.GetBytes($bytes); return [Convert]::ToBase64String($bytes) } finally { $random.Dispose() }
@@ -409,4 +426,4 @@ function Write-LanSupervisorHandoff {
   [IO.File]::WriteAllText($Path, (@{ ownerToken = $OwnerToken } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); Set-PrivateRuntimeAcl -Path $Path
 }
 
-Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Get-LanProcessIdentityStatus, New-LanOwnerToken, Read-LanJsonPrivateFile, Test-LanLockOwned, Remove-LanLockIfOwned, Acquire-LanLaunchLock, Update-LanLaunchLockOwner, Write-LanSupervisorHandoff, Remove-LanOwnedFirewallRule
+Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Initialize-LanLogFile, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Get-LanProcessIdentityStatus, New-LanOwnerToken, Read-LanJsonPrivateFile, Test-LanLockOwned, Remove-LanLockIfOwned, Acquire-LanLaunchLock, Update-LanLaunchLockOwner, Write-LanSupervisorHandoff, Remove-LanOwnedFirewallRule
