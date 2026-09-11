@@ -79,4 +79,7 @@ $rule = [pscustomobject]@{ Enabled = 'True'; Direction = 'Inbound'; Action = 'Al
 Assert-True (Test-LanFirewallRuleExact -Rule $rule -NodeProgram 'C:\Program Files\nodejs\node.exe' -Port 4173) 'exact Private firewall rule should be accepted'
 $rule.Enabled = 'False'; Assert-True (-not (Test-LanFirewallRuleExact -Rule $rule -NodeProgram 'C:\Program Files\nodejs\node.exe' -Port 4173)) 'disabled firewall rule must be rejected'
 Assert-True (-not (Test-LanProcessIdentity -Id $PID -StartedAtUtc ([DateTime]::UtcNow.AddDays(-1).ToString('o')) -CommandToken 'launcher.tests.ps1')) 'PID reuse/start-time mismatch must not be stopped'
+$stopCalled = $false
+$reuseResult = Invoke-LanIdentityCheckedStop -Id $PID -StartedAtUtc ([DateTime]::UtcNow.AddDays(-1).ToString('o')) -CommandToken 'launcher.tests.ps1' -StopAction { param($process) $script:stopCalled = $true }
+Assert-True ($reuseResult -eq 'Mismatch' -and -not $stopCalled) 'a stale pre-force PID snapshot must be revalidated and must not invoke the stop action'
 Write-Host 'Windows launcher tests passed.'

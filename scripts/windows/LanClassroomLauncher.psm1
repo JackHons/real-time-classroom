@@ -332,6 +332,25 @@ function Get-LanProcessIdentityStatus {
   return 'Running'
 }
 
+function Invoke-LanIdentityCheckedStop {
+  param(
+    [Parameter(Mandatory)][int] $Id,
+    [Parameter(Mandatory)][string] $StartedAtUtc,
+    [Parameter(Mandatory)][string] $CommandToken,
+    [scriptblock] $StopAction = { param($Process) Stop-Process -InputObject $Process -Force -ErrorAction SilentlyContinue }
+  )
+  # Keep the Process handle obtained during the final identity check.  Passing
+  # that handle to Stop-Process avoids a second PID lookup that could target a
+  # later process after PID reuse.
+  $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
+  if ($null -eq $process) { return 'Absent' }
+  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::Parse($StartedAtUtc).ToUniversalTime()).TotalSeconds) -gt 2) { $process.Dispose(); return 'Mismatch' }
+  $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
+  if ($null -eq $cim -or $null -eq $cim.CommandLine -or $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $process.Dispose(); return 'Mismatch' }
+  try { & $StopAction $process; return 'Stopped' }
+  finally { $process.Dispose() }
+}
+
 function Test-LanLockRecord {
   param([Parameter(Mandatory)][object] $Lock)
   return -not [string]::IsNullOrEmpty([string]$Lock.ownerToken) -and $null -ne $Lock.pid -and -not [string]::IsNullOrEmpty([string]$Lock.startedAtUtc) -and -not [string]::IsNullOrEmpty([string]$Lock.commandToken)
@@ -426,4 +445,4 @@ function Write-LanSupervisorHandoff {
   [IO.File]::WriteAllText($Path, (@{ ownerToken = $OwnerToken } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); Set-PrivateRuntimeAcl -Path $Path
 }
 
-Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Initialize-LanLogFile, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Get-LanProcessIdentityStatus, New-LanOwnerToken, Read-LanJsonPrivateFile, Test-LanLockOwned, Remove-LanLockIfOwned, Acquire-LanLaunchLock, Update-LanLaunchLockOwner, Write-LanSupervisorHandoff, Remove-LanOwnedFirewallRule
+Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Initialize-LanLogFile, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Get-LanProcessIdentityStatus, Invoke-LanIdentityCheckedStop, New-LanOwnerToken, Read-LanJsonPrivateFile, Test-LanLockOwned, Remove-LanLockIfOwned, Acquire-LanLaunchLock, Update-LanLaunchLockOwner, Write-LanSupervisorHandoff, Remove-LanOwnedFirewallRule
