@@ -1,12 +1,25 @@
 # LAN 課堂互動平台
 
-Windows 10/11 私有區域網路課堂互動平台的獨立 MVP。此 repository 目前只包含可驗證的 bootstrap；學生、教師、題目、名單、檔案收件與即時功能尚未實作。
+Windows 10/11 私有區域網路課堂互動平台。它包含教師／學生操作、題目、名單、檔案收件及 Socket.IO 即時通知。
 
 ## 安全與部署範圍
 
 本產品僅可在教師確認的受信任 Windows **Private** LAN 使用。它使用 HTTP，不提供傳輸機密性、抵抗同網段竊聽／竄改，亦不保證 session token 不被竊取。請勿暴露至 Internet、公網、反向代理或 Public firewall profile。
 
 預設 runtime data 位於 `%LOCALAPPDATA%\LanClassroomPlatform`，不會置於 web root 或此 repository。CSV／ZIP 僅是匯出，不是備份或還原方案。詳見 [runtime-data.md](docs/operations/runtime-data.md)。
+
+## 發佈與部署
+
+維護者在已安裝 pnpm 的建置機器執行：
+
+```powershell
+pnpm release:assemble
+pnpm release:verify
+```
+
+前者會產生 `release\LAN Classroom 0.1.0\`（版本號依 package metadata），包含已建置的 server、web UI、migrations hash manifest、Windows 啟動器、文件、授權資料及所有 production dependencies。它不含本專案的 application source。後者會把包移到原始碼外、名稱含空格及中文的暫存位置，確認不依賴原始碼或根目錄的 `node_modules`，並從該包啟動首次設定 UI（HTTP 200）。
+
+在教師電腦只需安裝 Windows x64 Node.js 22 或 24 LTS；不需 pnpm、原始碼或 Visual Studio。解壓發佈包後，從包根目錄執行 `scripts\windows\Start-LanClassroom.ps1`。包內有 `RELEASE-PREREQUISITES.md`；啟動器會先測試 SQLite/WAL，若原生檔不相容會安全停止。
 
 ## 開發環境
 
@@ -35,7 +48,7 @@ pnpm test:unit
 
 ## Windows 私有 LAN 啟動
 
-先在部署目錄完成 `pnpm install --frozen-lockfile` 和 `pnpm build`。教師在 **Private** 網路上從 repository 根目錄執行：
+教師在 **Private** 網路上從發佈包根目錄執行：
 
 ```powershell
 .\scripts\windows\Start-LanClassroom.ps1
@@ -72,7 +85,3 @@ pnpm test:unit
 - `tests/unit/`：bootstrap unit smoke test。
 - `docs/adr/`：實作前已定案的資料與安全語意。
 - `docs/operations/`：runtime data 與 LAN 操作邊界。
-
-## 目前不包含
-
-沒有教師設定、帳號／session、班級、CSV 名單、題目、上傳、SQLite schema、Socket.IO gateway、Windows launcher 或部署包。這些功能必須先依 [ADR 0001](docs/adr/0001-bootstrap-and-domain-baseline.md) 建立可測試的 domain/persistence 層。

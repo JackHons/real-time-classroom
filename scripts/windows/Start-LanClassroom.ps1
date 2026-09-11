@@ -21,12 +21,15 @@ try {
   $settingsPath = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
   Acquire-LanLaunchLock -LockPath $lockPath -OwnerToken $ownerToken -OwnerPid $PID -CommandToken 'Start-LanClassroom.ps1'
   $ownsLock = $true
-  $selected = Get-LanCandidateSelection -Candidates (Get-LanCandidates) -InterfaceIndex $InterfaceIndex
+  # Keep an empty discovery result as an empty collection.  Passing command
+  # output directly makes PowerShell treat no candidates as a missing mandatory
+  # argument, which skips our deliberate Chinese fail-closed message.
+  $candidates = @(Get-LanCandidates)
+  $selected = Get-LanCandidateSelection -Candidates $candidates -InterfaceIndex $InterfaceIndex
   $addresses = @('127.0.0.1', $selected.Address)
   Test-LanPortAvailable -Addresses $addresses -Port $Port
   Test-LanDeployment -RepositoryRoot $repo
   Test-LanSqlite -RepositoryRoot $repo -RuntimeRoot $runtime
-  $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
   $node = (Get-Command node -ErrorAction Stop).Source
   $priorOwned = $false; $priorStatePath = Join-Path $runtime 'launcher-state.json'
   if (Test-Path -LiteralPath $priorStatePath) {
@@ -37,7 +40,10 @@ try {
   # Never put this secret on a PowerShell command line.  The supervisor reads
   # and consumes this owner-only file before touching a worker or firewall.
   Write-LanSupervisorHandoff -Path $handoffPath -OwnerToken $ownerToken; $handoffWritten = $true
-  $supervisorArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'LanClassroomSupervisor.ps1'), '-RepositoryRoot', $repo, '-RuntimeRoot', $runtime, '-NodeProgram', $node, '-Address', $selected.Address, '-Port', "$Port", '-CsrfSecret', ([string]$settings.csrfSecret), '-FirewallRule', ($(if ($null -eq $firewall) { '' } else { [string]$firewall.Name })), '-FirewallOwned', ($(if ($null -ne $firewall -and $firewall.Owned) { 'true' } else { 'false' })))
+  # The CSRF secret stays in launcher-settings.json, which is owner-only.  It
+  # must never be included in a supervisor command line, process list, or log.
+  $supervisorArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'LanClassroomSupervisor.ps1'), '-RepositoryRoot', $repo, '-RuntimeRoot', $runtime, '-NodeProgram', $node, '-Address', $selected.Address, '-Port', "$Port")
+  if ($null -ne $firewall) { $supervisorArguments += @('-FirewallRule', [string]$firewall.Name, '-FirewallOwned', $(if ($firewall.Owned) { 'true' } else { 'false' })) }
   $supervisorCommand = (($supervisorArguments | ForEach-Object { ConvertTo-LanWindowsArgument ([string]$_) }) -join ' ')
   $powerShell = (Get-Command powershell -ErrorAction Stop).Source
   $process = Start-Process -FilePath $powerShell -ArgumentList $supervisorCommand -WorkingDirectory $repo -WindowStyle Hidden -PassThru

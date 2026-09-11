@@ -88,6 +88,17 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
       callback(null, true);
     }
   });
+  // Engine.IO owns /socket.io responses and therefore bypasses the normal
+  // HTTP request listener. Apply the same browser boundary to polling
+  // handshakes and upgrade responses rather than leaving a weaker side path.
+  io.engine.on('initial_headers', (headers) => {
+    headers['cache-control'] = 'no-store';
+    headers['x-content-type-options'] = 'nosniff';
+    headers['x-frame-options'] = 'DENY';
+    headers['referrer-policy'] = 'no-referrer';
+    headers['permissions-policy'] = 'accelerometer=(), camera=(), geolocation=(), microphone=(), payment=(), usb=()';
+    headers['content-security-policy'] = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:";
+  });
 
   io.engine.on('connection', (transport) => {
     // An Engine.IO close includes unauthenticated handshakes and failed Socket.IO

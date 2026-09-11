@@ -44,6 +44,17 @@ describe('realtime gateway', () => {
     expect(response).not.toMatch(/referenceAnswer|selectedOptions|studentId|displayName|filename/i);
   });
 
+  it('applies browser isolation headers to the Engine.IO handshake path', async () => {
+    running = await gatewayServer();
+    const base = `http://127.0.0.1:${running.port}`;
+    const response = await fetch(`${base}/socket.io/?EIO=4&transport=polling`, { headers: { origin, cookie: teacherCookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(response.headers.get('x-frame-options')).toBe('DENY');
+    expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  });
+
   it('rejects a teacher subscription outside the authorization port', async () => {
     running = await gatewayServer();
     const base = `http://127.0.0.1:${running.port}`;

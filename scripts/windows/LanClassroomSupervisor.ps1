@@ -5,7 +5,6 @@ param(
   [Parameter(Mandatory)][string] $NodeProgram,
   [Parameter(Mandatory)][string] $Address,
   [Parameter(Mandatory)][ValidateRange(1,65535)][int] $Port,
-  [Parameter(Mandatory)][string] $CsrfSecret,
   [string] $FirewallRule,
   [bool] $FirewallOwned
 )
@@ -30,6 +29,12 @@ try {
   if ([string]$currentHandoff.ownerToken -ne $ownerToken) { throw 'Supervisor handoff changed during adoption.' }
   Remove-Item -LiteralPath $handoffPath -Force -ErrorAction Stop
   $ownsLaunch = $true
+  # Read the application secret only after the owner-token handoff has been
+  # authenticated and adopted.  The settings file has the same owner-only ACL
+  # as the lock and is deliberately absent from process arguments.
+  $settings = Read-LanJsonPrivateFile -Path (Join-Path $RuntimeRoot 'launcher-settings.json')
+  $csrfSecret = [string]$settings.csrfSecret
+  if ([string]::IsNullOrWhiteSpace($csrfSecret)) { throw 'Launcher settings did not contain a CSRF secret.' }
   while ($true) {
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $NodeProgram; $psi.WorkingDirectory = $RepositoryRoot; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
@@ -39,7 +44,7 @@ try {
     $psi.Environment['LAN_CLASSROOM_HOSTS'] = "127.0.0.1,$Address"
     $psi.Environment['LAN_CLASSROOM_PORT'] = "$Port"
     $psi.Environment['LAN_CLASSROOM_ALLOWED_ORIGIN'] = "http://$Address`:$Port"
-    $psi.Environment['LAN_CLASSROOM_CSRF_SECRET'] = $CsrfSecret
+    $psi.Environment['LAN_CLASSROOM_CSRF_SECRET'] = $csrfSecret
     $psi.Environment['LAN_CLASSROOM_DATABASE_PATH'] = Join-Path $RuntimeRoot 'database\classroom.sqlite'
     $psi.Environment['LAN_CLASSROOM_UPLOAD_STORAGE_PATH'] = Join-Path $RuntimeRoot 'uploads'
     $psi.Environment['LAN_CLASSROOM_SHUTDOWN_TOKEN'] = $ownerToken

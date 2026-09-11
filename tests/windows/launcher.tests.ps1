@@ -17,6 +17,12 @@ $quoted = ConvertTo-LanWindowsArgument 'C:\Teacher Files\runtime\\'
 Assert-True ($quoted.StartsWith([string][char]34) -and $quoted.EndsWith([string][char]34) -and $quoted.Substring($quoted.Length - 5, 4) -eq (([string][char]92) * 4)) 'trailing slash path must remain one Windows argument'
 $injection = ConvertTo-LanWindowsArgument 'x" -NoProfile x'
 Assert-True ($injection.Contains(([string][char]92 + [char]34))) 'embedded quote must not escape its argument'
+$empty = ConvertTo-LanWindowsArgument ''
+Assert-True ($empty -eq '""') 'an optional empty argument must remain one empty Windows argument'
+$noCandidateMessage = $null
+try { Get-LanCandidateSelection -Candidates @() | Out-Null } catch { $noCandidateMessage = $_.Exception.Message }
+$expectedNoCandidate = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('5om+5LiN5Yiw5ZWf55So5Lit55qE56eB5Lq657ay6LevIElQdjQg5LuL6Z2i44CC54K65a6J5YWo6LW36KaL77yM6KuL5Yu/5L2/55So5YWs55So5oiW57ay5Z+f57ay6Lev44CC'))
+Assert-True ($noCandidateMessage -eq $expectedNoCandidate) 'empty candidate discovery must fail closed with the expected message'
 $scratch = Join-Path $env:TEMP ('lan-launcher-test-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($scratch) | Out-Null
 try {

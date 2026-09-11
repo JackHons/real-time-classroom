@@ -35,8 +35,8 @@ function Get-LanCandidates {
 
 function Get-LanCandidateSelection {
   [CmdletBinding()]
-  param([Parameter(Mandatory)][object[]] $Candidates, [Nullable[int]] $InterfaceIndex)
-  if ($Candidates.Count -eq 0) { throw 'No active Private-profile private IPv4 adapter was found. Do not use a Public or Domain network.' }
+  param([Parameter(Mandatory)][AllowEmptyCollection()][object[]] $Candidates, [Nullable[int]] $InterfaceIndex)
+  if ($Candidates.Count -eq 0) { throw ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('5om+5LiN5Yiw5ZWf55So5Lit55qE56eB5Lq657ay6LevIElQdjQg5LuL6Z2i44CC54K65a6J5YWo6LW36KaL77yM6KuL5Yu/5L2/55So5YWs55So5oiW57ay5Z+f57ay6Lev44CC'))) }
   if ($null -ne $InterfaceIndex) {
     $selected = @($Candidates | Where-Object { $_.InterfaceIndex -eq $InterfaceIndex })
     if ($selected.Count -ne 1) { throw "Interface index $InterfaceIndex is not an eligible Private LAN adapter." }
@@ -138,9 +138,17 @@ function Test-LanDeployment {
   if ($null -eq $node) { throw 'Node.js 22 or 24 LTS is required.' }
   $version = [version]((& $node.Source --version).Trim().TrimStart('v'))
   if ($version.Major -notin @(22, 24)) { throw "Node.js 22 or 24 LTS is required; found $version." }
-  $sourceMigrations = @(Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'apps\server\src\db\migrations') -Filter '*.sql')
+  $manifestPath = Join-Path $RepositoryRoot 'release-manifest.json'
+  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Deployment is incomplete: missing release-manifest.json. Run pnpm release:assemble.' }
+  try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json } catch { throw 'Deployment manifest is invalid.' }
   $builtMigrations = @(Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'apps\server\dist\db\migrations') -Filter '*.sql')
-  if ($sourceMigrations.Count -eq 0 -or $sourceMigrations.Count -ne $builtMigrations.Count) { throw 'Built SQLite migrations do not match the source migration set. Run pnpm build.' }
+  if ($builtMigrations.Count -eq 0 -or $null -eq $manifest.migrations -or @($manifest.migrations).Count -ne $builtMigrations.Count) { throw 'Deployment manifest does not match built SQLite migrations. Reassemble the release package.' }
+  foreach ($entry in @($manifest.migrations)) {
+    $name = [string]$entry.name; $expected = [string]$entry.sha256
+    if ([string]::IsNullOrEmpty($name) -or [string]::IsNullOrEmpty($expected) -or $name -match '[\\/]' -or -not (Test-Path -LiteralPath (Join-Path $RepositoryRoot "apps\server\dist\db\migrations\$name") -PathType Leaf)) { throw 'Deployment manifest contains an invalid migration entry.' }
+    $actual = (Get-FileHash -LiteralPath (Join-Path $RepositoryRoot "apps\server\dist\db\migrations\$name") -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected.ToLowerInvariant()) { throw "Deployment migration hash mismatch: $name" }
+  }
 }
 
 function Test-LanSqlite {
@@ -150,7 +158,9 @@ function Test-LanSqlite {
   $prior = [Environment]::GetEnvironmentVariable('LAN_CLASSROOM_SQLITE_PREFLIGHT', 'Process')
   try {
     [Environment]::SetEnvironmentVariable('LAN_CLASSROOM_SQLITE_PREFLIGHT', $probe, 'Process')
-    Push-Location -LiteralPath $RepositoryRoot
+    # Release packages intentionally have production dependencies beside the
+    # server package, not at their root.  Resolve better-sqlite3 from there.
+    Push-Location -LiteralPath (Join-Path $RepositoryRoot 'apps\server')
     try { & $node '--input-type=module' '--eval' 'import Database from "better-sqlite3"; const db = new Database(process.env.LAN_CLASSROOM_SQLITE_PREFLIGHT); db.pragma("journal_mode = WAL"); db.close();'; if ($LASTEXITCODE -ne 0) { throw 'SQLite preflight failed.' } }
     finally { Pop-Location }
   } finally {
@@ -242,7 +252,7 @@ public static class LanClassroomNativePath {
 }
 
 function ConvertTo-LanWindowsArgument {
-  param([Parameter(Mandatory)][string] $Value)
+  param([Parameter(Mandatory)][AllowEmptyString()][string] $Value)
   $builder = [Text.StringBuilder]::new(); [void]$builder.Append('"'); $slashes = 0
   foreach ($character in $Value.ToCharArray()) {
     if ($character -eq [char]92) { $slashes += 1; continue }
