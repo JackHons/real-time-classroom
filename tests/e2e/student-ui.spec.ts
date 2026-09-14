@@ -8,9 +8,9 @@ test.describe('student interface (real server)', () => {
   test('student joins a real seeded class and can navigate its live activities @a11y', async ({ page }, testInfo) => {
     await page.goto('/student');
     await expect(page.getByRole('main')).toBeVisible();
-    await expect(page.getByLabel('課堂', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('班級代碼', { exact: true })).toBeVisible();
     await expectAxeClean(page);
-    await page.getByLabel('課堂', { exact: true }).selectOption('e2e-class');
+    await page.getByLabel('班級代碼', { exact: true }).fill('可及性測試課堂');
     const number = studentNumber(testInfo.project.name);
     await page.getByLabel('學號').fill(number);
     await expectMinimumTarget(page, '加入課堂');
@@ -28,7 +28,7 @@ test.describe('student interface (real server)', () => {
     await page.goto('/student');
     await page.keyboard.press('Tab');
     await expect(page.locator(':focus')).toBeVisible();
-    await page.getByLabel('課堂', { exact: true }).selectOption('e2e-class');
+    await page.getByLabel('班級代碼', { exact: true }).fill('可及性測試課堂');
     const number = studentNumber(testInfo.project.name, '-ZOOM');
     await page.getByLabel('學號').fill(number);
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
@@ -40,5 +40,15 @@ test.describe('student interface (real server)', () => {
     await page.getByRole('link', { name: /今天的課堂重點/ }).click();
     await expect(page.getByRole('main')).toBeVisible();
     await expectAxeClean(page);
+  });
+
+  test('keeps the join form available and explains when a class code is unknown', async ({ page }) => {
+    await page.goto('/student');
+    await page.getByLabel('班級代碼', { exact: true }).fill('  \uff26\uff17\uff3a-UNKNOWN  ');
+    await page.getByLabel('學號').fill('S-UNKNOWN-CODE');
+    await page.getByRole('button', { name: '加入課堂', exact: true }).click();
+    await expect(page.getByRole('alert')).toHaveText(/找不到這個課堂/);
+    await expect(page.getByLabel('班級代碼', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '加入課堂', exact: true })).toBeEnabled();
   });
 });
