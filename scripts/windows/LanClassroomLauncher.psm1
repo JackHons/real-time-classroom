@@ -327,8 +327,14 @@ function Test-LanFirewallRuleExact {
   return $Rule.Enabled -eq 'True' -and $Rule.Direction -eq 'Inbound' -and $Rule.Action -eq 'Allow' -and $Rule.Profile -eq 'Private' -and $portFilter.Count -eq 1 -and $portFilter[0].Protocol -eq 'TCP' -and $portFilter[0].LocalPort -eq "$Port" -and $appFilter.Count -eq 1 -and [string]::Equals($appFilter[0].Program, $NodeProgram, [StringComparison]::OrdinalIgnoreCase) -and $addressFilter.Count -eq 1 -and $addressFilter[0].RemoteAddress -eq 'LocalSubnet'
 }
 
+function ConvertTo-LanUtc {
+  param([Parameter(Mandatory)][object] $Value)
+  if ($Value -is [DateTime]) { return $Value.ToUniversalTime() }
+  return [DateTime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+}
+
 function Test-LanProcessIdentity {
-  param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][string] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
+  param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][object] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
   return (Get-LanProcessIdentityStatus -Id $Id -StartedAtUtc $StartedAtUtc -CommandToken $CommandToken) -eq 'Running'
 }
 
@@ -363,10 +369,10 @@ function Read-LanJsonPrivateFile {
 }
 
 function Get-LanProcessIdentityStatus {
-  param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][string] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
+  param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][object] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
   $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
   if ($null -eq $process) { return 'Absent' }
-  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::Parse($StartedAtUtc).ToUniversalTime()).TotalSeconds) -gt 2) { return 'Mismatch' }
+  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - (ConvertTo-LanUtc $StartedAtUtc)).TotalSeconds) -gt 2) { return 'Mismatch' }
   $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
   if ($null -eq $cim -or $null -eq $cim.CommandLine -or $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return 'Mismatch' }
   return 'Running'
@@ -375,7 +381,7 @@ function Get-LanProcessIdentityStatus {
 function Invoke-LanIdentityCheckedStop {
   param(
     [Parameter(Mandatory)][int] $Id,
-    [Parameter(Mandatory)][string] $StartedAtUtc,
+    [Parameter(Mandatory)][object] $StartedAtUtc,
     [Parameter(Mandatory)][string] $CommandToken,
     [scriptblock] $StopAction = { param($Process) Stop-Process -InputObject $Process -Force -ErrorAction SilentlyContinue }
   )
@@ -384,7 +390,7 @@ function Invoke-LanIdentityCheckedStop {
   # later process after PID reuse.
   $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
   if ($null -eq $process) { return 'Absent' }
-  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - [DateTime]::Parse($StartedAtUtc).ToUniversalTime()).TotalSeconds) -gt 2) { $process.Dispose(); return 'Mismatch' }
+  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - (ConvertTo-LanUtc $StartedAtUtc)).TotalSeconds) -gt 2) { $process.Dispose(); return 'Mismatch' }
   $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
   if ($null -eq $cim -or $null -eq $cim.CommandLine -or $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $process.Dispose(); return 'Mismatch' }
   try { & $StopAction $process; return 'Stopped' }
@@ -456,7 +462,7 @@ function Acquire-LanLaunchLock {
       # but never when its owner is alive or its identity is ambiguous.
       try { $existing = Read-LanJsonPrivateFile -Path $LockPath } catch { throw 'Existing launcher lock could not be validated; refusing to replace it.' }
       if (-not (Test-LanLockRecord -Lock $existing)) { throw 'Existing launcher lock is invalid; refusing to replace it.' }
-      $status = Get-LanProcessIdentityStatus -Id ([int]$existing.pid) -StartedAtUtc ([string]$existing.startedAtUtc) -CommandToken ([string]$existing.commandToken)
+      $status = Get-LanProcessIdentityStatus -Id ([int]$existing.pid) -StartedAtUtc $existing.startedAtUtc -CommandToken ([string]$existing.commandToken)
       if ($status -eq 'Running') { throw 'Another LAN Classroom launcher is already starting or running.' }
       if ($status -ne 'Absent') { throw 'Existing launcher lock PID was reused or did not match its command; refusing to replace it.' }
       # Check the token again before removal, so a different owner's replacement

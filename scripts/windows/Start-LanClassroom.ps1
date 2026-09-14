@@ -68,7 +68,7 @@ try {
     if (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken) {
       $lock = Read-LanJsonPrivateFile -Path $lockPath
       if ([int]$lock.pid -ne $PID) { $ownsLock = $false }
-      if ([int]$lock.pid -eq $process.Id -and (Test-LanProcessIdentity -Id $process.Id -StartedAtUtc ([string]$lock.startedAtUtc) -CommandToken 'LanClassroomSupervisor.ps1')) { $adopted = $true; break }
+      if ([int]$lock.pid -eq $process.Id -and (Test-LanProcessIdentity -Id $process.Id -StartedAtUtc $lock.startedAtUtc -CommandToken 'LanClassroomSupervisor.ps1')) { $adopted = $true; break }
     }
     if ($process.HasExited) { break }; Start-Sleep -Milliseconds 100
   }

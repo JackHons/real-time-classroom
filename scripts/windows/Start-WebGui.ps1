@@ -30,7 +30,7 @@ function Get-RecordedRunningInstance {
   try {
     $state = Read-LanJsonPrivateFile -Path $statePath
     if ($null -eq $state.workerPid -or $null -eq $state.workerStartedAtUtc) { return $null }
-    if ((Get-LanProcessIdentityStatus -Id ([int]$state.workerPid) -StartedAtUtc ([string]$state.workerStartedAtUtc) -CommandToken 'apps/server/dist/main.js') -ne 'Running') { return $null }
+    if ((Get-LanProcessIdentityStatus -Id ([int]$state.workerPid) -StartedAtUtc $state.workerStartedAtUtc -CommandToken 'apps/server/dist/main.js') -ne 'Running') { return $null }
     return $state
   } catch { return $null }
 }

@@ -10,8 +10,8 @@ $ownerToken = [string]$state.ownerToken
 $tokenValid = -not [string]::IsNullOrEmpty($ownerToken) -and (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken)
 if (-not $tokenValid) { Write-Warning 'Launcher state and lock did not have the same owner token; refusing process control and cleanup.'; exit 1 }
 if ($null -eq $state.workerPid -or $null -eq $state.workerStartedAtUtc -or $null -eq $state.supervisorPid -or $null -eq $state.supervisorStartedAtUtc) { Write-Warning 'Launcher state has no complete process identities; refusing cleanup.'; exit 1 }
-function Get-WorkerStatus { Get-LanProcessIdentityStatus -Id ([int]$state.workerPid) -StartedAtUtc ([string]$state.workerStartedAtUtc) -CommandToken 'apps/server/dist/main.js' }
-function Get-SupervisorStatus { Get-LanProcessIdentityStatus -Id ([int]$state.supervisorPid) -StartedAtUtc ([string]$state.supervisorStartedAtUtc) -CommandToken 'LanClassroomSupervisor.ps1' }
+function Get-WorkerStatus { Get-LanProcessIdentityStatus -Id ([int]$state.workerPid) -StartedAtUtc $state.workerStartedAtUtc -CommandToken 'apps/server/dist/main.js' }
+function Get-SupervisorStatus { Get-LanProcessIdentityStatus -Id ([int]$state.supervisorPid) -StartedAtUtc $state.supervisorStartedAtUtc -CommandToken 'LanClassroomSupervisor.ps1' }
 function Test-RecordedOwnership {
   try { $current = Read-LanJsonPrivateFile -Path $statePath } catch { return $false }
   return [string]$current.ownerToken -eq $ownerToken -and [int]$current.workerPid -eq [int]$state.workerPid -and [string]$current.workerStartedAtUtc -eq [string]$state.workerStartedAtUtc -and [int]$current.supervisorPid -eq [int]$state.supervisorPid -and [string]$current.supervisorStartedAtUtc -eq [string]$state.supervisorStartedAtUtc -and (Test-LanLockOwned -LockPath $lockPath -OwnerToken $ownerToken)
@@ -35,8 +35,8 @@ if ($workerStatus -eq 'Running') {
 # IPC errors and timeouts have one bounded force attempt.  Do not trust the
 # earlier status snapshot: ownership and process identity are re-read while a
 # handle to the verified process is retained for the stop operation.
-if (-not $graceful -and $workerStatus -eq 'Running') { Write-Warning 'Graceful shutdown timed out; revalidating before forcing the worker.'; Force-RecordedProcess -Role 'Worker' -Id ([int]$state.workerPid) -StartedAtUtc ([string]$state.workerStartedAtUtc) -CommandToken 'apps/server/dist/main.js' | Out-Null }
-if (-not $graceful -and $supervisorStatus -eq 'Running') { Force-RecordedProcess -Role 'Supervisor' -Id ([int]$state.supervisorPid) -StartedAtUtc ([string]$state.supervisorStartedAtUtc) -CommandToken 'LanClassroomSupervisor.ps1' | Out-Null }
+if (-not $graceful -and $workerStatus -eq 'Running') { Write-Warning 'Graceful shutdown timed out; revalidating before forcing the worker.'; Force-RecordedProcess -Role 'Worker' -Id ([int]$state.workerPid) -StartedAtUtc $state.workerStartedAtUtc -CommandToken 'apps/server/dist/main.js' | Out-Null }
+if (-not $graceful -and $supervisorStatus -eq 'Running') { Force-RecordedProcess -Role 'Supervisor' -Id ([int]$state.supervisorPid) -StartedAtUtc $state.supervisorStartedAtUtc -CommandToken 'LanClassroomSupervisor.ps1' | Out-Null }
 $until = [DateTime]::UtcNow.AddSeconds(5)
 do { Start-Sleep -Milliseconds 100; $workerStatus = Get-WorkerStatus; $supervisorStatus = Get-SupervisorStatus } while ([DateTime]::UtcNow -lt $until -and ($workerStatus -eq 'Running' -or $supervisorStatus -eq 'Running'))
 # A PID reuse/mismatched command is not treated as an exited child.  Re-read
