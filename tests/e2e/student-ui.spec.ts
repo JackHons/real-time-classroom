@@ -10,7 +10,7 @@ test.describe('student interface (real server)', () => {
     await expect(page.getByRole('main')).toBeVisible();
     await expect(page.getByLabel('班級代碼', { exact: true })).toBeVisible();
     await expectAxeClean(page);
-    await page.getByLabel('班級代碼', { exact: true }).fill('可及性測試課堂');
+    await page.getByLabel('班級代碼', { exact: true }).fill('F7A');
     const number = studentNumber(testInfo.project.name);
     await page.getByLabel('學號').fill(number);
     await expectMinimumTarget(page, '加入課堂');
@@ -28,7 +28,7 @@ test.describe('student interface (real server)', () => {
     await page.goto('/student');
     await page.keyboard.press('Tab');
     await expect(page.locator(':focus')).toBeVisible();
-    await page.getByLabel('班級代碼', { exact: true }).fill('可及性測試課堂');
+    await page.getByLabel('班級代碼', { exact: true }).fill('F7A');
     const number = studentNumber(testInfo.project.name, '-ZOOM');
     await page.getByLabel('學號').fill(number);
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
@@ -50,5 +50,25 @@ test.describe('student interface (real server)', () => {
     await expect(page.getByRole('alert')).toHaveText(/找不到這個課堂/);
     await expect(page.getByLabel('班級代碼', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '加入課堂', exact: true })).toBeEnabled();
+  });
+
+  test('normalizes an F7A-like class code and displays the joined student to the teacher', async ({ page, browser }, testInfo) => {
+    const number = studentNumber(testInfo.project.name, '-F7A');
+    await page.goto('/student');
+    await page.getByLabel('班級代碼', { exact: true }).fill('  \uff46\uff17\uff41  ');
+    await page.getByLabel('學號').fill(number);
+    await page.getByRole('button', { name: '加入課堂', exact: true }).click();
+    await page.waitForURL('**/student/activities');
+
+    const teacherContext = await browser.newContext();
+    try {
+      const teacher = await teacherContext.newPage();
+      await teacher.goto(`${String(testInfo.project.use.baseURL)}/teacher`);
+      await teacher.getByLabel('教師密碼').fill('E2E-accessible-password-1!');
+      await teacher.getByRole('button', { name: '登入', exact: true }).click();
+      await expect(teacher.getByText(number, { exact: false })).toBeVisible();
+    } finally {
+      await teacherContext.close();
+    }
   });
 });

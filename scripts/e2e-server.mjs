@@ -18,7 +18,7 @@ if (process.env.LAN_CLASSROOM_E2E_MODE !== 'setup') {
   const password = 'E2E-accessible-password-1!';
   const hash = await argon2.hash(password, TEACHER_PASSWORD_ARGON2_POLICY);
   database.prepare("INSERT INTO app_settings (key,value,created_at_utc,updated_at_utc) VALUES ('teacher_shared_password_hash',?,?,?)").run(hash, now, now);
-  database.prepare('INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES (?,?,?,?)').run('e2e-class', '可及性測試課堂', now, now);
+  database.prepare('INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES (?,?,?,?)').run('e2e-class', 'F7A', now, now);
   for (const [id, number] of [['student-chrome', 'S-CHROME'], ['student-chrome-zoom', 'S-CHROME-ZOOM'], ['student-edge', 'S-EDGE'], ['student-edge-zoom', 'S-EDGE-ZOOM'], ['student-firefox', 'S-FIREFOX'], ['student-firefox-zoom', 'S-FIREFOX-ZOOM']]) {
     database.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run(id, 'e2e-class', `學生 ${number}`, number, number, 0, now);
   }
