@@ -14,7 +14,7 @@ type ClassRow = Readonly<{ id: string; name: string; createdAtUtc: string; updat
 type StudentRow = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: number; approvedAtUtc: string }>;
 type PendingRow = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string; requestedAtUtc: string }>;
 type QuestionRow = Readonly<{ id: string; classId: string; kind: string; prompt: string; state: string; templateId: string | null; createdAtUtc: string }>;
-type FileTaskRow = Readonly<{ id: string; classId: string; title: string; description: string; state: string; deadlineAtUtc: string; maxBytes: number; createdAtUtc: string }>;
+type FileTaskRow = Readonly<{ id: string; classId: string; title: string; description: string; state: string; deadlineAtUtc: string; maxBytes: number; reopenedAtUtc: string | null; createdAtUtc: string }>;
 type StudentQuestionRow = Readonly<{ id: string; prompt: string; kind: string; state: string; openedAtUtc: string; stateOrder: number }>;
 type StudentFileTaskRow = Readonly<{ id: string; title: string; description: string; state: string; deadlineAtUtc: string; stateOrder: number }>;
 
@@ -87,8 +87,8 @@ function questions(database: SqliteDatabase, classId: string, limit: number, cur
 }
 function fileTasks(database: SqliteDatabase, classId: string, limit: number, cursor: Cursor | undefined): Page<FileTaskRow> {
   const rows = cursor === undefined
-    ? database.prepare('SELECT id,class_id AS classId,title,description,state,deadline_at_utc AS deadlineAtUtc,max_bytes AS maxBytes,created_at_utc AS createdAtUtc FROM file_submission_tasks WHERE class_id=? ORDER BY created_at_utc DESC,id DESC LIMIT ?').all(classId, limit + 1) as readonly FileTaskRow[]
-    : database.prepare('SELECT id,class_id AS classId,title,description,state,deadline_at_utc AS deadlineAtUtc,max_bytes AS maxBytes,created_at_utc AS createdAtUtc FROM file_submission_tasks WHERE class_id=? AND (created_at_utc<? OR (created_at_utc=? AND id<?)) ORDER BY created_at_utc DESC,id DESC LIMIT ?').all(classId, cursor[0], cursor[0], cursor[1], limit + 1) as readonly FileTaskRow[];
+    ? database.prepare('SELECT id,class_id AS classId,title,description,state,deadline_at_utc AS deadlineAtUtc,max_bytes AS maxBytes,reopened_at_utc AS reopenedAtUtc,created_at_utc AS createdAtUtc FROM file_submission_tasks WHERE class_id=? ORDER BY created_at_utc DESC,id DESC LIMIT ?').all(classId, limit + 1) as readonly FileTaskRow[]
+    : database.prepare('SELECT id,class_id AS classId,title,description,state,deadline_at_utc AS deadlineAtUtc,max_bytes AS maxBytes,reopened_at_utc AS reopenedAtUtc,created_at_utc AS createdAtUtc FROM file_submission_tasks WHERE class_id=? AND (created_at_utc<? OR (created_at_utc=? AND id<?)) ORDER BY created_at_utc DESC,id DESC LIMIT ?').all(classId, cursor[0], cursor[0], cursor[1], limit + 1) as readonly FileTaskRow[];
   return page(rows, limit, `teacher:${classId}:file-tasks`, (row) => [row.createdAtUtc, row.id]);
 }
 function studentQuestions(database: SqliteDatabase, classId: string, limit: number, cursor: Cursor | undefined): Page<StudentQuestionRow> {

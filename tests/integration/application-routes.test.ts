@@ -210,6 +210,21 @@ describe('Task 3 composed API routes', () => {
     expect(await activities.json()).toEqual({ questions: { items: [expect.objectContaining({ id: question.id, prompt: 'Explain', state: 'open' })] }, fileTasks: { items: [expect.objectContaining({ id: task.id, title: 'Upload', state: 'open' })] } });
   });
 
+  it('lets a teacher explicitly reopen a closed task after its original deadline', async () => {
+    const clock = new MutableClock(new Date('2026-09-07T12:00:00.000Z'));
+    const base = await applicationBase(clock);
+    const teacher = await teacherLogin(base);
+    const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name: 'Late reopen class' }) });
+    const classroom = await created.json() as { id: string };
+    database?.prepare("INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES (?,?,?,'','closed',100000000,?,?,?,?,?)")
+      .run('late-task', classroom.id, 'Late upload', '2026-09-07T10:00:00.000Z', '2026-09-07T09:00:00.000Z', '2026-09-07T10:00:00.000Z', '2026-09-07T09:00:00.000Z', '2026-09-07T10:00:00.000Z');
+    const reopened = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/late-task/open`, { method: 'POST', headers: teacherHeaders(teacher), body: '{}' });
+    expect(reopened.status).toBe(200);
+    expect(await reopened.json()).toMatchObject({ state: 'open', reopenedAtUtc: '2026-09-07T12:00:00.000Z' });
+    const view = await fetch(`${base}/api/classes/${classroom.id}/file-tasks/late-task`, { headers: { cookie: teacher.cookie } });
+    expect(await view.json()).toMatchObject({ task: { state: 'open', deadlineAtUtc: '2026-09-07T10:00:00.000Z', reopenedAtUtc: '2026-09-07T12:00:00.000Z' } });
+  });
+
   it('keyset-pages large teacher and student activity collections without unbounded responses', async () => {
     const base = await applicationBase();
     const teacher = await teacherLogin(base);

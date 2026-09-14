@@ -30,7 +30,7 @@ export class FileTaskService {
     this.teacher(context);
     if (this.dependencies.classExists !== undefined && !this.dependencies.classExists(classId)) fail('CLASS_NOT_FOUND');
     const fields = validate(input);
-    const task = this.dependencies.repository.createTask({ id: this.createTaskId(), classId, ...fields, state: 'draft', maxBytes: FILE_TASK_MAX_BYTES, openedAtUtc: null, closedAtUtc: null });
+    const task = this.dependencies.repository.createTask({ id: this.createTaskId(), classId, ...fields, state: 'draft', maxBytes: FILE_TASK_MAX_BYTES, openedAtUtc: null, closedAtUtc: null, reopenedAtUtc: null });
     this.notifyTask(task, 'filetask_created'); return task;
   }
 
@@ -49,8 +49,13 @@ export class FileTaskService {
     // cannot turn a successful open into a confusing transition error.
     if (task.state === 'open') return task;
     if (task.state !== 'draft' && task.state !== 'closed') fail('FILE_TASK_TRANSITION_CONFLICT');
-    if (Date.parse(task.deadlineAtUtc) < this.now().valueOf()) fail('FILE_TASK_DEADLINE_PASSED');
-    const opened = this.dependencies.repository.openTask(taskId, iso(this.now())) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
+    const now = this.now();
+    const pastDeadline = Date.parse(task.deadlineAtUtc) < now.valueOf();
+    // A draft cannot silently start after its advertised deadline. A teacher
+    // may, however, explicitly reopen a closed task; the persisted marker
+    // makes that exception visible and prevents automatic deadline closure.
+    if (task.state === 'draft' && pastDeadline) fail('FILE_TASK_DEADLINE_PASSED');
+    const opened = this.dependencies.repository.openTask(taskId, iso(now), task.state === 'closed' && pastDeadline ? iso(now) : null) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
     this.notifyTask(opened, 'filetask_opened'); return opened;
   }
 
@@ -131,7 +136,7 @@ export class FileTaskService {
   }
   private reconcile(taskId: FileSubmissionTaskId): FileSubmissionTask {
     const task = required(this.dependencies.repository.task(taskId));
-    if (task.state === 'open' && Date.parse(task.deadlineAtUtc) < this.now().valueOf()) {
+    if (task.state === 'open' && task.reopenedAtUtc === null && Date.parse(task.deadlineAtUtc) < this.now().valueOf()) {
       const closed = this.dependencies.repository.closeTask(taskId, iso(this.now())) ?? required(this.dependencies.repository.task(taskId));
       this.notifyTask(closed, 'filetask_closed');
       return closed;
@@ -162,7 +167,7 @@ function validateCommittedSubmission(input: Omit<NewFileSubmission, 'studentId'>
   if (normalized(input.originalFilename, 512, 'FILE_SUBMISSION_FILENAME').length === 0 || normalized(input.displayFilename, 512, 'FILE_SUBMISSION_FILENAME').length === 0 || normalized(input.storageKey, 1_000, 'FILE_SUBMISSION_STORAGE_KEY').length === 0) fail('FILE_SUBMISSION_INVALID');
   if (input.declaredMimeType !== null && (typeof input.declaredMimeType !== 'string' || input.declaredMimeType.length > 255)) fail('FILE_SUBMISSION_MIME_INVALID');
   // Completion, not client upload start, is authoritative: no last-byte race past close.
-  if (task.state !== 'open' || Date.parse(task.deadlineAtUtc) < Date.parse(input.receivedCompleteAtUtc)) fail('FILE_TASK_CLOSED');
+  if (task.state !== 'open' || (task.reopenedAtUtc === null && Date.parse(task.deadlineAtUtc) < Date.parse(input.receivedCompleteAtUtc))) fail('FILE_TASK_CLOSED');
 }
 function normalized(value: unknown, maximum: number, code: string, allowEmpty = false): string { if (typeof value !== 'string') fail(`${code}_REQUIRED`); const result = value.normalize('NFKC').trim(); if ((!allowEmpty && result.length === 0) || result.length > maximum) fail(`${code}_INVALID`); return result; }
 function required(value: FileSubmissionTask | undefined): FileSubmissionTask { return value ?? fail('FILE_TASK_NOT_FOUND'); }

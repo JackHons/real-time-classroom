@@ -53,6 +53,8 @@ describe('SQLite migration and repository transactions', () => {
         expect(legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_integrity_records'").get()).toBeDefined();
         expect(legacy.prepare("SELECT id FROM schema_migrations WHERE id='0005_upload_staging_cleanup_audit'").get()).toBeDefined();
         expect(legacy.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_staging_cleanup_records'").get()).toBeDefined();
+        expect(legacy.prepare("SELECT id FROM schema_migrations WHERE id='0008_file_task_late_reopen'").get()).toBeDefined();
+        expect((legacy.prepare("SELECT name FROM pragma_table_info('file_submission_tasks') WHERE name='reopened_at_utc'").get() as { name?: string } | undefined)?.name).toBe('reopened_at_utc');
       } finally { legacy.close(); }
     }
   });

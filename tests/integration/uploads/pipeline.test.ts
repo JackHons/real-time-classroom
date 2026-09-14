@@ -60,6 +60,14 @@ describe('upload byte pipeline', () => {
     expect(database?.prepare('SELECT state FROM file_submission_tasks WHERE id=?').get('task-1')).toEqual({ state: 'closed' });
   });
 
+  it('accepts a submission after an explicit teacher late reopen, until it is closed again', async () => {
+    const { pipeline } = await setup(); instant = new Date('2026-09-07T10:00:00.001Z');
+    database?.prepare("UPDATE file_submission_tasks SET state='closed',closed_at_utc=? WHERE id=?").run(instant.toISOString(), 'task-1');
+    database?.prepare("UPDATE file_submission_tasks SET state='open',closed_at_utc=NULL,reopened_at_utc=? WHERE id=? AND state='closed'").run(instant.toISOString(), 'task-1');
+    await expect(pipeline.ingest({ taskId: 'task-1' as never, studentId: 'student-1' as never, bytes: chunks('late') })).resolves.toMatchObject({ byteLength: 4 });
+    expect(database?.prepare('SELECT state,reopened_at_utc FROM file_submission_tasks WHERE id=?').get('task-1')).toMatchObject({ state: 'open', reopened_at_utc: instant.toISOString() });
+  });
+
   it('closes an expired task once when concurrent uploads reach final metadata admission', async () => {
     const { repository, storage } = await setup();
     database?.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run('student-2', 'class-1', 'Student 2', '2', '2', 0, instant.toISOString());

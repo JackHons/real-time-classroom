@@ -9,7 +9,7 @@ function setup(now = new Date('2026-09-08T00:00:00.000Z')) {
   const repository: FileTaskRepository = {
     createTask: (task) => { tasks.set(task.id, task); return task; }, task: (id) => tasks.get(id),
     updateDraft: (id, input) => { const task = tasks.get(id); if (task?.state !== 'draft') return undefined; const next = { ...task, ...input }; tasks.set(id, next); return next; },
-    openTask: (id, openedAtUtc) => { const task = tasks.get(id); if (task?.state !== 'draft' && task?.state !== 'closed') return undefined; const next = { ...task, state: 'open' as const, openedAtUtc: task.openedAtUtc ?? openedAtUtc, closedAtUtc: null }; tasks.set(id, next); return next; },
+    openTask: (id, openedAtUtc, reopenedAtUtc) => { const task = tasks.get(id); if (task?.state !== 'draft' && task?.state !== 'closed') return undefined; const next = { ...task, state: 'open' as const, openedAtUtc: task.openedAtUtc ?? openedAtUtc, closedAtUtc: null, reopenedAtUtc: reopenedAtUtc ?? task.reopenedAtUtc }; tasks.set(id, next); return next; },
     closeTask: (id, closedAtUtc) => { const task = tasks.get(id); if (task?.state !== 'open') return undefined; const next = { ...task, state: 'closed' as const, closedAtUtc }; tasks.set(id, next); return next; },
     completion: () => ({ eligibleStudentCount: 2, submittedStudentCount: submissions.size }),
     studentSubmission: (taskId, studentId) => submissions.get(`${taskId}:${studentId}`), closedSubmissions: () => [],
@@ -69,5 +69,16 @@ describe('file task service', () => {
     expect(closed).toMatchObject({ task: { state: 'closed' }, dashboard: { completion: { eligibleStudentCount: 2, submittedStudentCount: 0 }, missingStudents: [{ displayName: 'Ada' }] } });
     expect(service.open('teacher', task.id)).toMatchObject({ state: 'open', closedAtUtc: null });
     expect(service.open('teacher', task.id)).toMatchObject({ state: 'open' });
+  });
+
+  it('permits an explicit closed-to-open override after the original deadline until the teacher closes it again', () => {
+    const late = setup(new Date('2026-09-08T02:00:00.000Z'));
+    late.tasks.set('task-1', { id: 'task-1' as FileSubmissionTaskId, classId: 'class-1' as never, title: 'late', description: '', state: 'closed', maxBytes: 100000000, deadlineAtUtc: deadline, openedAtUtc: '2026-09-08T00:00:00.000Z' as IsoUtc, closedAtUtc: '2026-09-08T01:00:00.000Z' as IsoUtc, reopenedAtUtc: null });
+    const reopened = late.service.open('teacher', 'task-1' as FileSubmissionTaskId);
+    expect(reopened).toMatchObject({ state: 'open', reopenedAtUtc: '2026-09-08T02:00:00.000Z' });
+    expect(late.service.prepareSubmission('student', reopened.id).state).toBe('open');
+    expect(late.service.commitSubmission('student', { taskId: reopened.id, originalFilename: 'late.txt', displayFilename: 'late.txt', storageKey: 'object/late', declaredMimeType: 'text/plain', byteLength: 4, sha256: 'c'.repeat(64), receivedCompleteAtUtc: '2026-09-08T02:00:00.000Z' as IsoUtc })).toMatchObject({ taskId: reopened.id });
+    late.service.close('teacher', reopened.id);
+    expect(() => late.service.prepareSubmission('student', reopened.id)).toThrow('FILE_TASK_CLOSED');
   });
 });

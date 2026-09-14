@@ -28,6 +28,7 @@ export type StudentFileTask = Readonly<{
     state: 'draft' | 'open' | 'closed';
     deadlineAtUtc: string;
     maxBytes: number;
+    reopenedAtUtc: string | null;
   }>;
   submission: Readonly<{ submitted: boolean; displayFilename?: string; submittedAtUtc?: string }>;
 }>;

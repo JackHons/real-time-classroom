@@ -13,6 +13,8 @@
   let uploading = false;
   let uploadController: AbortController | undefined;
   let deadlinePassed = false;
+  let lateReopened = false;
+  let acceptingSubmissions = false;
   let sessionExpired = false;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let realtime: RealtimeClient | undefined;
@@ -20,6 +22,8 @@
   const taskId = page.params.id ?? '';
   const classId = page.url.searchParams.get('class') ?? '';
   $: deadlinePassed = view ? new Date(view.task.deadlineAtUtc).getTime() <= Date.now() : false;
+  $: lateReopened = typeof view?.task.reopenedAtUtc === 'string';
+  $: acceptingSubmissions = view?.task.state === 'open' && (!deadlinePassed || lateReopened);
   async function load(): Promise<void> {
     if (!classId) { notice = '缺少課堂資訊；請使用老師提供的作業連結。'; return; }
     try { view = await studentApi.readFileTask(fetch, classId, taskId); }
@@ -53,7 +57,7 @@
     file = candidate; notice = '';
   }
   async function upload(): Promise<void> {
-    if (!file || !view || deadlinePassed || view.submission.submitted) return;
+    if (!file || !view || !acceptingSubmissions || view.submission.submitted) return;
     uploading = true; notice = '';
     uploadController = new AbortController();
     try { await studentApi.uploadFile(fetch, classId, taskId, file, (value) => progress = value, uploadController.signal); await load(); notice = '檔案已成功繳交，不能再替換。'; }
@@ -71,10 +75,10 @@
     <section aria-labelledby="task-title">
       <h1 id="task-title">{view.task.title}</h1>
       <p>{view.task.description}</p>
-      <p class:urgent={deadlinePassed}><strong>截止時間：</strong>{new Date(view.task.deadlineAtUtc).toLocaleString('zh-Hant-TW')} {deadlinePassed ? '（已截止）' : ''}</p>
+      <p class:urgent={deadlinePassed && !lateReopened}><strong>原截止時間：</strong>{new Date(view.task.deadlineAtUtc).toLocaleString('zh-Hant-TW')} {deadlinePassed ? (lateReopened ? '（已過；教師重新開放中）' : '（已截止）') : ''}</p>
       {#if view.submission.submitted}
         <p role="status">已繳交 {view.submission.displayFilename ?? '檔案'}。繳交成功後不可替換。</p>
-      {:else if view.task.state !== 'open' || deadlinePassed}
+      {:else if !acceptingSubmissions}
         <p role="status">此作業目前不接受上傳。</p>
       {:else}
         <form onsubmit={(event) => { event.preventDefault(); upload(); }}>

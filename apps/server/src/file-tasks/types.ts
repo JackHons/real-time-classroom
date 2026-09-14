@@ -30,7 +30,7 @@ export interface FileTaskRepository {
   createTask(task: FileSubmissionTask): FileSubmissionTask;
   task(taskId: FileSubmissionTaskId): FileSubmissionTask | undefined;
   updateDraft(taskId: FileSubmissionTaskId, input: Pick<FileSubmissionTask, 'title' | 'description' | 'deadlineAtUtc'>): FileSubmissionTask | undefined;
-  openTask(taskId: FileSubmissionTaskId, openedAtUtc: IsoUtc): FileSubmissionTask | undefined;
+  openTask(taskId: FileSubmissionTaskId, openedAtUtc: IsoUtc, reopenedAtUtc: IsoUtc | null): FileSubmissionTask | undefined;
   closeTask(taskId: FileSubmissionTaskId, closedAtUtc: IsoUtc): FileSubmissionTask | undefined;
   completion(taskId: FileSubmissionTaskId): TeacherOpenTaskView['completion'];
   studentSubmission(taskId: FileSubmissionTaskId, studentId: StudentId): FileSubmission | undefined;
