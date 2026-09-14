@@ -12,7 +12,6 @@ test.describe('student interface (real server)', () => {
     await expectAxeClean(page);
     await page.getByLabel('課堂', { exact: true }).selectOption('e2e-class');
     const number = studentNumber(testInfo.project.name);
-    await page.getByLabel('姓名').fill(`學生 ${number}`);
     await page.getByLabel('學號').fill(number);
     await expectMinimumTarget(page, '加入課堂');
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
@@ -31,9 +30,6 @@ test.describe('student interface (real server)', () => {
     await expect(page.locator(':focus')).toBeVisible();
     await page.getByLabel('課堂', { exact: true }).selectOption('e2e-class');
     const number = studentNumber(testInfo.project.name, '-ZOOM');
-    await page.getByLabel('姓名').fill(`學生 ${number}`);
-    // An independent seeded roster identity keeps each isolated browser
-    // context valid without depending on cookies from the previous test.
     await page.getByLabel('學號').fill(number);
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
     await page.waitForURL('**/student/activities');

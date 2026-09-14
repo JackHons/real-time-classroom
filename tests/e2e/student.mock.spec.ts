@@ -19,9 +19,9 @@ test.describe('student interface (mocked edge contracts)', () => {
     await page.route('**/api/auth/student/csrf', (route) => route.fulfill({ contentType: 'application/json', body: '{"csrfToken":"mock"}' }));
     await page.route('**/api/student/activities**', (route) => {
       const url = new URL(route.request().url()); const question = url.searchParams.get('questionCursor'); const task = url.searchParams.get('fileTaskCursor'); activityQueries.push({ question, task });
-      if (question === null && task === null) return route.fulfill({ json: { questions: { items: [{ id: 'q1', prompt: '題目一', kind: 'short_text', state: 'open' }], nextCursor: 'q2' }, fileTasks: { items: [{ id: 'f1', title: '作業一', description: '', state: 'open', deadlineAtUtc: '' }], nextCursor: 'f2' } } });
-      if (question === 'q2' && task === 'f2') return route.fulfill({ json: { questions: { items: [{ id: 'q2', prompt: '題目二', kind: 'short_text', state: 'open' }] }, fileTasks: { items: [{ id: 'f2', title: '作業二', description: '', state: 'open', deadlineAtUtc: '' }], nextCursor: 'f3' } } });
-      return route.fulfill({ json: { questions: { items: [{ id: 'q2-repeat', prompt: '不應附加', kind: 'short_text', state: 'open' }] }, fileTasks: { items: [{ id: 'f3', title: '作業三', description: '', state: 'open', deadlineAtUtc: '' }] } } });
+      if (question === null && task === null) return route.fulfill({ json: { questions: { items: [{ id: 'q1', prompt: '題目一', kind: 'short_text', state: 'open' }], nextCursor: 'q2' }, fileTasks: { items: [{ id: 'f1', title: '作業一', description: '', state: 'open', deadlineAtUtc: '' }], nextCursor: 'f2' }, materials: { items: [] } } });
+      if (question === 'q2' && task === 'f2') return route.fulfill({ json: { questions: { items: [{ id: 'q2', prompt: '題目二', kind: 'short_text', state: 'open' }] }, fileTasks: { items: [{ id: 'f2', title: '作業二', description: '', state: 'open', deadlineAtUtc: '' }], nextCursor: 'f3' }, materials: { items: [] } } });
+      return route.fulfill({ json: { questions: { items: [{ id: 'q2-repeat', prompt: '不應附加', kind: 'short_text', state: 'open' }] }, fileTasks: { items: [{ id: 'f3', title: '作業三', description: '', state: 'open', deadlineAtUtc: '' }] }, materials: { items: [] } } });
     });
     await page.goto('/student');
     await page.waitForURL('**/student/activities');
