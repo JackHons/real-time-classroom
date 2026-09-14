@@ -27,4 +27,20 @@ test.describe('teacher management UI (mock API contracts)', () => {
     await page.getByRole('button', { name: 'Build draft', exact: true }).click();
     await expect(page.getByText('已建立草稿；可讀取後開放給學生。')).toBeVisible();
   });
+
+  test('assignment dashboard shows submitted and missing students, and a closed task can reopen', async ({ page }) => {
+    let state: 'closed' | 'open' = 'closed';
+    const dashboard = () => ({ completion: { eligibleStudentCount: 2, submittedStudentCount: 1 }, submissions: [{ studentId: 'student-1', displayName: '王小明', studentNumber: 'S1', displayFilename: 'homework.pdf', declaredMimeType: 'application/pdf', byteLength: 42, receivedCompleteAtUtc: '2026-01-01T01:00:00Z' }], missingStudents: [{ studentId: 'student-2', displayName: '李四', studentNumber: 'S2' }] });
+    await page.route('**/api/teacher/classes/class-1/file-tasks', (route) => route.fulfill({ json: { items: [{ id: 'task-1', classId: 'class-1', title: '作業一', description: '', state, deadlineAtUtc: '2026-12-01T00:00:00Z', maxBytes: 100000000 }] } }));
+    await page.route('**/api/classes/class-1/file-tasks/task-1/open', (route) => { state = 'open'; return route.fulfill({ json: { id: 'task-1', classId: 'class-1', title: '作業一', description: '', state, deadlineAtUtc: '2026-12-01T00:00:00Z', maxBytes: 100000000 } }); });
+    await page.route('**/api/classes/class-1/file-tasks/task-1', (route) => route.fulfill({ json: { task: { id: 'task-1', classId: 'class-1', title: '作業一', description: '', state, deadlineAtUtc: '2026-12-01T00:00:00Z', maxBytes: 100000000 }, ...(state === 'closed' ? { submissions: dashboard().submissions } : { completion: dashboard().completion }), dashboard: dashboard() } }));
+    await page.goto('/teacher/assignments');
+    await expect(page.getByRole('heading', { name: '作業一：收件儀表板' })).toBeVisible();
+    await expect(page.getByText('未交名單（1）')).toBeVisible();
+    await expect(page.getByText('已交清單（1）')).toBeVisible();
+    await expect(page.getByText('李四')).toBeVisible();
+    await page.getByRole('button', { name: '重新開放', exact: true }).click();
+    await expect(page.getByText('作業已開放。')).toBeVisible();
+    await expect(page.getByRole('button', { name: '關閉收件', exact: true })).toBeEnabled();
+  });
 });

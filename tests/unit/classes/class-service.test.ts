@@ -68,6 +68,20 @@ describe('ClassService', () => {
     expect(repo.students).toMatchObject([{ displayName: '王小明', rawStudentNumber: 'S100', normalizedStudentNumber: 'S100' }]);
   });
 
+  it('accepts the documented student-number-first rows with no header, including an ignored third column', () => {
+    const repo = repository(); const subject = service(repo);
+    subject.createClass('teacher', '1A');
+    expect(subject.previewRosterCsv('1,陳俊游\n2,陳頌燁,在測試中\n3,陳彥旭')).toEqual({
+      rows: [
+        { displayName: '陳俊游', rawStudentNumber: '1', normalizedStudentNumber: '1' },
+        { displayName: '陳頌燁', rawStudentNumber: '2', normalizedStudentNumber: '2' },
+        { displayName: '陳彥旭', rawStudentNumber: '3', normalizedStudentNumber: '3' }
+      ], issues: [], ignoredColumnLines: [2]
+    });
+    subject.importRosterCsv('teacher', ids.class, '1,陳俊游\n2,陳頌燁,在測試中\n3,陳彥旭');
+    expect(repo.students.map((student) => [student.rawStudentNumber, student.displayName])).toEqual([['1', '陳俊游'], ['2', '陳頌燁'], ['3', '陳彥旭']]);
+  });
+
   it('accepts a third status column but makes its non-storage explicit in the preview', () => {
     const repo = repository(); const subject = service(repo);
     subject.createClass('teacher', '1A');

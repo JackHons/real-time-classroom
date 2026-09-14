@@ -169,14 +169,17 @@ function parseCsv(csv: string): Readonly<{ rows: readonly ParsedCsvRow[]; issues
   if (quoted) return { rows: [], issues: [{ line: physicalLine, message: 'CSV 引號未正確結束' }], ignoredColumnLines: [] };
   if (field.length > 0 || current.length > 0) { current.push(field); rows.push({ fields: current, line: rowLine }); }
   const nonBlankRows = rows.filter((row) => row.fields.some((value) => value.length > 0));
-  const header = nonBlankRows.shift();
-  if (header === undefined) return { rows: [], issues: [{ line: 1, message: 'CSV 必須包含標題列：姓名,學號' }], ignoredColumnLines: [] };
-  const expected = header.fields.map(normalizeText);
-  const nameFirst = (expected[0] === '姓名' && expected[1] === '學號') || (expected[0] === 'name' && expected[1] === 'studentNumber');
-  const numberFirst = (expected[0] === '學號' && expected[1] === '姓名') || (expected[0] === 'studentNumber' && expected[1] === 'name');
-  if (!nameFirst && !numberFirst) {
-    return { rows: [], issues: [{ line: header.line, message: 'CSV 標題必須為「姓名,學號」、「學號,姓名」、name,studentNumber 或 studentNumber,name' }], ignoredColumnLines: [] };
-  }
-  const normalizedRows = numberFirst ? nonBlankRows.map((row) => ({ ...row, fields: [row.fields[1] ?? '', row.fields[0] ?? ''] })) : nonBlankRows;
-  return { rows: normalizedRows, issues: [], ignoredColumnLines: nonBlankRows.filter((row) => row.fields.length > 2).map((row) => row.line) };
+  const first = nonBlankRows[0];
+  if (first === undefined) return { rows: [], issues: [{ line: 1, message: 'CSV 不可沒有名單資料' }], ignoredColumnLines: [] };
+  const expected = first.fields.map(normalizeText);
+  const nameFirstHeader = (expected[0] === '姓名' && expected[1] === '學號') || (expected[0] === 'name' && expected[1] === 'studentNumber');
+  const numberFirstHeader = (expected[0] === '學號' && expected[1] === '姓名') || (expected[0] === 'studentNumber' && expected[1] === 'name');
+  // A header is optional.  In its absence the documented default is
+  // studentNumber,name, which is the common spreadsheet export shape.
+  const dataRows = nameFirstHeader || numberFirstHeader ? nonBlankRows.slice(1) : nonBlankRows;
+  const nameFirst = nameFirstHeader;
+  const normalizedRows = nameFirst
+    ? dataRows
+    : dataRows.map((row) => ({ ...row, fields: [row.fields[1] ?? '', row.fields[0] ?? ''] }));
+  return { rows: normalizedRows, issues: [], ignoredColumnLines: dataRows.filter((row) => row.fields.length > 2).map((row) => row.line) };
 }

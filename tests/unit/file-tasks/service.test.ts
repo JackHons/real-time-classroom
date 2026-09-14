@@ -9,10 +9,14 @@ function setup(now = new Date('2026-09-08T00:00:00.000Z')) {
   const repository: FileTaskRepository = {
     createTask: (task) => { tasks.set(task.id, task); return task; }, task: (id) => tasks.get(id),
     updateDraft: (id, input) => { const task = tasks.get(id); if (task?.state !== 'draft') return undefined; const next = { ...task, ...input }; tasks.set(id, next); return next; },
-    openTask: (id, openedAtUtc) => { const task = tasks.get(id); if (task?.state !== 'draft') return undefined; const next = { ...task, state: 'open' as const, openedAtUtc }; tasks.set(id, next); return next; },
+    openTask: (id, openedAtUtc) => { const task = tasks.get(id); if (task?.state !== 'draft' && task?.state !== 'closed') return undefined; const next = { ...task, state: 'open' as const, openedAtUtc: task.openedAtUtc ?? openedAtUtc, closedAtUtc: null }; tasks.set(id, next); return next; },
     closeTask: (id, closedAtUtc) => { const task = tasks.get(id); if (task?.state !== 'open') return undefined; const next = { ...task, state: 'closed' as const, closedAtUtc }; tasks.set(id, next); return next; },
     completion: () => ({ eligibleStudentCount: 2, submittedStudentCount: submissions.size }),
     studentSubmission: (taskId, studentId) => submissions.get(`${taskId}:${studentId}`), closedSubmissions: () => [],
+    dashboard: (taskId) => {
+      const values = [...submissions.values()].filter((entry) => entry.taskId === taskId);
+      return { completion: { eligibleStudentCount: 2, submittedStudentCount: values.length }, submissions: values.map((entry) => ({ studentId: entry.studentId, displayName: 'Ada', studentNumber: 'A1', displayFilename: entry.displayFilename, declaredMimeType: entry.declaredMimeType, byteLength: entry.byteLength, sha256: entry.sha256, receivedCompleteAtUtc: entry.receivedCompleteAtUtc })), missingStudents: values.length === 0 ? [{ studentId: 'student-1' as StudentId, displayName: 'Ada', studentNumber: 'A1' }] : [] };
+    },
     createSubmission: (input) => { const value = { id: `s-${submissions.size}` as never, ...input, deletedAtUtc: null }; submissions.set(`${input.taskId}:${input.studentId}`, value); return value; },
     markSubmissionDeleted: (taskId, studentId) => { const value = submissions.get(`${taskId}:${studentId}`); if (value !== undefined) { submissions.delete(`${taskId}:${studentId}`); deleted.set(value.id, value); } return value; },
     restoreSubmission: (id) => { restored++; const value = deleted.get(id); if (value !== undefined) submissions.set(`${value.taskId}:${value.studentId}`, value); }, deleteEmptyTask: (id) => { if ([...submissions.values()].some((entry) => entry.taskId === id)) return false; return tasks.delete(id); }
@@ -54,5 +58,16 @@ describe('file task service', () => {
     expect(() => service.deleteSubmission('teacher', task.id, 'student-1' as StudentId, { confirmed: true, impactAcknowledged: true })).toThrow('DISK_IO');
     expect(metrics().restored).toBe(1);
     expect(service.readForStudent('student', task.id).submission.submitted).toBe(true);
+  });
+
+  it('reopens a manually closed future-deadline task and exposes an all-state teacher dashboard', () => {
+    const { service } = setup();
+    const task = service.createDraft('teacher', 'class-1' as never, { title: 'x', description: '', deadlineAtUtc: deadline });
+    service.open('teacher', task.id);
+    service.close('teacher', task.id);
+    const closed = service.readForTeacher('teacher', task.id);
+    expect(closed).toMatchObject({ task: { state: 'closed' }, dashboard: { completion: { eligibleStudentCount: 2, submittedStudentCount: 0 }, missingStudents: [{ displayName: 'Ada' }] } });
+    expect(service.open('teacher', task.id)).toMatchObject({ state: 'open', closedAtUtc: null });
+    expect(service.open('teacher', task.id)).toMatchObject({ state: 'open' });
   });
 });

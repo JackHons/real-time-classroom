@@ -17,8 +17,11 @@ export type NewFileSubmission = Readonly<{
 }>;
 
 export type SubmissionStatus = Readonly<{ submitted: boolean; submittedAtUtc?: IsoUtc; displayFilename?: string; byteLength?: number }>;
-export type TeacherOpenTaskView = Readonly<{ task: FileSubmissionTask; completion: Readonly<{ eligibleStudentCount: number; submittedStudentCount: number }> }>;
-export type TeacherClosedTaskView = Readonly<{ task: FileSubmissionTask; submissions: readonly Readonly<{ studentId: StudentId; displayName: string; studentNumber: string; displayFilename: string; declaredMimeType: string | null; byteLength: number; sha256: string; receivedCompleteAtUtc: IsoUtc }>[] }>;
+export type TeacherSubmission = Readonly<{ studentId: StudentId; displayName: string; studentNumber: string; displayFilename: string; declaredMimeType: string | null; byteLength: number; sha256: string; receivedCompleteAtUtc: IsoUtc }>;
+export type TeacherMissingStudent = Readonly<{ studentId: StudentId; displayName: string; studentNumber: string }>;
+export type TeacherTaskDashboard = Readonly<{ completion: Readonly<{ eligibleStudentCount: number; submittedStudentCount: number }>; submissions: readonly TeacherSubmission[]; missingStudents: readonly TeacherMissingStudent[] }>;
+export type TeacherOpenTaskView = Readonly<{ task: FileSubmissionTask; completion: TeacherTaskDashboard['completion']; dashboard: TeacherTaskDashboard }>;
+export type TeacherClosedTaskView = Readonly<{ task: FileSubmissionTask; submissions: readonly TeacherSubmission[]; dashboard: TeacherTaskDashboard }>;
 /** Private metadata needed only while producing a teacher download archive. */
 export type FileExportSubmission = Readonly<{ studentId: StudentId; displayName: string; studentNumber: string; originalFilename: string; storageKey: string; byteLength: number; sha256: string }>;
 export type StudentTaskView = Readonly<{ task: Readonly<Omit<FileSubmissionTask, 'maxBytes'>> & { maxBytes: typeof FILE_TASK_MAX_BYTES }; submission: SubmissionStatus }>;
@@ -32,6 +35,7 @@ export interface FileTaskRepository {
   completion(taskId: FileSubmissionTaskId): TeacherOpenTaskView['completion'];
   studentSubmission(taskId: FileSubmissionTaskId, studentId: StudentId): FileSubmission | undefined;
   closedSubmissions(taskId: FileSubmissionTaskId): TeacherClosedTaskView['submissions'];
+  dashboard(taskId: FileSubmissionTaskId): TeacherTaskDashboard;
   exportSubmissions(taskId: FileSubmissionTaskId): readonly FileExportSubmission[];
   createSubmission(input: NewFileSubmission): FileSubmission;
   /** Marks metadata only; service coordinates this with a reversible storage operation. */

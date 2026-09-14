@@ -17,10 +17,10 @@ test.describe('teacher management UI (real server)', () => {
     await expect(page.getByRole('navigation', { name: '教師功能' })).toBeVisible();
     await page.getByRole('link', { name: '班級與名單', exact: true }).click();
     await page.waitForURL('**/teacher/roster');
-    await page.getByLabel('CSV 內容').fill('學號,姓名,狀態\nS100,王小明,在測試中');
+    await page.getByLabel('CSV 內容').fill('S100,王小明,在測試中');
     await page.getByRole('button', { name: '預覽格式', exact: true }).click();
     await expect(page.getByText('可安全匯入 1 位學生。')).toBeVisible();
-    await expect(page.getByText('第三欄及之後的資料未儲存（第 2 列）。')).toBeVisible();
+    await expect(page.getByText('第三欄及之後的資料未儲存（第 1 列）。')).toBeVisible();
     await expectMinimumTarget(page, '重新整理');
     await expectAxeClean(page);
 

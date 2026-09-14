@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ClassId, FileSubmission, FileSubmissionId, FileSubmissionTask, FileSubmissionTaskId, IsoUtc, StudentId } from '../domain/types.js';
-import type { FileExportSubmission, FileTaskRepository, NewFileSubmission, TeacherClosedTaskView, TeacherOpenTaskView } from '../file-tasks/types.js';
+import type { FileExportSubmission, FileTaskRepository, NewFileSubmission, TeacherClosedTaskView, TeacherOpenTaskView, TeacherTaskDashboard } from '../file-tasks/types.js';
 import type { DeletionTombstone, UploadStorage } from '../uploads/storage.js';
 import type { SqliteDatabase } from './connection.js';
 
@@ -27,7 +27,7 @@ export class SqliteFileSubmissionTaskRepository implements FileTaskRepository {
     return changed === 1 ? this.task(taskId) : undefined;
   }
   openTask(taskId: FileSubmissionTaskId, openedAtUtc: IsoUtc): FileSubmissionTask | undefined {
-    const changed = this.database.prepare("UPDATE file_submission_tasks SET state='open',opened_at_utc=?,updated_at_utc=? WHERE id=? AND state='draft'").run(openedAtUtc, this.now(), taskId).changes;
+    const changed = this.database.prepare("UPDATE file_submission_tasks SET state='open',opened_at_utc=COALESCE(opened_at_utc,?),closed_at_utc=NULL,updated_at_utc=? WHERE id=? AND state IN ('draft','closed')").run(openedAtUtc, this.now(), taskId).changes;
     return changed === 1 ? this.task(taskId) : undefined;
   }
   closeTask(taskId: FileSubmissionTaskId, closedAtUtc: IsoUtc): FileSubmissionTask | undefined {
@@ -47,6 +47,13 @@ export class SqliteFileSubmissionTaskRepository implements FileTaskRepository {
   closedSubmissions(taskId: FileSubmissionTaskId): TeacherClosedTaskView['submissions'] {
     const rows = this.database.prepare("SELECT s.id AS student_id,s.display_name,s.raw_student_number,f.display_filename,f.declared_mime_type,f.byte_length,f.sha256,f.received_complete_at_utc FROM students s LEFT JOIN file_submissions f ON f.student_id=s.id AND f.task_id=? AND f.deleted_at_utc IS NULL WHERE s.class_id=(SELECT class_id FROM file_submission_tasks WHERE id=?) ORDER BY s.normalized_student_number,s.id").all(taskId, taskId) as readonly Readonly<{ student_id: string; display_name: string; raw_student_number: string; display_filename: string | null; declared_mime_type: string | null; byte_length: number | null; sha256: string | null; received_complete_at_utc: string | null }>[];
     return rows.filter((row) => row.display_filename !== null && row.byte_length !== null && row.sha256 !== null && row.received_complete_at_utc !== null).map((row) => ({ studentId: row.student_id as StudentId, displayName: row.display_name, studentNumber: row.raw_student_number, displayFilename: row.display_filename!, declaredMimeType: row.declared_mime_type, byteLength: row.byte_length!, sha256: row.sha256!, receivedCompleteAtUtc: row.received_complete_at_utc! as IsoUtc }));
+  }
+  dashboard(taskId: FileSubmissionTaskId): TeacherTaskDashboard {
+    const task = requireTask(this.task(taskId));
+    const rows = this.database.prepare("SELECT s.id AS student_id,s.display_name,s.raw_student_number,f.display_filename,f.declared_mime_type,f.byte_length,f.sha256,f.received_complete_at_utc FROM students s LEFT JOIN file_submissions f ON f.student_id=s.id AND f.task_id=? AND f.deleted_at_utc IS NULL WHERE s.class_id=? ORDER BY s.normalized_student_number,s.id").all(taskId, task.classId) as readonly Readonly<{ student_id: string; display_name: string; raw_student_number: string; display_filename: string | null; declared_mime_type: string | null; byte_length: number | null; sha256: string | null; received_complete_at_utc: string | null }>[];
+    const submissions = rows.filter((row) => row.display_filename !== null && row.byte_length !== null && row.sha256 !== null && row.received_complete_at_utc !== null).map((row) => ({ studentId: row.student_id as StudentId, displayName: row.display_name, studentNumber: row.raw_student_number, displayFilename: row.display_filename!, declaredMimeType: row.declared_mime_type, byteLength: row.byte_length!, sha256: row.sha256!, receivedCompleteAtUtc: row.received_complete_at_utc! as IsoUtc }));
+    const missingStudents = rows.filter((row) => row.display_filename === null).map((row) => ({ studentId: row.student_id as StudentId, displayName: row.display_name, studentNumber: row.raw_student_number }));
+    return { completion: { eligibleStudentCount: rows.length, submittedStudentCount: submissions.length }, submissions, missingStudents };
   }
   exportSubmissions(taskId: FileSubmissionTaskId): readonly FileExportSubmission[] {
     // Deliberately inner-join live metadata: deleted rows and roster members

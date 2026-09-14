@@ -44,8 +44,11 @@ export class FileTaskService {
 
   open(context: unknown, taskId: FileSubmissionTaskId): FileSubmissionTask {
     this.teacher(context);
-    const task = required(this.dependencies.repository.task(taskId));
-    if (task.state !== 'draft') fail('FILE_TASK_TRANSITION_CONFLICT');
+    const task = this.reconcile(taskId);
+    // Opening is intentionally idempotent so an old page or a double-click
+    // cannot turn a successful open into a confusing transition error.
+    if (task.state === 'open') return task;
+    if (task.state !== 'draft' && task.state !== 'closed') fail('FILE_TASK_TRANSITION_CONFLICT');
     if (Date.parse(task.deadlineAtUtc) < this.now().valueOf()) fail('FILE_TASK_DEADLINE_PASSED');
     const opened = this.dependencies.repository.openTask(taskId, iso(this.now())) ?? fail('FILE_TASK_TRANSITION_CONFLICT');
     this.notifyTask(opened, 'filetask_opened'); return opened;
@@ -62,9 +65,10 @@ export class FileTaskService {
   readForTeacher(context: unknown, taskId: FileSubmissionTaskId): TeacherOpenTaskView | TeacherClosedTaskView {
     this.teacher(context);
     const task = this.reconcile(taskId);
+    const dashboard = this.dependencies.repository.dashboard(taskId);
     return task.state === 'closed'
-      ? { task, submissions: this.dependencies.repository.closedSubmissions(taskId) }
-      : { task, completion: this.dependencies.repository.completion(taskId) };
+      ? { task, submissions: dashboard.submissions, dashboard }
+      : { task, completion: dashboard.completion, dashboard };
   }
 
   readForStudent(context: unknown, taskId: FileSubmissionTaskId): StudentTaskView {
