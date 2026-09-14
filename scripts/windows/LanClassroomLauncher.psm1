@@ -190,7 +190,11 @@ function Test-LanDeployment {
 function Test-LanSqlite {
   param([Parameter(Mandatory)][string] $RepositoryRoot, [Parameter(Mandatory)][string] $RuntimeRoot)
   $node = (Get-Command node -ErrorAction Stop).Source
-  $probe = Join-Path $RuntimeRoot ('.sqlite-probe-' + [guid]::NewGuid().ToString('N') + '.sqlite')
+  # The child runs from apps\server, so a caller-supplied relative runtime
+  # path would otherwise be resolved below that directory rather than at the
+  # launcher runtime.  Keep the preflight probe in the intended private root.
+  $runtime = [IO.Path]::GetFullPath($RuntimeRoot)
+  $probe = Join-Path $runtime ('.sqlite-probe-' + [guid]::NewGuid().ToString('N') + '.sqlite')
   $prior = [Environment]::GetEnvironmentVariable('LAN_CLASSROOM_SQLITE_PREFLIGHT', 'Process')
   try {
     [Environment]::SetEnvironmentVariable('LAN_CLASSROOM_SQLITE_PREFLIGHT', $probe, 'Process')
