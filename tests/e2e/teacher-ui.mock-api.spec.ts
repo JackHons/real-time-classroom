@@ -48,4 +48,23 @@ test.describe('teacher management UI (mock API contracts)', () => {
     await expect(page.getByText('已逾期：原截止時間已過，收件已關閉；若要再次補收，請按「重新開放」。')).toBeVisible();
     await expect(page.getByText('已逾期／教師重新開放中：原截止時間已過，學生可交件至你再次關閉收件。')).toHaveCount(0);
   });
+
+  test('class deletion requires the displayed name and refreshes after the dialog closes', async ({ page }) => {
+    let deleted = false;
+    await page.route('**/api/teacher/classes', (route) => route.fulfill({ json: { items: deleted ? [] : [{ id: 'class-1', name: '一甲', createdAtUtc: '2026-01-01T00:00:00Z', updatedAtUtc: '2026-01-01T00:00:00Z' }] } }));
+    await page.route('**/api/classes/class-1', (route) => {
+      if (route.request().method() === 'GET') return route.fulfill({ json: { classId: 'class-1', className: '一甲', students: 2, joinedStudents: 2, materials: 1, questions: 1, fileTasks: 1, submissions: 1 } });
+      deleted = true; return route.fulfill({ status: 204 });
+    });
+    await page.goto('/teacher/roster');
+    await page.getByRole('button', { name: '刪除班級', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '刪除「一甲」？' })).toBeVisible();
+    await expect(page.getByText('已交文件：1')).toBeVisible();
+    const confirmation = page.getByRole('textbox', { name: '請輸入班級名稱「一甲」以確認' });
+    await expect(page.getByRole('button', { name: '永久刪除班級', exact: true })).toBeDisabled();
+    await confirmation.fill('一甲');
+    await page.getByRole('button', { name: '永久刪除班級', exact: true }).click();
+    await expect(page.getByText('已刪除「一甲」及其班級資料。')).toBeVisible();
+    await expect(page.getByText('請先建立班級。')).toBeVisible();
+  });
 });

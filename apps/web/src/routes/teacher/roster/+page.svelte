@@ -12,7 +12,7 @@
   async function refreshJoined(): Promise<void> { joined = selectedClassId ? (await api.joinedStudents(selectedClassId)).items : []; }
   async function createClass(): Promise<void> { await work(async () => { const created = await api.createClass(className); className = ''; selectedClassId = created.id; await refresh(); notice = `已建立「${created.name}」。學生現在可以只輸入學號加入。`; }); }
   async function askDelete(): Promise<void> { await work(async () => { if (!selectedClassId) return; deletion = await api.classDeletionImpact(selectedClassId); confirmationName = ''; deleteDialog?.showModal(); }); }
-  async function deleteClass(): Promise<void> { await work(async () => { if (deletion === undefined || selectedClassId !== deletion.classId) return; await api.deleteClass(deletion.classId, confirmationName); deleteDialog?.close(); const removed = deletion.className; deletion = undefined; await refresh(); notice = `已刪除「${removed}」及其班級資料。`; }); }
+  async function deleteClass(): Promise<void> { await work(async () => { if (deletion === undefined || selectedClassId !== deletion.classId) return; const removed = deletion.className; await api.deleteClass(deletion.classId, confirmationName); deleteDialog?.close(); deletion = undefined; await refresh(); notice = `已刪除「${removed}」及其班級資料。`; }); }
   function closeDelete(): void { deleteDialog?.close(); deletion = undefined; confirmationName = ''; }
   async function logout(): Promise<void> { await api.logout(); await goto('/teacher'); }
 </script>
