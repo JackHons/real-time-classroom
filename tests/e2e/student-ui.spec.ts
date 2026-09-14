@@ -16,7 +16,7 @@ test.describe('student interface (real server)', () => {
     await page.getByLabel('學號').fill(number);
     await expectMinimumTarget(page, '加入課堂');
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('已加入課堂');
+    await page.waitForURL('**/student/activities');
     await expect(page.getByRole('heading', { name: '目前活動' })).toBeVisible();
     await expect(page.getByRole('link', { name: /今天的課堂重點/ })).toBeVisible();
     await expect(page.getByRole('link', { name: /課堂作業/ })).toBeVisible();
@@ -36,6 +36,7 @@ test.describe('student interface (real server)', () => {
     // context valid without depending on cookies from the previous test.
     await page.getByLabel('學號').fill(number);
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
+    await page.waitForURL('**/student/activities');
     const active = page.getByRole('heading', { name: '目前活動' });
     await expect(active).toBeVisible();
     await page.evaluate(() => { document.documentElement.style.zoom = '2'; });

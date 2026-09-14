@@ -7,6 +7,7 @@ test.describe('student interface (mocked edge contracts)', () => {
     await page.route('**/api/auth/student/csrf', (route) => route.fulfill({ contentType: 'application/json', body: '{"csrfToken":"mock"}' }));
     await page.route('**/api/student/activities', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"TEMPORARY"}' }));
     await page.goto('/student');
+    await page.waitForURL('**/student/activities');
     await expect(page.getByRole('heading', { name: '目前活動' })).toBeVisible();
     await expect(page.getByText('活動清單暫時無法更新，請檢查網路後重新整理。')).toBeVisible();
     await expect(page.getByRole('button', { name: '重新整理' })).toBeEnabled();
@@ -23,6 +24,7 @@ test.describe('student interface (mocked edge contracts)', () => {
       return route.fulfill({ json: { questions: { items: [{ id: 'q2-repeat', prompt: '不應附加', kind: 'short_text', state: 'open' }] }, fileTasks: { items: [{ id: 'f3', title: '作業三', description: '', state: 'open', deadlineAtUtc: '' }] } } });
     });
     await page.goto('/student');
+    await page.waitForURL('**/student/activities');
     await expect(page.getByText('題目一')).toBeVisible();
     await page.getByRole('button', { name: '載入更多活動' }).click();
     await expect(page.getByText('題目二')).toBeVisible();
@@ -38,6 +40,7 @@ test.describe('student interface (mocked edge contracts)', () => {
     await page.route('**/api/auth/student/csrf', (route) => route.fulfill({ contentType: 'application/json', body: '{"csrfToken":"mock"}' }));
     await page.route('**/api/student/activities', (route) => route.fulfill(calls++ === 0 ? { json: { questions: { items: [] }, fileTasks: { items: [] } } } : { status: 401, json: { error: 'UNAUTHENTICATED' } }));
     await page.goto('/student');
+    await page.waitForURL('**/student/activities');
     await page.getByRole('button', { name: '重新整理' }).click();
     await expect(page.getByRole('status')).toContainText('登入已失效');
     await expect(page.getByRole('heading', { name: '目前活動' })).toHaveCount(0);

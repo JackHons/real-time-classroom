@@ -3,6 +3,7 @@
   import { page } from '$app/state';
   import { RealtimeClient, type RealtimeStatus } from '$lib/realtime/client';
   import { isSessionExpired, studentApi } from '$lib/student/api';
+  import StudentShell from '$lib/student/StudentShell.svelte';
   import type { StudentFileTask } from '$lib/student/types';
 
   let view: StudentFileTask | undefined;
@@ -64,12 +65,10 @@
   }
 </script>
 
-<svelte:head><title>繳交作業｜LAN 課堂互動平台</title></svelte:head>
-<main>
-  <a class="skip" href="#content">跳到主要內容</a>
+<StudentShell title="繳交作業">
   {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="connection">即時更新暫時中斷，作業狀態仍會定時重新確認。</p>{/if}
   {#if view && !sessionExpired}
-    <section id="content" aria-labelledby="task-title">
+    <section aria-labelledby="task-title">
       <h1 id="task-title">{view.task.title}</h1>
       <p>{view.task.description}</p>
       <p class:urgent={deadlinePassed}><strong>截止時間：</strong>{new Date(view.task.deadlineAtUtc).toLocaleString('zh-Hant-TW')} {deadlinePassed ? '（已截止）' : ''}</p>
@@ -90,11 +89,9 @@
     </section>
   {:else}<p role="status">{notice || '正在讀取作業…'}</p>{/if}
   <p role="status" aria-live="polite">{notice}</p>
-</main>
+</StudentShell>
 
 <style>
-  main { max-width: 48rem; margin: auto; padding: 1rem; color: #172554; font: 1rem/1.55 system-ui, sans-serif; }
   .connection { color: #475569; font-size: .9rem; }
-  form { display:grid; gap:.7rem; } input, button { min-height:44px; font:inherit; } button { border:0; border-radius:.4rem; background:#075985; color:white; padding:.6rem 1rem; font-weight:700; } progress { width:100%; height:1.5rem; } .urgent { color:#9f1239; font-weight:700; } :focus-visible { outline:3px solid #f59e0b; outline-offset:2px; } .skip { position:absolute; left:-999px; } .skip:focus { left:1rem; top:1rem; background:#fff; padding:.5rem; }
-  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+  form { display:grid; gap:.7rem; } input, button { min-height:44px; font:inherit; } button { border:0; border-radius:.4rem; background:#075985; color:white; padding:.6rem 1rem; font-weight:700; } progress { width:100%; height:1.5rem; } .urgent { color:#9f1239; font-weight:700; }
 </style>

@@ -3,6 +3,7 @@
   import { page } from '$app/state';
   import { RealtimeClient, type RealtimeStatus } from '$lib/realtime/client';
   import QuestionAnswer from '$lib/student/QuestionAnswer.svelte';
+  import StudentShell from '$lib/student/StudentShell.svelte';
   import { isSessionExpired, studentApi } from '$lib/student/api';
   import { createAnswerQueue, flushAnswers, type AnswerQueue } from '$lib/student/answer-queue';
   import type { AnswerPayload, QueuedAnswer, StudentQuestion } from '$lib/student/types';
@@ -130,24 +131,18 @@
   }
 </script>
 
-<svelte:head><title>回答題目｜LAN 課堂互動平台</title></svelte:head>
-<main>
-  <a class="skip" href="#content">跳到主要內容</a>
-  <div id="content" aria-live="polite" class="notice">{notice}</div>
+<StudentShell title="回答題目">
+  <div aria-live="polite" class="notice">{notice}</div>
   {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="connection">即時更新暫時中斷，題目狀態仍會定時重新確認。</p>{/if}
   {#if view}<QuestionAnswer {view} onSubmit={submit} pending={state === 'saving'} />
   {#if state === 'queued'}<button class="discard" onclick={() => void (async () => { await queue?.discard(); state = 'ready'; notice = '本機未同步答案已捨棄。'; })()}>捨棄本機未同步答案</button>{/if}
   {:else if state === 'loading'}<p role="status">正在讀取題目…</p>
   {:else}<button onclick={() => void poll()}>重新整理</button>{/if}
-</main>
+</StudentShell>
 
 <style>
-  main { max-width: 48rem; margin: auto; padding: 1rem; color: #172554; font: 1rem/1.55 system-ui, sans-serif; }
   .notice { min-height: 1.5rem; color: #075985; font-weight: 600; }
   .connection { color: #475569; font-size: .9rem; }
   button { min-height: 44px; padding: .6rem 1rem; color: white; background: #075985; border: 0; border-radius: .4rem; font: inherit; }
   .discard { display: block; margin-top: .75rem; background: #991b1b; }
-  :focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
-  .skip { position: absolute; left: -999px; } .skip:focus { left: 1rem; top: 1rem; background:white; padding:.5rem; }
-  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
