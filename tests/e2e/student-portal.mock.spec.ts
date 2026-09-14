@@ -23,3 +23,15 @@ test('student activity view returns to join page when no student session exists'
   await page.waitForURL('**/student');
   await expect(page.getByRole('heading', { name: '加入課堂' })).toBeVisible();
 });
+
+test('a re-closed late-reopened assignment no longer presents an upload form', async ({ page }) => {
+  await page.route('**/api/classes/class-1/file-tasks/t1*', (route) => route.fulfill({ json: {
+    task: { id: 't1', classId: 'class-1', title: '補交作業', description: '', state: 'closed', deadlineAtUtc: '2020-01-01T00:00:00.000Z', maxBytes: 100000000, reopenedAtUtc: '2026-01-01T00:00:00.000Z' },
+    submission: { submitted: false }
+  } }));
+  await page.goto('/student/task/t1?class=class-1');
+  await expect(page.getByRole('heading', { name: '補交作業' })).toBeVisible();
+  await expect(page.getByText('（已截止）')).toBeVisible();
+  await expect(page.getByText('此作業目前不接受上傳。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '上傳並繳交' })).toHaveCount(0);
+});

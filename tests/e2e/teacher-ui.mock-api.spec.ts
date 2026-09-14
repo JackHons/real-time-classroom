@@ -33,6 +33,7 @@ test.describe('teacher management UI (mock API contracts)', () => {
     const dashboard = () => ({ completion: { eligibleStudentCount: 2, submittedStudentCount: 1 }, submissions: [{ studentId: 'student-1', displayName: '王小明', studentNumber: 'S1', displayFilename: 'homework.pdf', declaredMimeType: 'application/pdf', byteLength: 42, receivedCompleteAtUtc: '2026-01-01T01:00:00Z' }], missingStudents: [{ studentId: 'student-2', displayName: '李四', studentNumber: 'S2' }] });
     await page.route('**/api/teacher/classes/class-1/file-tasks', (route) => route.fulfill({ json: { items: [{ id: 'task-1', classId: 'class-1', title: '作業一', description: '', state, deadlineAtUtc: '2020-01-01T00:00:00Z', maxBytes: 100000000, reopenedAtUtc: state === 'open' ? '2026-01-01T00:00:00Z' : null }] } }));
     await page.route('**/api/classes/class-1/file-tasks/task-1/open', (route) => { state = 'open'; return route.fulfill({ json: { id: 'task-1', classId: 'class-1', title: '作業一', description: '', state, deadlineAtUtc: '2020-01-01T00:00:00Z', maxBytes: 100000000, reopenedAtUtc: '2026-01-01T00:00:00Z' } }); });
+    await page.route('**/api/classes/class-1/file-tasks/task-1/close', (route) => { state = 'closed'; return route.fulfill({ json: { id: 'task-1', classId: 'class-1', title: '作業一', description: '', state, deadlineAtUtc: '2020-01-01T00:00:00Z', maxBytes: 100000000, reopenedAtUtc: '2026-01-01T00:00:00Z' } }); });
     await page.route('**/api/classes/class-1/file-tasks/task-1', (route) => route.fulfill({ json: { task: { id: 'task-1', classId: 'class-1', title: '作業一', description: '', state, deadlineAtUtc: '2020-01-01T00:00:00Z', maxBytes: 100000000, reopenedAtUtc: state === 'open' ? '2026-01-01T00:00:00Z' : null }, ...(state === 'closed' ? { submissions: dashboard().submissions } : { completion: dashboard().completion }), dashboard: dashboard() } }));
     await page.goto('/teacher/assignments');
     await expect(page.getByRole('heading', { name: '作業一：收件儀表板' })).toBeVisible();
@@ -43,5 +44,8 @@ test.describe('teacher management UI (mock API contracts)', () => {
     await expect(page.getByText('已逾期後重新開放；學生可交件至你再次關閉收件。')).toBeVisible();
     await expect(page.getByText('已逾期／教師重新開放中：原截止時間已過，學生可交件至你再次關閉收件。')).toBeVisible();
     await expect(page.getByRole('button', { name: '關閉收件', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: '關閉收件', exact: true }).click();
+    await expect(page.getByText('已逾期：原截止時間已過，收件已關閉；若要再次補收，請按「重新開放」。')).toBeVisible();
+    await expect(page.getByText('已逾期／教師重新開放中：原截止時間已過，學生可交件至你再次關閉收件。')).toHaveCount(0);
   });
 });

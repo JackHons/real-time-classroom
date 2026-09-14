@@ -22,7 +22,7 @@
   const taskId = page.params.id ?? '';
   const classId = page.url.searchParams.get('class') ?? '';
   $: deadlinePassed = view ? new Date(view.task.deadlineAtUtc).getTime() <= Date.now() : false;
-  $: lateReopened = typeof view?.task.reopenedAtUtc === 'string';
+  $: lateReopened = view?.task.state === 'open' && typeof view.task.reopenedAtUtc === 'string';
   $: acceptingSubmissions = view?.task.state === 'open' && (!deadlinePassed || lateReopened);
   async function load(): Promise<void> {
     if (!classId) { notice = '缺少課堂資訊；請使用老師提供的作業連結。'; return; }
