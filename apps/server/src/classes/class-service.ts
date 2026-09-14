@@ -69,14 +69,15 @@ export class ClassService {
       const normalizedStudentNumber = normalizeStudentNumber(rawStudentNumber);
       if (displayName.length === 0) issues.push({ line, message: '姓名不可為空白' });
       if (normalizedStudentNumber.length === 0) issues.push({ line, message: '學號不可為空白' });
-      if (row.fields.length !== 2) issues.push({ line, message: '每列必須剛好有姓名及學號兩欄' });
+      if (row.fields.length < 2) issues.push({ line, message: '每列必須包含學號及姓名兩欄' });
       if (normalizedStudentNumber.length > 0 && seenNumbers.has(normalizedStudentNumber)) issues.push({ line, message: 'CSV 內學號重複' });
       seenNumbers.add(normalizedStudentNumber);
       output.push({ displayName, rawStudentNumber, normalizedStudentNumber });
       rowLines.push(line);
     }
     if (rows.length === 0) issues.push({ line: 1, message: 'CSV 不可沒有名單資料' });
-    return { preview: { rows: output, issues }, rowLines };
+    const ignored = parsed.ignoredColumnLines;
+    return { preview: { rows: output, issues, ...(ignored.length === 0 ? {} : { ignoredColumnLines: ignored }) }, rowLines };
   }
 
   importRosterCsv(teacherContext: unknown, classId: ClassId, csv: string): CsvPreview {
@@ -133,7 +134,7 @@ function normalizeText(value: string): string {
 
 type ParsedCsvRow = Readonly<{ fields: readonly string[]; line: number }>;
 
-function parseCsv(csv: string): Readonly<{ rows: readonly ParsedCsvRow[]; issues: readonly CsvIssue[] }> {
+function parseCsv(csv: string): Readonly<{ rows: readonly ParsedCsvRow[]; issues: readonly CsvIssue[]; ignoredColumnLines: readonly number[] }> {
   const text = csv.replace(/^\uFEFF/, '');
   const rows: ParsedCsvRow[] = [];
   let current: string[] = [];
@@ -165,16 +166,17 @@ function parseCsv(csv: string): Readonly<{ rows: readonly ParsedCsvRow[]; issues
     }
     field += character;
   }
-  if (quoted) return { rows: [], issues: [{ line: physicalLine, message: 'CSV 引號未正確結束' }] };
+  if (quoted) return { rows: [], issues: [{ line: physicalLine, message: 'CSV 引號未正確結束' }], ignoredColumnLines: [] };
   if (field.length > 0 || current.length > 0) { current.push(field); rows.push({ fields: current, line: rowLine }); }
   const nonBlankRows = rows.filter((row) => row.fields.some((value) => value.length > 0));
   const header = nonBlankRows.shift();
-  if (header === undefined) return { rows: [], issues: [{ line: 1, message: 'CSV 必須包含標題列：姓名,學號' }] };
+  if (header === undefined) return { rows: [], issues: [{ line: 1, message: 'CSV 必須包含標題列：姓名,學號' }], ignoredColumnLines: [] };
   const expected = header.fields.map(normalizeText);
-  const nameFirst = expected.length === 2 && ((expected[0] === '姓名' && expected[1] === '學號') || (expected[0] === 'name' && expected[1] === 'studentNumber'));
-  const numberFirst = expected.length === 2 && ((expected[0] === '學號' && expected[1] === '姓名') || (expected[0] === 'studentNumber' && expected[1] === 'name'));
+  const nameFirst = (expected[0] === '姓名' && expected[1] === '學號') || (expected[0] === 'name' && expected[1] === 'studentNumber');
+  const numberFirst = (expected[0] === '學號' && expected[1] === '姓名') || (expected[0] === 'studentNumber' && expected[1] === 'name');
   if (!nameFirst && !numberFirst) {
-    return { rows: [], issues: [{ line: header.line, message: 'CSV 標題必須為「姓名,學號」、「學號,姓名」、name,studentNumber 或 studentNumber,name' }] };
+    return { rows: [], issues: [{ line: header.line, message: 'CSV 標題必須為「姓名,學號」、「學號,姓名」、name,studentNumber 或 studentNumber,name' }], ignoredColumnLines: [] };
   }
-  return { rows: numberFirst ? nonBlankRows.map((row) => ({ ...row, fields: [row.fields[1] ?? '', row.fields[0] ?? ''] })) : nonBlankRows, issues: [] };
+  const normalizedRows = numberFirst ? nonBlankRows.map((row) => ({ ...row, fields: [row.fields[1] ?? '', row.fields[0] ?? ''] })) : nonBlankRows;
+  return { rows: normalizedRows, issues: [], ignoredColumnLines: nonBlankRows.filter((row) => row.fields.length > 2).map((row) => row.line) };
 }

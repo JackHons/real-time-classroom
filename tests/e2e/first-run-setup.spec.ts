@@ -2,11 +2,14 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 
-const setupOrigin = 'http://127.0.0.1:4174';
+// Keep this second isolated runtime separate from the main e2e server.  A
+// caller may override it when another local test already uses the default.
+const setupPort = process.env.LAN_CLASSROOM_SETUP_E2E_PORT ?? '4175';
+const setupOrigin = `http://127.0.0.1:${setupPort}`;
 
 test('local teacher can complete the one-time setup flow on an isolated real runtime', async ({ browser }) => {
   const server = spawn(process.execPath, ['scripts/e2e-server.mjs'], {
-    cwd: process.cwd(), stdio: 'ignore', env: { ...process.env, LAN_CLASSROOM_E2E_MODE: 'setup', LAN_CLASSROOM_E2E_PORT: '4174' }
+    cwd: process.cwd(), stdio: 'ignore', env: { ...process.env, LAN_CLASSROOM_E2E_MODE: 'setup', LAN_CLASSROOM_E2E_PORT: setupPort }
   });
   try {
     await waitForSetupServer(server);

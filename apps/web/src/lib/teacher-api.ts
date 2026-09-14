@@ -1,7 +1,7 @@
 export type ClassRoom = Readonly<{ id: string; name: string; createdAtUtc: string; updatedAtUtc: string }>;
 export type Page<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
 export type CsvIssue = Readonly<{ line: number; message: string }>;
-export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: string; rawStudentNumber: string; normalizedStudentNumber: string }>[]; issues: readonly CsvIssue[] }>;
+export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: string; rawStudentNumber: string; normalizedStudentNumber: string }>[]; issues: readonly CsvIssue[]; ignoredColumnLines?: readonly number[] }>;
 export type PendingApproval = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string }>;
 export type RosterStudent = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: boolean; approvedAtUtc: string }>;
 export type QuestionSummary = Readonly<{ id: string; classId: string; templateId: string | null; kind: QuestionKind; prompt: string; state: 'draft' | 'open' | 'closed' }>;

@@ -7,7 +7,12 @@ export type RosterEntry = Readonly<{
   normalizedStudentNumber: string;
 }>;
 export type CsvIssue = Readonly<{ line: number; message: string }>;
-export type CsvPreview = Readonly<{ rows: readonly RosterEntry[]; issues: readonly CsvIssue[] }>;
+export type CsvPreview = Readonly<{
+  rows: readonly RosterEntry[];
+  issues: readonly CsvIssue[];
+  /** Rows whose columns after 學號 and 姓名 are deliberately not stored. */
+  ignoredColumnLines?: readonly number[];
+}>;
 export type JoinResult =
   | Readonly<{ outcome: 'matched'; student: Student }>
   | Readonly<{ outcome: 'pending'; request: PendingStudentRequest }>;
