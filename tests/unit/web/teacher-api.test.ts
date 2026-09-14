@@ -29,4 +29,17 @@ describe('TeacherApi', () => {
     await expect(api.login('secret')).rejects.toEqual(new ApiError(400, 'CLASS_NAME_REQUIRED'));
     expect(readableError(new ApiError(429, 'RATE_LIMITED'))).toContain('請稍候');
   });
+
+  it('restores a teacher session with a same-origin CSRF bootstrap and returns roster validation feedback', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({ actor: 'teacher' }), { status: 200 }))
+      .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({ csrfToken: 'restored' }), { status: 200 }))
+      .mockResolvedValueOnce(new globalThis.Response(JSON.stringify({ rows: [], issues: [{ line: 2, message: '學號已存在於班級名單' }] }), { status: 422 }));
+    globalThis.fetch = fetch as typeof globalThis.fetch;
+    const api = new TeacherApi();
+    await expect(api.restoreTeacher()).resolves.toBe(true);
+    await expect(api.importRoster('class-1', '學號,姓名\nA1,Ada')).resolves.toMatchObject({ issues: [{ line: 2 }] });
+    expect((fetch.mock.calls[1]?.[1] as { headers: Record<string, string> }).headers).toMatchObject({ 'x-csrf-bootstrap': '1' });
+    expect((fetch.mock.calls[2]?.[1] as { headers: Record<string, string> }).headers).toMatchObject({ 'x-csrf-token': 'restored' });
+  });
 });

@@ -171,8 +171,10 @@ function parseCsv(csv: string): Readonly<{ rows: readonly ParsedCsvRow[]; issues
   const header = nonBlankRows.shift();
   if (header === undefined) return { rows: [], issues: [{ line: 1, message: 'CSV 必須包含標題列：姓名,學號' }] };
   const expected = header.fields.map(normalizeText);
-  if (expected.length !== 2 || !((expected[0] === '姓名' && expected[1] === '學號') || (expected[0] === 'name' && expected[1] === 'studentNumber'))) {
-    return { rows: [], issues: [{ line: header.line, message: 'CSV 標題必須為「姓名,學號」或「name,studentNumber」' }] };
+  const nameFirst = expected.length === 2 && ((expected[0] === '姓名' && expected[1] === '學號') || (expected[0] === 'name' && expected[1] === 'studentNumber'));
+  const numberFirst = expected.length === 2 && ((expected[0] === '學號' && expected[1] === '姓名') || (expected[0] === 'studentNumber' && expected[1] === 'name'));
+  if (!nameFirst && !numberFirst) {
+    return { rows: [], issues: [{ line: header.line, message: 'CSV 標題必須為「姓名,學號」、「學號,姓名」、name,studentNumber 或 studentNumber,name' }] };
   }
-  return { rows: nonBlankRows, issues: [] };
+  return { rows: numberFirst ? nonBlankRows.map((row) => ({ ...row, fields: [row.fields[1] ?? '', row.fields[0] ?? ''] })) : nonBlankRows, issues: [] };
 }

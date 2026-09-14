@@ -83,6 +83,30 @@ export function createUploadRoutes(dependencies: UploadRouteDependencies): (requ
       });
       return true;
     }
+    const preview = /^\/api\/classes\/([^/]+)\/file-tasks\/([^/]+)\/submissions\/([^/]+)\/preview$/.exec(path);
+    if (request.method === 'GET' && preview !== null) {
+      dependencies.teacherContext(request);
+      const classId = decodeURIComponent(preview[1]!) as ClassId;
+      const taskId = decodeURIComponent(preview[2]!) as FileSubmissionTaskId;
+      const task = dependencies.repository.task(taskId);
+      if (task === undefined || task.classId !== classId || task.state !== 'closed') throw new Error('FILE_TASK_NOT_FOUND');
+      const submission = dependencies.repository.studentSubmission(taskId, decodeURIComponent(preview[3]!) as StudentId);
+      if (submission === undefined || !isSafePreviewType(submission.declaredMimeType)) throw new Error('FILE_PREVIEW_UNSUPPORTED');
+      await withExportSlot(async () => {
+        await dependencies.storage.ensureReady();
+        const handle = await dependencies.storage.openVerifiedFinal(submission.storageKey);
+        try {
+          response.writeHead(200, {
+            'cache-control': 'no-store', 'content-type': submission.declaredMimeType!,
+            'content-disposition': `inline; filename="preview"`, 'x-content-type-options': 'nosniff',
+            'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'", 'content-length': String(submission.byteLength)
+          });
+          await streamVerifiedDownload(handle, submission.byteLength, submission.sha256, response);
+        } catch (error) { if (!response.destroyed) response.destroy(error instanceof Error ? error : undefined); throw error; }
+        finally { await handle.close().catch(() => undefined); }
+      });
+      return true;
+    }
     const archive = /^\/api\/classes\/([^/]+)\/file-tasks\/([^/]+)\/submissions\.zip$/.exec(path);
     if (request.method === 'GET' && archive !== null) {
       dependencies.teacherContext(request);
@@ -165,6 +189,9 @@ function mediaType(value: string | string[] | undefined): string | null {
   if (typeof value !== 'string') return null;
   const type = value.split(';', 1)[0]!.trim().toLowerCase();
   return type.length > 0 && type.length <= 255 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : null;
+}
+function isSafePreviewType(value: string | null): value is 'application/pdf' | 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'text/plain' {
+  return value === 'application/pdf' || value === 'image/png' || value === 'image/jpeg' || value === 'image/gif' || value === 'image/webp' || value === 'text/plain';
 }
 function json(response: ServerResponse, status: number, body: unknown): void { response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(body)); }
 async function streamVerifiedDownload(handle: FileHandle, expectedBytes: number, expectedSha256: string, response: ServerResponse): Promise<void> {

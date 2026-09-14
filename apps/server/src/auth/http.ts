@@ -335,15 +335,22 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         json(request, response, 401, { error: 'UNAUTHENTICATED' }); return;
       }
 
-      // A restored student page needs a CSRF token without putting any session
-      // secret in web storage. This explicit bootstrap returns only the
-      // derived HMAC token after browser same-origin attestation.
+      // A restored page needs a CSRF token without putting any session secret
+      // in web storage.  The non-simple header plus Fetch Metadata make this a
+      // same-origin bootstrap, rather than a permissive Origin fallback.
+      if (request.method === 'POST' && pathname === '/api/auth/teacher/csrf') {
+        if (!hasCsrfBootstrapProof(request, options.allowedOrigin)) { json(request, response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
+        const token = parseCookies(request.headers.cookie)[TEACHER_SESSION_COOKIE];
+        if (options.sessions.authenticateTeacher(token) === undefined) { json(request, response, 401, { error: 'TEACHER_AUTH_REQUIRED' }); return; }
+        json(request, response, 200, { csrfToken: csrfToken(token!, options.csrfSecret) }); return;
+      }
+
       if (request.method === 'POST' && pathname === '/api/auth/student/csrf') {
         // Chromium omits Origin on a same-origin fetch. This is a dedicated
         // bootstrap protocol, not a permissive Origin fallback: the client
         // must opt in with a non-simple header and the browser must attest a
         // same-origin fetch. If Origin is present it must still match exactly.
-        if (!hasStudentCsrfBootstrapProof(request, options.allowedOrigin)) { json(request, response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
+        if (!hasCsrfBootstrapProof(request, options.allowedOrigin)) { json(request, response, 403, { error: 'ORIGIN_REQUIRED' }); return; }
         const token = parseCookies(request.headers.cookie)[STUDENT_SESSION_COOKIE];
         const student = options.sessions.authenticateStudent(token);
         if (student === undefined) { json(request, response, 401, { error: 'STUDENT_AUTH_REQUIRED' }); return; }
@@ -370,7 +377,7 @@ export function isValidCsrfToken(header: string | string[] | undefined, sessionT
 }
 
 function hasAllowedOrigin(request: IncomingMessage, allowedOrigin: string): boolean { return allowedOrigin.length > 0 && request.headers.origin === allowedOrigin; }
-function hasStudentCsrfBootstrapProof(request: IncomingMessage, allowedOrigin: string): boolean {
+function hasCsrfBootstrapProof(request: IncomingMessage, allowedOrigin: string): boolean {
   const origin = request.headers.origin;
   if (origin !== undefined && origin !== allowedOrigin) return false;
   return allowedOrigin.length > 0 && request.headers['x-csrf-bootstrap'] === '1' && request.headers['sec-fetch-site'] === 'same-origin';

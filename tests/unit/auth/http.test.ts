@@ -168,6 +168,18 @@ describe('auth HTTP listener', () => {
     expect(accepted.status).toBe(204);
     expect(accepted.headers.get('set-cookie')).toContain('Max-Age=0');
   });
+
+  it('restores a teacher CSRF token only after same-origin bootstrap proof', async () => {
+    const base = await authServer({ join: () => undefined });
+    const login = await fetch(`${base}/api/auth/teacher/login`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct' }) });
+    const cookie = login.headers.get('set-cookie')?.split(';')[0];
+    if (cookie === undefined) throw new Error('missing session cookie');
+    const rejected = await fetch(`${base}/api/auth/teacher/csrf`, { method: 'POST', headers: { cookie, 'x-csrf-bootstrap': '1' } });
+    expect(rejected.status).toBe(403);
+    const accepted = await fetch(`${base}/api/auth/teacher/csrf`, { method: 'POST', headers: { cookie, origin: 'http://classroom.test', 'x-csrf-bootstrap': '1', 'sec-fetch-site': 'same-origin' } });
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({ csrfToken: expect.any(String) });
+  });
 });
 
 function rawTeacherLogin(port: number, localAddress: string): Promise<number> {

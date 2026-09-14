@@ -60,6 +60,14 @@ describe('ClassService', () => {
     expect(subject.previewRosterCsv('姓名,學號\n, A1\nB, a1')).toEqual({ rows: [{ displayName: '', rawStudentNumber: 'A1', normalizedStudentNumber: 'A1' }, { displayName: 'B', rawStudentNumber: 'a1', normalizedStudentNumber: 'A1' }], issues: [{ line: 2, message: '姓名不可為空白' }, { line: 3, message: 'CSV 內學號重複' }] });
   });
 
+  it('accepts the classroom-facing student-number-first CSV order and stores the same roster identity', () => {
+    const repo = repository(); const subject = service(repo);
+    subject.createClass('teacher', '1A');
+    expect(subject.previewRosterCsv('學號,姓名\nS100,王小明')).toEqual({ rows: [{ displayName: '王小明', rawStudentNumber: 'S100', normalizedStudentNumber: 'S100' }], issues: [] });
+    subject.importRosterCsv('teacher', ids.class, '學號,姓名\nS100,王小明');
+    expect(repo.students).toMatchObject([{ displayName: '王小明', rawStudentNumber: 'S100', normalizedStudentNumber: 'S100' }]);
+  });
+
   it('keeps physical CSV line numbers when blank rows are ignored', () => {
     const repo = repository();
     const subject = service(repo);

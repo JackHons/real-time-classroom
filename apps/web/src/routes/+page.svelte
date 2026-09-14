@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { goto } from '$app/navigation';
   import { RealtimeClient, type RealtimeStatus } from '$lib/realtime/client';
   import { TeacherApi, readableError, type ClassRoom, type ClosedQuestionView, type CsvPreview, type FileTask, type FileTaskView, type OpenQuestionView, type PendingApproval, type QuestionKind, type QuestionSummary, type ReferenceAnswer, type RosterStudent, type Template, type TemplateInput } from '$lib/teacher-api';
   const api = new TeacherApi();
@@ -13,9 +14,9 @@
   const selectedClass = (): ClassRoom | undefined => classes.find((item) => item.id === selectedClassId);
   const selectedTemplate = (): Template | undefined => templates.find((item) => item.id === selectedTemplateId);
   onMount(() => { mounted = true; void initialise(); return () => { mounted = false; dataGeneration += 1; realtime?.stop(); if (pollTimer !== undefined) clearInterval(pollTimer); }; });
-  async function initialise(): Promise<void> { try { const health = await api.health(); if (health.reason === 'FIRST_RUN_SETUP_REQUIRED') { state = 'first-run'; return; } state = 'login'; } catch { state = 'login'; } }
+  async function initialise(): Promise<void> { try { const health = await api.health(); if (health.reason === 'FIRST_RUN_SETUP_REQUIRED') { state = 'first-run'; return; } if (await api.restoreTeacher()) { await goto('/teacher'); return; } state = 'login'; } catch { state = 'login'; } }
   async function run(work: () => Promise<void>): Promise<void> { busy = true; error = ''; notice = ''; try { await work(); } catch (caught) { error = readableError(caught); } finally { busy = false; } }
-  async function login(): Promise<void> { await run(async () => { await api.login(password); password = ''; state = 'teacher'; notice = '已登入教師管理介面。'; await refreshClasses(); await refreshTemplates(); startRealtime(); }); }
+  async function login(): Promise<void> { await run(async () => { await api.login(password); password = ''; await goto('/teacher'); }); }
   async function refreshClasses(expectedGeneration = dataGeneration): Promise<void> { const page = await api.classes(); if (!mounted || expectedGeneration !== dataGeneration) return; classes = page.items; classCursor = page.nextCursor; if (!classes.some((item) => item.id === selectedClassId)) selectedClassId = classes[0]?.id ?? ''; await refreshClassDetails(expectedGeneration); }
   async function refreshClassDetails(expectedGeneration = dataGeneration): Promise<void> { if (!selectedClassId) { roster = []; pending = []; questions = []; fileTasks = []; rosterCursor = pendingCursor = questionsCursor = fileTasksCursor = undefined; return; } const [nextRoster, nextPending, nextQuestions, nextFileTasks] = await Promise.all([api.roster(selectedClassId), api.pending(selectedClassId), api.questions(selectedClassId), api.fileTasks(selectedClassId)]); if (!mounted || expectedGeneration !== dataGeneration) return; roster = nextRoster.items; rosterCursor = nextRoster.nextCursor; pending = nextPending.items; pendingCursor = nextPending.nextCursor; questions = nextQuestions.items; questionsCursor = nextQuestions.nextCursor; fileTasks = nextFileTasks.items; fileTasksCursor = nextFileTasks.nextCursor; }
   async function moreClasses(): Promise<void> { if (classCursor === undefined) return; const page = await api.classes(classCursor); classes = [...classes, ...page.items]; classCursor = page.nextCursor; }

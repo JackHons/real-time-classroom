@@ -14,7 +14,7 @@ export type Question = Readonly<{ id: string; classId: string; kind: QuestionKin
 export type OpenQuestionView = Readonly<{ question: Question; aggregate: Readonly<{ eligibleStudentCount: number; answeredStudentCount: number; counts: Record<string, number>; shortTextResponseCount: number }> }>;
 export type ClosedQuestionView = Readonly<{ question: Question; snapshot: Record<string, unknown>; answers: readonly Readonly<{ studentId: string; displayName: string; studentNumber: string; answer?: unknown }>[]; nextCursor?: string }>;
 export type FileTask = Readonly<{ id: string; classId: string; title: string; description: string; state: 'draft' | 'open' | 'closed'; deadlineAtUtc: string; maxBytes: number }>;
-export type FileTaskView = Readonly<{ task: FileTask; completion?: Readonly<{ eligibleStudentCount: number; submittedStudentCount: number }>; submissions?: readonly Readonly<{ studentId: string; displayName: string; studentNumber: string; displayFilename: string; byteLength: number; receivedCompleteAtUtc: string }>[] }>;
+export type FileTaskView = Readonly<{ task: FileTask; completion?: Readonly<{ eligibleStudentCount: number; submittedStudentCount: number }>; submissions?: readonly Readonly<{ studentId: string; displayName: string; studentNumber: string; displayFilename: string; declaredMimeType: string | null; byteLength: number; receivedCompleteAtUtc: string }>[] }>;
 export type TemplateInput = Readonly<{ kind: QuestionKind; prompt: string; options?: readonly Readonly<{ id?: string; label: string }>[]; referenceAnswer?: ReferenceAnswer }>;
 
 export class ApiError extends Error {
@@ -26,6 +26,15 @@ export class TeacherApi {
 
   async health(): Promise<Readonly<{ status: string; reason?: string }>> { return this.request('/health', { method: 'GET' }); }
   async session(): Promise<Readonly<{ actor: 'teacher' | 'student' }>> { return this.request('/api/auth/session', { method: 'GET' }); }
+  async restoreTeacher(): Promise<boolean> {
+    try {
+      const session = await this.session();
+      if (session.actor !== 'teacher') return false;
+      const csrf = await this.request<Readonly<{ csrfToken: string }>>('/api/auth/teacher/csrf', { method: 'POST', body: {}, csrf: false, csrfBootstrap: true });
+      this.csrfToken = csrf.csrfToken;
+      return true;
+    } catch { this.csrfToken = undefined; return false; }
+  }
   async login(password: string): Promise<void> {
     const result = await this.request<Readonly<{ actor: 'teacher'; csrfToken: string }>>('/api/auth/teacher/login', { method: 'POST', body: { password }, csrf: false });
     this.csrfToken = result.csrfToken;
@@ -39,7 +48,7 @@ export class TeacherApi {
   async createClass(name: string): Promise<ClassRoom> { return this.request('/api/classes', { method: 'POST', body: { name } }); }
   async deleteClass(id: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(id)}`, { method: 'DELETE', body: { confirmed: true, impactAcknowledged: true } }); }
   async previewRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/preview`, { method: 'POST', body: { csv } }); }
-  async importRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/import`, { method: 'POST', body: { csv } }); }
+  async importRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/import`, { method: 'POST', body: { csv }, acceptStatuses: [422] }); }
   async approvePending(id: string): Promise<PendingApproval> { return this.request(`/api/pending-student-requests/${encodeURIComponent(id)}/approve`, { method: 'POST', body: {} }); }
   async templates(): Promise<readonly Template[]> { return this.request('/api/question-templates', { method: 'GET' }); }
   async createTemplate(input: TemplateInput): Promise<Template> { return this.request('/api/question-templates', { method: 'POST', body: input }); }
@@ -59,16 +68,18 @@ export class TeacherApi {
   async deleteFileTask(classId: string, id: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(classId)}/file-tasks/${encodeURIComponent(id)}`, { method: 'DELETE', body: { confirmed: true, impactAcknowledged: true } }); }
   async deleteSubmission(classId: string, taskId: string, studentId: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(classId)}/file-tasks/${encodeURIComponent(taskId)}/submissions/${encodeURIComponent(studentId)}`, { method: 'DELETE', body: { confirmed: true, impactAcknowledged: true } }); }
   downloadUrl(classId: string, taskId: string, studentId: string): string { return `/api/classes/${encodeURIComponent(classId)}/file-tasks/${encodeURIComponent(taskId)}/submissions/${encodeURIComponent(studentId)}/download`; }
+  previewUrl(classId: string, taskId: string, studentId: string): string { return `/api/classes/${encodeURIComponent(classId)}/file-tasks/${encodeURIComponent(taskId)}/submissions/${encodeURIComponent(studentId)}/preview`; }
 
-  private async request<T>(path: string, init: Readonly<{ method: string; body?: unknown; csrf?: boolean }>): Promise<T> {
+  private async request<T>(path: string, init: Readonly<{ method: string; body?: unknown; csrf?: boolean; csrfBootstrap?: boolean; acceptStatuses?: readonly number[] }>): Promise<T> {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (init.body !== undefined) headers['content-type'] = 'application/json';
     if (init.method !== 'GET' && init.csrf !== false) {
       if (this.csrfToken === undefined) throw new ApiError(401, '請重新登入以取得安全權杖');
       headers['x-csrf-token'] = this.csrfToken;
     }
+    if (init.csrfBootstrap === true) headers['x-csrf-bootstrap'] = '1';
     const response = await fetch(path, { method: init.method, headers, credentials: 'same-origin', ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
-    if (!response.ok) {
+    if (!response.ok && !init.acceptStatuses?.includes(response.status)) {
       const body = await response.json().catch(() => ({})) as { error?: unknown };
       throw new ApiError(response.status, typeof body.error === 'string' ? body.error : 'REQUEST_FAILED');
     }
