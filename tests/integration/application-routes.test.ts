@@ -87,6 +87,30 @@ describe('Task 3 composed API routes', () => {
     expect(noOrigin.status).toBe(403);
   });
 
+  it('requires an authenticated, CSRF-protected typed class name before deleting only that class', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const create = async (name: string): Promise<{ id: string }> => {
+      const response = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name }) });
+      expect(response.status).toBe(201); return response.json() as Promise<{ id: string }>;
+    };
+    const first = await create('1A'); const second = await create('1B');
+    const anonymousImpact = await fetch(`${base}/api/classes/${first.id}`);
+    expect(anonymousImpact.status).toBe(401);
+    const impact = await fetch(`${base}/api/classes/${first.id}`, { headers: { cookie: teacher.cookie } });
+    expect(impact.status).toBe(200);
+    expect(await impact.json()).toMatchObject({ classId: first.id, className: '1A', students: 0, materials: 0, submissions: 0 });
+    const wrongName = await fetch(`${base}/api/classes/${first.id}`, { method: 'DELETE', headers: teacherHeaders(teacher), body: JSON.stringify({ confirmationName: '1B', impactAcknowledged: true }) });
+    expect(wrongName.status).toBe(400);
+    expect(await wrongName.json()).toEqual({ error: 'CLASS_DELETE_NAME_CONFIRMATION_REQUIRED' });
+    const csrfMissing = await fetch(`${base}/api/classes/${first.id}`, { method: 'DELETE', headers: { origin, cookie: teacher.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ confirmationName: '1A', impactAcknowledged: true }) });
+    expect(csrfMissing.status).toBe(403);
+    const deleted = await fetch(`${base}/api/classes/${first.id}`, { method: 'DELETE', headers: teacherHeaders(teacher), body: JSON.stringify({ confirmationName: '1A', impactAcknowledged: true }) });
+    expect(deleted.status).toBe(204);
+    expect((await (await fetch(`${base}/api/classes`)).json()) as unknown).toEqual([{ id: second.id, name: '1B' }]);
+    expect((await fetch(`${base}/api/classes/${first.id}`, { headers: { cookie: teacher.cookie } })).status).toBe(404);
+  });
+
   it('promptly closes unauthorized upload and teacher-mutation bodies at 1 byte and 100 MiB', async () => {
     const base = await applicationBase();
     const port = Number(new URL(base).port);

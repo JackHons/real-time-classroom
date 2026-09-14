@@ -14,6 +14,10 @@ function repository(): ClassRosterRepository & { readonly classes: Class[]; read
     classes, students, pending,
     listClasses: () => classes.map(({ id, name }) => ({ id, name })),
     createClass: (item) => { classes.push(item); },
+    classDeletionImpact: (id) => {
+      const classroom = classes.find((item) => item.id === id); if (classroom === undefined) throw new Error('CLASS_NOT_FOUND');
+      return { classId: id, className: classroom.name, students: students.filter((student) => student.classId === id).length, joinedStudents: 0, materials: 0, questions: 0, fileTasks: 0, submissions: 0 };
+    },
     deleteClass: (id) => { const index = classes.findIndex((item) => item.id === id); if (index < 0) throw new Error('CLASS_NOT_FOUND'); classes.splice(index, 1); },
     classExists: (id) => classes.some((item) => item.id === id),
     hasStudentNumber: (classId, number) => students.some((item) => item.classId === classId && item.normalizedStudentNumber === number),
@@ -49,8 +53,10 @@ describe('ClassService', () => {
     expect(() => subject.createClass('student', '1A')).toThrow('TEACHER_AUTH_REQUIRED');
     expect(subject.createClass('teacher', ' １Ａ ')).toMatchObject({ id: ids.class, name: '1A' });
     expect(subject.listPublicClasses()).toEqual([{ id: ids.class, name: '1A' }]);
-    expect(() => subject.deleteClass('teacher', ids.class, { confirmed: true, impactAcknowledged: false })).toThrow('CLASS_DELETE_CONFIRMATION_REQUIRED');
-    subject.deleteClass('teacher', ids.class, { confirmed: true, impactAcknowledged: true });
+    expect(() => subject.deleteClass('teacher', ids.class, { confirmationName: '1A', impactAcknowledged: false })).toThrow('CLASS_DELETE_CONFIRMATION_REQUIRED');
+    expect(() => subject.deleteClass('teacher', ids.class, { confirmationName: 'wrong', impactAcknowledged: true })).toThrow('CLASS_DELETE_NAME_CONFIRMATION_REQUIRED');
+    expect(subject.classDeletionImpact('teacher', ids.class)).toMatchObject({ className: '1A', students: 0 });
+    subject.deleteClass('teacher', ids.class, { confirmationName: ' １Ａ ', impactAcknowledged: true });
     expect(subject.listPublicClasses()).toEqual([]);
   });
 

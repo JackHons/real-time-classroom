@@ -90,5 +90,5 @@ process.once('SIGINT', () => { void gracefulShutdown(); });
 
 function isUploadStorageStartupError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  return error.message === 'UPLOAD_STORAGE_INTEGRITY_FAILED' || error.message.startsWith('UPLOAD_STORAGE_');
+  return error.message === 'UPLOAD_STORAGE_INTEGRITY_FAILED' || error.message.startsWith('UPLOAD_STORAGE_') || error.message.startsWith('CLASS_DELETION_STORAGE_');
 }

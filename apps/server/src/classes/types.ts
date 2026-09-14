@@ -1,6 +1,19 @@
 import type { Class, ClassId, PendingStudentRequest, PendingStudentRequestId, Student, StudentId } from '../domain/types.js';
 
 export type ClassSummary = Readonly<Pick<Class, 'id' | 'name'>>;
+/** Counts shown before a destructive class removal.  They intentionally
+ * describe records, not bytes or filenames, so a confirmation screen does
+ * not disclose student work unnecessarily. */
+export type ClassDeletionImpact = Readonly<{
+  classId: ClassId;
+  className: string;
+  joinedStudents: number;
+  students: number;
+  materials: number;
+  questions: number;
+  fileTasks: number;
+  submissions: number;
+}>;
 export type RosterEntry = Readonly<{
   displayName: string;
   rawStudentNumber: string;
@@ -26,6 +39,9 @@ export interface TeacherAuthorization {
 export type ClassRosterRepository = Readonly<{
   listClasses: () => readonly ClassSummary[];
   createClass: (input: Class) => void;
+  /** Returns an exact current snapshot for the teacher's delete dialog. */
+  classDeletionImpact: (classId: ClassId) => ClassDeletionImpact;
+  /** Atomically persists object-cleanup work before cascading class records. */
   deleteClass: (classId: ClassId) => void;
   classExists: (classId: ClassId) => boolean;
   hasStudentNumber: (classId: ClassId, normalizedStudentNumber: string) => boolean;

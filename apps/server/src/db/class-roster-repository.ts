@@ -1,9 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import type { Class, ClassId, IsoUtc, PendingStudentRequest, PendingStudentRequestId, Student, StudentId } from '../domain/types.js';
-import type { ClassRosterRepository, ClassSummary, RosterEntry } from '../classes/types.js';
+import type { ClassDeletionImpact, ClassRosterRepository, ClassSummary, RosterEntry } from '../classes/types.js';
 import type { SqliteDatabase } from './connection.js';
+import type { UploadStorage } from '../uploads/storage.js';
 
 type StudentRow = Readonly<{ id: string; class_id: string; display_name: string; raw_student_number: string; normalized_student_number: string; is_temporary: number; approved_at_utc: string }>;
 type PendingRow = Readonly<{ id: string; class_id: string; display_name: string; raw_student_number: string; normalized_student_number: string; requested_at_utc: string; status: 'pending' | 'approved' | 'rejected' }>;
+type CleanupRow = Readonly<{ id: string; object_kind: 'final' | 'staging'; storage_key: string }>;
 
 export class SqliteClassRosterRepository implements ClassRosterRepository {
   constructor(private readonly database: SqliteDatabase) {}
@@ -17,9 +20,38 @@ export class SqliteClassRosterRepository implements ClassRosterRepository {
     this.database.prepare('INSERT INTO classes (id,name,created_at_utc,updated_at_utc) VALUES (?,?,?,?)').run(input.id, input.name, input.createdAtUtc, input.updatedAtUtc);
   }
 
+  classDeletionImpact(classId: ClassId): ClassDeletionImpact {
+    const classroom = this.database.prepare('SELECT id,name FROM classes WHERE id=?').get(classId) as { id: string; name: string } | undefined;
+    if (classroom === undefined) throw new Error('CLASS_NOT_FOUND');
+    // Every statement is scoped by the selected class.  Counts are only used
+    // for the explicit confirmation UI and never return student identifiers.
+    const count = (sql: string): number => (this.database.prepare(sql).get(classId) as { count: number }).count;
+    return {
+      classId: classroom.id as ClassId, className: classroom.name,
+      students: count('SELECT count(*) AS count FROM students WHERE class_id=?'),
+      joinedStudents: count('SELECT count(*) AS count FROM student_class_joins WHERE class_id=?'),
+      materials: count('SELECT count(*) AS count FROM class_materials WHERE class_id=?'),
+      questions: count('SELECT count(*) AS count FROM questions WHERE class_id=?'),
+      fileTasks: count('SELECT count(*) AS count FROM file_submission_tasks WHERE class_id=?'),
+      submissions: count('SELECT count(*) AS count FROM file_submissions s JOIN file_submission_tasks t ON t.id=s.task_id WHERE t.class_id=?')
+    };
+  }
+
   deleteClass(classId: ClassId): void {
-    const result = this.database.prepare('DELETE FROM classes WHERE id=?').run(classId);
-    if (result.changes !== 1) throw new Error('CLASS_NOT_FOUND');
+    this.database.transaction(() => {
+      // Record cleanup *before* the FK cascade.  If Windows is restarted
+      // between database commit and file removal, the independent cleanup
+      // journal remains and startup completes it. Keys originate exclusively
+      // from generated storage metadata; UploadStorage validates them again.
+      const insert = this.database.prepare('INSERT OR IGNORE INTO class_deletion_cleanup (id,class_id,object_kind,storage_key,created_at_utc) VALUES (?,?,?,?,?)');
+      const now = new Date().toISOString();
+      const finals = this.database.prepare("SELECT DISTINCT storage_key FROM file_submissions WHERE task_id IN (SELECT id FROM file_submission_tasks WHERE class_id=?) UNION SELECT DISTINCT storage_key FROM class_materials WHERE class_id=? UNION SELECT DISTINCT final_storage_key AS storage_key FROM upload_sessions WHERE task_id IN (SELECT id FROM file_submission_tasks WHERE class_id=?) AND final_storage_key IS NOT NULL").all(classId, classId, classId) as readonly { storage_key: string }[];
+      const staging = this.database.prepare("SELECT DISTINCT staging_key AS storage_key FROM upload_sessions WHERE task_id IN (SELECT id FROM file_submission_tasks WHERE class_id=?) AND staging_key IS NOT NULL").all(classId) as readonly { storage_key: string }[];
+      for (const item of finals) insert.run(randomUUID(), classId, 'final', item.storage_key, now);
+      for (const item of staging) insert.run(randomUUID(), classId, 'staging', item.storage_key, now);
+      const result = this.database.prepare('DELETE FROM classes WHERE id=?').run(classId);
+      if (result.changes !== 1) throw new Error('CLASS_NOT_FOUND');
+    })();
   }
 
   classExists(classId: ClassId): boolean {
@@ -118,6 +150,26 @@ export class SqliteClassRosterRepository implements ClassRosterRepository {
   recordStudentJoin(student: Student, atUtc: string): void {
     this.database.prepare('INSERT INTO student_class_joins (student_id,class_id,joined_at_utc,last_joined_at_utc) VALUES (?,?,?,?) ON CONFLICT(student_id) DO UPDATE SET last_joined_at_utc=excluded.last_joined_at_utc').run(student.id, student.classId, atUtc, atUtc);
   }
+}
+
+/**
+ * Completes cleanup left by a committed class deletion.  A missing object is
+ * success because UploadStorage removes by generated key with force semantics.
+ * A failed item stays journaled, so restart retries it rather than leaking a
+ * private file or trusting a user-controlled path.
+ */
+export async function reconcileClassDeletionCleanup(database: SqliteDatabase, storage: Pick<UploadStorage, 'removeFinal' | 'removeStaging'>): Promise<Readonly<{ cleaned: number; failed: number }>> {
+  const rows = database.prepare('SELECT id,object_kind,storage_key FROM class_deletion_cleanup ORDER BY created_at_utc,id').all() as readonly CleanupRow[];
+  let cleaned = 0; let failed = 0;
+  for (const row of rows) {
+    try {
+      if (row.object_kind === 'final') await storage.removeFinal(row.storage_key);
+      else await storage.removeStaging(row.storage_key);
+      database.prepare('DELETE FROM class_deletion_cleanup WHERE id=?').run(row.id);
+      cleaned += 1;
+    } catch { failed += 1; }
+  }
+  return { cleaned, failed };
 }
 
 function student(row: StudentRow): Student {

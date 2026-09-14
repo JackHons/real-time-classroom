@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeStudentNumber } from '../domain/normalization.js';
 import type { Class, ClassId, IsoUtc, PendingStudentRequest, PendingStudentRequestId, StudentId } from '../domain/types.js';
-import type { ClassRosterRepository, ClassSummary, CsvIssue, CsvPreview, JoinResult, RosterEntry, TeacherAuthorization } from './types.js';
+import type { ClassDeletionImpact, ClassRosterRepository, ClassSummary, CsvIssue, CsvPreview, JoinResult, RosterEntry, TeacherAuthorization } from './types.js';
 
 export type ClassServiceDependencies = Readonly<{
   repository: ClassRosterRepository;
@@ -42,9 +42,18 @@ export class ClassService {
     return classroom;
   }
 
-  deleteClass(teacherContext: unknown, classId: ClassId, confirmation: Readonly<{ confirmed: boolean; impactAcknowledged: boolean }>): void {
+  classDeletionImpact(teacherContext: unknown, classId: ClassId): ClassDeletionImpact {
     this.dependencies.teacherAuthorization.assertAuthorized(teacherContext);
-    if (!confirmation.confirmed || !confirmation.impactAcknowledged) throw new Error('CLASS_DELETE_CONFIRMATION_REQUIRED');
+    return this.dependencies.repository.classDeletionImpact(classId);
+  }
+
+  deleteClass(teacherContext: unknown, classId: ClassId, confirmation: Readonly<{ confirmationName: string; impactAcknowledged: boolean }>): void {
+    this.dependencies.teacherAuthorization.assertAuthorized(teacherContext);
+    const impact = this.dependencies.repository.classDeletionImpact(classId);
+    if (!confirmation.impactAcknowledged) throw new Error('CLASS_DELETE_CONFIRMATION_REQUIRED');
+    // Comparing normalized text gives teachers a resilient confirmation on
+    // Windows IMEs without weakening the requirement to name this exact class.
+    if (normalizeText(confirmation.confirmationName) !== impact.className) throw new Error('CLASS_DELETE_NAME_CONFIRMATION_REQUIRED');
     this.dependencies.repository.deleteClass(classId);
     this.notify({ classId, resourceType: 'roster', id: classId, event: 'class_deleted', audience: 'teacher' });
     try { this.dependencies.onClassDeleted?.(classId); } catch { /* durable delete wins */ }

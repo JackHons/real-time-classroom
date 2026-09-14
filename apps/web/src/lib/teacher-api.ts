@@ -1,4 +1,5 @@
 export type ClassRoom = Readonly<{ id: string; name: string; createdAtUtc: string; updatedAtUtc: string }>;
+export type ClassDeletionImpact = Readonly<{ classId: string; className: string; joinedStudents: number; students: number; materials: number; questions: number; fileTasks: number; submissions: number }>;
 export type Page<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
 export type CsvIssue = Readonly<{ line: number; message: string }>;
 export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: string; rawStudentNumber: string; normalizedStudentNumber: string }>[]; issues: readonly CsvIssue[]; ignoredColumnLines?: readonly number[] }>;
@@ -49,7 +50,8 @@ export class TeacherApi {
   async questions(classId: string, cursor?: string): Promise<Page<QuestionSummary>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/questions${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async fileTasks(classId: string, cursor?: string): Promise<Page<FileTask>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/file-tasks${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async createClass(name: string): Promise<ClassRoom> { return this.request('/api/classes', { method: 'POST', body: { name } }); }
-  async deleteClass(id: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(id)}`, { method: 'DELETE', body: { confirmed: true, impactAcknowledged: true } }); }
+  async classDeletionImpact(id: string): Promise<ClassDeletionImpact> { return this.request(`/api/classes/${encodeURIComponent(id)}`, { method: 'GET' }); }
+  async deleteClass(id: string, confirmationName: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(id)}`, { method: 'DELETE', body: { confirmationName, impactAcknowledged: true } }); }
   async previewRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/preview`, { method: 'POST', body: { csv } }); }
   async importRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/import`, { method: 'POST', body: { csv }, acceptStatuses: [422] }); }
   async approvePending(id: string): Promise<PendingApproval> { return this.request(`/api/pending-student-requests/${encodeURIComponent(id)}/approve`, { method: 'POST', body: {} }); }

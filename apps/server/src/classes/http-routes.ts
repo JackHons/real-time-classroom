@@ -8,6 +8,8 @@ const MAX_BODY_BYTES = 8 * 1024;
 
 export type ClassRoutesDependencies = Readonly<{
   service: ClassService;
+  /** Drains the durable private-object cleanup journal after a successful cascade. */
+  reconcileDeletedClassFiles?: () => Promise<void>;
   /** Shared with /api/auth/student/join so routes cannot bypass pending limits. */
   studentJoinRateLimiter?: StudentJoinRateLimiter;
   /** Task 3 composition supplies cookie/session and CSRF validation before service authorization. */
@@ -33,10 +35,15 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
       return true;
     }
     const match = /^\/api\/classes\/([^/]+)$/.exec(url.pathname);
+    if (request.method === 'GET' && match?.[1] !== undefined) {
+      json(response, 200, dependencies.service.classDeletionImpact(dependencies.teacherContext(request), decodeURIComponent(match[1]) as ClassId));
+      return true;
+    }
     if (request.method === 'DELETE' && match?.[1] !== undefined) {
       const teacher = dependencies.teacherContext(request);
       const body = await readJson(request);
       dependencies.service.deleteClass(teacher, decodeURIComponent(match[1]) as ClassId, confirmation(body));
+      await dependencies.reconcileDeletedClassFiles?.();
       json(response, 204, undefined);
       return true;
     }
@@ -61,8 +68,7 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
       const studentNumber = stringField(body, 'studentNumber');
       const reservation = studentJoinRateLimiter.reserve(remoteAddress(request), { classId, studentNumber }, new Date());
       if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return true; }
-      let result;
-      try { result = dependencies.service.requestJoin(classId, studentNumber); }
+      try { dependencies.service.requestJoin(classId, studentNumber); }
       catch (error) { reservation.release(); throw error; }
       reservation.succeed();
       // This compatibility endpoint deliberately never creates a cookie.
@@ -88,8 +94,8 @@ function stringField(body: Record<string, unknown>, field: string): string {
   return value;
 }
 
-function confirmation(body: Record<string, unknown>): Readonly<{ confirmed: boolean; impactAcknowledged: boolean }> {
-  return { confirmed: body.confirmed === true, impactAcknowledged: body.impactAcknowledged === true };
+function confirmation(body: Record<string, unknown>): Readonly<{ confirmationName: string; impactAcknowledged: boolean }> {
+  return { confirmationName: typeof body.confirmationName === 'string' ? body.confirmationName : '', impactAcknowledged: body.impactAcknowledged === true };
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
