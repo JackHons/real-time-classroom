@@ -114,7 +114,7 @@ describe('Task 3 composed API routes', () => {
     expect(database?.prepare('SELECT last_seen_at_utc,idle_expires_at_utc FROM teacher_sessions').get()).toEqual(before);
   });
 
-  it('creates sessions only for exact roster matches, never for pending joins', async () => {
+  it('creates a student session directly from a class and student number', async () => {
     const base = await applicationBase();
     const login = await teacherLogin(base);
     const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(login), body: JSON.stringify({ name: '1A' }) });
@@ -127,30 +127,21 @@ describe('Task 3 composed API routes', () => {
     expect(matched.headers.get('set-cookie')).toContain('student_session=');
     expect(database?.prepare('SELECT count(*) AS count FROM student_sessions').get()).toEqual({ count: 1 });
 
-    const pending = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Unauthorised', studentNumber: 'S2' }) });
-    expect(pending.status).toBe(202);
-    expect(await pending.json()).toEqual({ outcome: 'accepted' });
-    const denied = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
-    expect(denied.status).toBe(403);
-    expect(await denied.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
-    expect(database?.prepare('SELECT count(*) AS count FROM student_sessions').get()).toEqual({ count: 1 });
+    const direct = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, studentNumber: 'S2' }) });
+    expect(direct.status).toBe(200);
+    expect(database?.prepare('SELECT count(*) AS count FROM student_sessions').get()).toEqual({ count: 2 });
 
     const unknown = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'unknown-class', displayName: 'Unauthorised', studentNumber: 'S2' }) });
-    expect(unknown.status).toBe(denied.status);
+    expect(unknown.status).toBe(403);
     expect(await unknown.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
 
-    const request = database?.prepare("SELECT id FROM pending_student_requests WHERE class_id=? AND normalized_student_number=? AND status='pending'").get(classroom.id, 'S2') as { id: string };
-    const approved = await fetch(`${base}/api/pending-student-requests/${request.id}/approve`, { method: 'POST', headers: teacherHeaders(login) });
-    expect(approved.status).toBe(201);
-    const approvedJoin = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
-    expect(approvedJoin.status).toBe(200);
-    expect(database?.prepare('SELECT count(*) AS count FROM student_sessions').get()).toEqual({ count: 2 });
+    expect(database?.prepare('SELECT count(*) AS count FROM student_class_joins WHERE class_id=?').get(classroom.id)).toEqual({ count: 2 });
     const secondDevice = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: 'S2' }) });
     expect(secondDevice.status).toBe(403);
     expect(await secondDevice.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
   });
 
-  it('shares a bounded pending-join budget between public join routes', async () => {
+  it('does not consume the join failure budget for successful number-only joins', async () => {
     const base = await applicationBase(undefined, new StudentJoinRateLimiter(1, 20, 60_000));
     const login = await teacherLogin(base);
     const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(login), body: JSON.stringify({ name: '1A' }) });
@@ -166,12 +157,11 @@ describe('Task 3 composed API routes', () => {
     const authMatch = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Ada', studentNumber: 'A1' }) });
     expect(authMatch.status).toBe(200);
 
-    const publicPending = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Unapproved', studentNumber: 'S2' }) });
+    const publicPending = await fetch(`${base}/api/classes/${classroom.id}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ studentNumber: 'S2' }) });
     expect(publicPending.status).toBe(202);
-    expect(await publicPending.json()).toEqual({ outcome: 'accepted' });
-    const bypassAttempt = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unapproved', studentNumber: 'S2' }) });
-    expect(bypassAttempt.status).toBe(429);
-    expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 1 });
+    const directJoin = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, studentNumber: 'S2' }) });
+    expect(directJoin.status).toBe(200);
+    expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 0 });
   });
 
   it('serves authenticated teacher navigation and student-safe activity DTOs from the real server', async () => {
@@ -191,9 +181,9 @@ describe('Task 3 composed API routes', () => {
 
     expect((await fetch(`${base}/api/teacher/classes`)).status).toBe(401);
     const roster = await fetch(`${base}/api/teacher/classes/${classroom.id}/roster`, { headers: { cookie: teacher.cookie } });
-    expect(await roster.json()).toEqual({ items: [expect.objectContaining({ displayName: 'Ada', studentNumber: 'A1' })] });
+    expect(await roster.json()).toEqual({ items: expect.arrayContaining([expect.objectContaining({ displayName: 'Ada', studentNumber: 'A1' })]) });
     const teacherPending = await fetch(`${base}/api/teacher/classes/${classroom.id}/pending-student-requests`, { headers: { cookie: teacher.cookie } });
-    expect(await teacherPending.json()).toEqual({ items: [expect.objectContaining({ displayName: 'Unauthorised' })] });
+    expect(await teacherPending.json()).toEqual({ items: [] });
     expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/questions`, { headers: { cookie: teacher.cookie } })).json()).toEqual({ items: [expect.objectContaining({ id: question.id, state: 'open' })] });
     expect(await (await fetch(`${base}/api/teacher/classes/${classroom.id}/file-tasks`, { headers: { cookie: teacher.cookie } })).json()).toEqual({ items: [expect.objectContaining({ id: task.id, state: 'open' })] });
 
@@ -207,7 +197,7 @@ describe('Task 3 composed API routes', () => {
     expect((await fetch(`${base}/api/auth/student/csrf`, { method: 'POST', headers: { origin: 'http://wrong-origin.test', cookie: studentCookie, 'x-csrf-bootstrap': '1', 'sec-fetch-site': 'same-origin' } })).status).toBe(403);
     const activities = await fetch(`${base}/api/student/activities`, { headers: { cookie: studentCookie } });
     expect(activities.headers.get('cache-control')).toBe('no-store');
-    expect(await activities.json()).toEqual({ questions: { items: [expect.objectContaining({ id: question.id, prompt: 'Explain', state: 'open' })] }, fileTasks: { items: [expect.objectContaining({ id: task.id, title: 'Upload', state: 'open' })] } });
+    expect(await activities.json()).toEqual({ questions: { items: [expect.objectContaining({ id: question.id, prompt: 'Explain', state: 'open' })] }, fileTasks: { items: [expect.objectContaining({ id: task.id, title: 'Upload', state: 'open' })] }, materials: { items: [] } });
   });
 
   it('lets a teacher explicitly reopen a closed task after its original deadline', async () => {

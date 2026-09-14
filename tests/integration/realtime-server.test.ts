@@ -46,10 +46,10 @@ describe('composed Socket.IO server', () => {
     studentBSocket.emit('class:subscribe', { classId: classA });
     expect(await crossClassError).toEqual({ code: 'CLASS_SCOPE_FORBIDDEN' });
 
-    const pendingHint = waitForChange(teacherSocket, 'pending_requested');
+    const pendingHint = waitForChange(teacherSocket, 'student_joined');
     const pending = await fetch(`${base}/api/classes/${classA}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Pending', studentNumber: 'P1' }) });
     expect(pending.status).toBe(202);
-    expect(await pendingHint).toEqual(expect.objectContaining({ resourceType: 'pending', event: 'pending_requested' }));
+    expect(await pendingHint).toEqual(expect.objectContaining({ resourceType: 'roster', event: 'student_joined' }));
 
     const question = await draftQuestion(base, teacher, classA, 'What changed?');
     const teacherOpen = waitForChange(teacherSocket, 'question_opened');

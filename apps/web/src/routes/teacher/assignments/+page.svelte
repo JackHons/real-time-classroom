@@ -5,7 +5,7 @@
   let classes: readonly ClassRoom[] = []; let selectedClassId = ''; let tasks: readonly FileTask[] = []; let taskId = ''; let view: FileTaskView | undefined;
   let title = ''; let description = ''; let deadline = ''; let preview: { url: string; name: string } | undefined;
   onMount(() => { void initialise(); });
-  async function initialise(): Promise<void> { if (!await api.restoreTeacher()) { await goto('/'); return; } ready = true; await refresh(); }
+  async function initialise(): Promise<void> { if (!await api.restoreTeacher()) { await goto('/teacher'); return; } ready = true; await refresh(); }
   async function work(action: () => Promise<void>): Promise<void> { busy = true; error = ''; notice = ''; try { await action(); } catch (cause) { error = readableError(cause); } finally { busy = false; } }
   async function refresh(): Promise<void> { const page = await api.classes(); classes = page.items; if (!classes.some((entry) => entry.id === selectedClassId)) selectedClassId = classes[0]?.id ?? ''; tasks = selectedClassId ? (await api.fileTasks(selectedClassId)).items : []; if (!tasks.some((item) => item.id === taskId)) { taskId = tasks[0]?.id ?? ''; view = undefined; } if (taskId) await read(); }
   function toLocal(value: string): string { const date = new Date(value); return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16); }
@@ -20,7 +20,7 @@
   function percent(): number { const value = completion(); return value === undefined || value.eligibleStudentCount === 0 ? 0 : Math.round(value.submittedStudentCount / value.eligibleStudentCount * 100); }
   function isLateReopened(): boolean { return view?.task.state === 'open' && typeof view.task.reopenedAtUtc === 'string'; }
   function isPastOriginalDeadline(): boolean { return view !== undefined && new Date(view.task.deadlineAtUtc).getTime() < Date.now(); }
-  async function logout(): Promise<void> { await api.logout(); await goto('/'); }
+  async function logout(): Promise<void> { await api.logout(); await goto('/teacher'); }
 </script>
 <main aria-busy={!ready}><TeacherNav current="assignments" onLogout={logout}/>
 {#if !ready}<p>正在確認教師登入狀態…</p>{:else}<h2>收功課儀表板</h2><div aria-live="polite">{#if notice}<p class="notice">{notice}</p>{/if}{#if error}<p class="error" role="alert">{error}</p>{/if}</div>

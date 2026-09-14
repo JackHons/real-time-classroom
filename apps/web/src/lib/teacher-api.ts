@@ -4,6 +4,8 @@ export type CsvIssue = Readonly<{ line: number; message: string }>;
 export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: string; rawStudentNumber: string; normalizedStudentNumber: string }>[]; issues: readonly CsvIssue[]; ignoredColumnLines?: readonly number[] }>;
 export type PendingApproval = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string }>;
 export type RosterStudent = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: boolean; approvedAtUtc: string }>;
+export type JoinedStudent = Readonly<{ id: string; displayName: string; studentNumber: string; joinedAtUtc: string; lastJoinedAtUtc: string }>;
+export type ClassMaterial = Readonly<{ id: string; classId: string; displayFilename: string; declaredMimeType: string; byteLength: number; createdAtUtc: string }>;
 export type QuestionSummary = Readonly<{ id: string; classId: string; templateId: string | null; kind: QuestionKind; prompt: string; state: 'draft' | 'open' | 'closed' }>;
 export type QuestionKind = 'single_choice' | 'multiple_choice' | 'short_text';
 export type Option = Readonly<{ id: string; label: string; ordinal: number }>;
@@ -42,6 +44,7 @@ export class TeacherApi {
   async logout(): Promise<void> { await this.request('/api/auth/logout', { method: 'POST', body: {} }); this.csrfToken = undefined; }
   async classes(cursor?: string): Promise<Page<ClassRoom>> { return this.request(`/api/teacher/classes${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async roster(classId: string, cursor?: string): Promise<Page<RosterStudent>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/roster${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
+  async joinedStudents(classId: string, cursor?: string): Promise<Page<JoinedStudent>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/joined-students${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async pending(classId: string, cursor?: string): Promise<Page<PendingApproval>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/pending-student-requests${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async questions(classId: string, cursor?: string): Promise<Page<QuestionSummary>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/questions${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async fileTasks(classId: string, cursor?: string): Promise<Page<FileTask>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/file-tasks${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
@@ -50,6 +53,9 @@ export class TeacherApi {
   async previewRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/preview`, { method: 'POST', body: { csv } }); }
   async importRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/import`, { method: 'POST', body: { csv }, acceptStatuses: [422] }); }
   async approvePending(id: string): Promise<PendingApproval> { return this.request(`/api/pending-student-requests/${encodeURIComponent(id)}/approve`, { method: 'POST', body: {} }); }
+  async materials(classId: string): Promise<readonly ClassMaterial[]> { return this.request(`/api/classes/${encodeURIComponent(classId)}/materials`, { method: 'GET' }); }
+  async uploadMaterial(classId: string, file: File): Promise<ClassMaterial> { const response = await fetch(`/api/classes/${encodeURIComponent(classId)}/materials`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': this.requireCsrf(), 'x-upload-filename': file.name, 'content-type': file.type || 'application/octet-stream' }, body: file }); if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new ApiError(response.status, body.error ?? 'REQUEST_FAILED'); } return response.json() as Promise<ClassMaterial>; }
+  async deleteMaterial(classId: string, id: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(classId)}/materials/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} }); }
   async templates(): Promise<readonly Template[]> { return this.request('/api/question-templates', { method: 'GET' }); }
   async createTemplate(input: TemplateInput): Promise<Template> { return this.request('/api/question-templates', { method: 'POST', body: input }); }
   async updateTemplate(id: string, input: TemplateInput): Promise<Template> { return this.request(`/api/question-templates/${encodeURIComponent(id)}`, { method: 'PUT', body: input }); }
@@ -86,6 +92,7 @@ export class TeacherApi {
     if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
   }
+  private requireCsrf(): string { if (this.csrfToken === undefined) throw new ApiError(401, '請重新登入以取得安全權杖'); return this.csrfToken; }
 }
 
 export function readableError(error: unknown): string {

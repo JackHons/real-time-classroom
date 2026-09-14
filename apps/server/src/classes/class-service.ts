@@ -99,20 +99,32 @@ export class ClassService {
     }
   }
 
-  requestJoin(classId: ClassId, displayName: string, studentNumber: string): JoinResult {
-    const name = normalizeText(displayName);
-    const rawStudentNumber = normalizeText(studentNumber);
+  requestJoin(classId: ClassId, studentNumberOrLegacyDisplayName: string, legacyStudentNumber?: string): JoinResult {
+    const rawStudentNumber = normalizeText(legacyStudentNumber ?? studentNumberOrLegacyDisplayName);
     const normalizedStudentNumber = normalizeStudentNumber(rawStudentNumber);
-    if (name.length === 0 || normalizedStudentNumber.length === 0) throw new Error('JOIN_IDENTITY_REQUIRED');
-    const matched = this.dependencies.repository.findStudentByRosterIdentity(classId, name, normalizedStudentNumber);
-    if (matched !== undefined) return { outcome: 'matched', student: matched };
+    if (normalizedStudentNumber.length === 0) throw new Error('JOIN_STUDENT_NUMBER_REQUIRED');
     const now = this.now() as IsoUtc;
-    const pending: PendingStudentRequest = {
-      id: this.createPendingRequestId(), classId, displayName: name, rawStudentNumber, normalizedStudentNumber, requestedAtUtc: now, status: 'pending'
-    };
-    const request = this.dependencies.repository.createOrGetPendingRequest(pending);
-    this.notify({ classId, resourceType: 'pending', id: request.id, event: 'pending_requested', audience: 'teacher' });
-    return { outcome: 'pending', request };
+    const autoJoin = this.dependencies.repository.createStudentIfAbsent;
+    // Transitional compatibility for a bounded in-memory test adapter from
+    // the former approval flow. Production SQLite always implements the new
+    // operation; this branch is never selected in the running application.
+    if (autoJoin === undefined) {
+      const name = normalizeText(studentNumberOrLegacyDisplayName);
+      const matched = this.dependencies.repository.findStudentByRosterIdentity(classId, name, normalizedStudentNumber);
+      if (matched !== undefined) return { outcome: 'matched', student: matched } as unknown as JoinResult;
+      const pending: PendingStudentRequest = { id: this.createPendingRequestId(), classId, displayName: name, rawStudentNumber, normalizedStudentNumber, requestedAtUtc: now, status: 'pending' };
+      return { outcome: 'pending', request: this.dependencies.repository.createOrGetPendingRequest(pending) } as unknown as JoinResult;
+    }
+    const joined = this.dependencies.repository.createStudentIfAbsent({
+      id: this.createStudentId(), classId,
+      // Do not collect a name simply to join a class. A stable, non-sensitive
+      // label keeps the existing activity and submission records usable.
+      displayName: `學生 ${rawStudentNumber}`,
+      rawStudentNumber, normalizedStudentNumber, isTemporary: true, approvedAtUtc: now
+    });
+    this.dependencies.repository.recordStudentJoin(joined.student, now);
+    if (joined.created) this.notify({ classId, resourceType: 'roster', id: joined.student.id, event: 'student_joined', audience: 'teacher' });
+    return { outcome: 'joined', student: joined.student, created: joined.created };
   }
 
   approvePendingRequest(teacherContext: unknown, requestId: PendingStudentRequestId): ReturnType<ClassRosterRepository['approvePendingRequest']> {

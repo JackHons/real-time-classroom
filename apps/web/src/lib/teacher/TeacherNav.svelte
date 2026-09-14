@@ -1,5 +1,5 @@
 <script lang="ts">
-  export let current: 'home' | 'roster' | 'questions' | 'assignments';
+  export let current: 'home' | 'roster' | 'questions' | 'assignments' | 'materials';
   export let onLogout: () => Promise<void>;
   let busy = false;
   async function logout(): Promise<void> { busy = true; try { await onLogout(); } finally { busy = false; } }
@@ -11,9 +11,10 @@
 </header>
 <nav aria-label="教師功能">
   <a class:active={current === 'home'} href="/teacher">總覽</a>
-  <a class:active={current === 'roster'} href="/teacher/roster">班級與名單</a>
+  <a class:active={current === 'roster'} href="/teacher/roster">班級與已加入學生</a>
   <a class:active={current === 'questions'} href="/teacher/questions">題庫與即時題</a>
   <a class:active={current === 'assignments'} href="/teacher/assignments">收功課</a>
+  <a class:active={current === 'materials'} href="/teacher/materials">教材</a>
 </nav>
 
 <style>

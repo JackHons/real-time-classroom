@@ -54,18 +54,11 @@ export const studentApi = {
   listClasses(fetcher: Fetcher = fetch): Promise<readonly PublicClass[]> {
     return request(fetcher, '/api/classes');
   },
-  /** First create/reuse a public request, then obtain the cookie session only for an approved roster match. */
-  async join(fetcher: Fetcher, classId: string, displayName: string, studentNumber: string): Promise<'active' | 'pending' | 'denied'> {
+  /** A student number is the only identity requested at join time. */
+  async join(fetcher: Fetcher, classId: string, studentNumber: string): Promise<'active' | 'denied'> {
     try {
-      const joined = await request<{ outcome?: string }>(fetcher, `/api/classes/${encodeURIComponent(classId)}/join`, {
-        method: 'POST', body: JSON.stringify({ displayName, studentNumber })
-      });
-      // The public endpoint intentionally never reveals roster membership.
-      // Only the session-creating authorization boundary can decide whether
-      // this browser may proceed.
-      if (joined.outcome !== 'accepted') throw new ApiError(500, 'JOIN_RESPONSE_INVALID');
       const session = await request<{ csrfToken?: string; sessionId?: string }>(fetcher, '/api/auth/student/join', {
-        method: 'POST', body: JSON.stringify({ classId, displayName, studentNumber })
+        method: 'POST', body: JSON.stringify({ classId, studentNumber })
       });
       rememberCsrf(session.csrfToken);
       // New authentication must never inherit a previous student's queue.
@@ -73,7 +66,8 @@ export const studentApi = {
       await rememberQueueOwner(session.sessionId);
       return 'active';
     } catch (error) {
-      // Approval state and another active session intentionally use one public message.
+      // A generic message covers a concurrent active session and transient
+      // server-side denials without exposing class membership information.
       if (error instanceof ApiError && (error.status === 403 || error.status === 401 || error.status === 429)) return 'denied';
       throw error;
     }

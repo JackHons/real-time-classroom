@@ -59,7 +59,8 @@
       if (!mounted) return;
       activities = {
         questions: questionCursor === undefined ? current.questions : { items: [...current.questions.items, ...next.questions.items], ...(next.questions.nextCursor === undefined ? {} : { nextCursor: next.questions.nextCursor }) },
-        fileTasks: fileTaskCursor === undefined ? current.fileTasks : { items: [...current.fileTasks.items, ...next.fileTasks.items], ...(next.fileTasks.nextCursor === undefined ? {} : { nextCursor: next.fileTasks.nextCursor }) }
+        fileTasks: fileTaskCursor === undefined ? current.fileTasks : { items: [...current.fileTasks.items, ...next.fileTasks.items], ...(next.fileTasks.nextCursor === undefined ? {} : { nextCursor: next.fileTasks.nextCursor }) },
+        materials: next.materials
       };
     } catch (error) {
       if (isSessionExpired(error)) await expireSession();
@@ -121,6 +122,7 @@
         {:else}<ul class="activity-list">{#each activities?.fileTasks.items ?? [] as task}<li><a href={`/student/task/${encodeURIComponent(task.id)}?class=${encodeURIComponent(classId)}`}><span class:open={task.state === 'open'} class="badge">{task.state === 'open' ? '開放繳交' : '已結束'}</span><strong>{task.title}</strong><small>截止：{new Date(task.deadlineAtUtc).toLocaleString('zh-Hant-TW')}</small></a></li>{/each}</ul>{/if}
       </section>
     </div>
+    <section class="panel materials" aria-labelledby="materials-title"><div class="section-title"><h2 id="materials-title">老師教材</h2><span>{activities?.materials.items.length ?? 0} 份</span></div>{#if activities?.materials.items.length === 0}<p class="muted">老師尚未上傳教材。</p>{:else}<ul class="activity-list">{#each activities?.materials.items ?? [] as material}<li><a href={`/api/classes/${encodeURIComponent(classId)}/materials/${encodeURIComponent(material.id)}/download`}><strong>{material.displayFilename}</strong><small>{(material.byteLength / 1024).toFixed(1)} KB · {new Date(material.createdAtUtc).toLocaleString('zh-Hant-TW')}</small></a></li>{/each}</ul>{/if}</section>
     {#if activities?.questions.nextCursor || activities?.fileTasks.nextCursor}<button class="more" onclick={() => void loadMoreActivities()} disabled={loadingMore}>{loadingMore ? '載入中…' : '載入更多活動'}</button>{/if}
   {/if}
 </StudentShell>

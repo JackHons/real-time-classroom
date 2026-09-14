@@ -7,9 +7,8 @@
 
   let classes: readonly PublicClass[] = [];
   let classId = '';
-  let displayName = '';
   let studentNumber = '';
-  let state: 'loading' | 'form' | 'joining' | 'pending' | 'denied' | 'error' = 'loading';
+  let state: 'loading' | 'form' | 'joining' | 'denied' | 'error' = 'loading';
   let message = '';
 
   onMount(() => { void initialise(); });
@@ -29,15 +28,10 @@
   async function join(): Promise<void> {
     state = 'joining';
     try {
-      const outcome = await studentApi.join(fetch, classId, displayName, studentNumber);
+      const outcome = await studentApi.join(fetch, classId, studentNumber);
       if (outcome === 'active') { await goto('/student/activities'); return; }
-      if (outcome === 'pending') {
-        state = 'pending';
-        message = '加入申請已送出，請等待老師核准後再登入。';
-      } else {
-        state = 'denied';
-        message = '目前無法加入課堂。請向老師確認核准狀態或是否已有另一個登入。';
-      }
+      state = 'denied';
+      message = '目前無法加入課堂。此學號可能已在另一部裝置登入，請先關閉原本的學生頁面後再試。';
     } catch {
       state = 'error';
       message = '送出失敗，請檢查網路後重試。';
@@ -48,7 +42,7 @@
 <StudentShell title="加入課堂">
   <section class="hero" aria-labelledby="title">
     <h1 id="title">加入課堂</h1>
-    <p>輸入老師提供的課堂、姓名及學號。加入後可在「我的課堂」分開查看即時題和檔案作業。</p>
+    <p>選擇老師提供的課堂並輸入學號即可加入。加入後可在「我的課堂」分開查看即時題和檔案作業。</p>
   </section>
 
   <section class="card" aria-labelledby="join-title">
@@ -63,8 +57,6 @@
           <option value="" disabled>請選擇課堂</option>
           {#each classes as item}<option value={item.id}>{item.name}</option>{/each}
         </select>
-        <label for="name">姓名</label>
-        <input id="name" bind:value={displayName} required autocomplete="name" disabled={state === 'joining'} />
         <label for="number">學號</label>
         <input id="number" bind:value={studentNumber} required autocomplete="username" disabled={state === 'joining'} />
         <button type="submit" disabled={state === 'joining' || classes.length === 0}>{state === 'joining' ? '正在送出…' : '加入課堂'}</button>

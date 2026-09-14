@@ -11,7 +11,7 @@ import { closeUnconsumedRequestBody } from '../http/rejected-request.js';
 const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
 const MAX_BODY_BYTES = 8 * 1024;
 
-export type StudentJoinRequest = Readonly<{ classId: ClassId; displayName: string; studentNumber: string }>;
+export type StudentJoinRequest = Readonly<{ classId: ClassId; studentNumber: string; displayName?: string }>;
 
 /** Task 4 supplies roster/pending-request behaviour behind this narrow port. */
 export interface StudentJoinPort {
@@ -214,7 +214,7 @@ export class StudentJoinRateLimiter {
     this.classIps = new LoginRateLimiter(classIpMaximum, windowMs, maximumEntries);
   }
 
-  reserve(address: string, request: Readonly<{ classId: string; displayName: string; studentNumber: string }>, now: Date): RateLimitReservation | undefined {
+  reserve(address: string, request: Readonly<{ classId: string; studentNumber: string }>, now: Date): RateLimitReservation | undefined {
     const identity = this.identities.reserve(studentIdentityRateKey(request), now);
     if (identity === undefined) return undefined;
     const classIp = this.classIps.reserve(studentClassIpRateKey(address, request.classId), now);
@@ -297,7 +297,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         let student: Student | undefined;
         const releaseOnAbort = () => reservation.release();
         request.once('aborted', releaseOnAbort);
-        try { student = await options.studentJoin.join({ classId: body.classId as ClassId, displayName: body.displayName, studentNumber: body.studentNumber }); }
+        try { student = await options.studentJoin.join({ classId: body.classId as ClassId, studentNumber: body.studentNumber, ...(typeof body.displayName === 'string' ? { displayName: body.displayName } : {}) }); }
         catch (error) { reservation.release(); throw error; }
         finally { request.removeListener('aborted', releaseOnAbort); }
         if (request.aborted) return;
@@ -383,13 +383,13 @@ function hasCsrfBootstrapProof(request: IncomingMessage, allowedOrigin: string):
   return allowedOrigin.length > 0 && request.headers['x-csrf-bootstrap'] === '1' && request.headers['sec-fetch-site'] === 'same-origin';
 }
 function remoteAddress(request: IncomingMessage): string { return request.socket.remoteAddress ?? 'unknown'; }
-function studentIdentityRateKey(body: Readonly<{ classId: string; displayName: string; studentNumber: string }>): string {
+function studentIdentityRateKey(body: Readonly<{ classId: string; studentNumber: string }>): string {
   const normalize = (value: string) => value.normalize('NFKC').trim().toUpperCase();
-  return `student:${normalize(body.classId)}:${normalize(body.displayName)}:${normalize(body.studentNumber)}`;
+  return `student:${normalize(body.classId)}:${normalize(body.studentNumber)}`;
 }
 function studentClassIpRateKey(address: string, classId: string): string { return `student-ip:${address}:${classId.normalize('NFKC').trim().toUpperCase()}`; }
-function isStudentJoinBody(body: StudentJoinBody): body is Readonly<{ classId: string; displayName: string; studentNumber: string }> {
-  return typeof body.classId === 'string' && body.classId.length > 0 && typeof body.displayName === 'string' && body.displayName.trim().length > 0 && typeof body.studentNumber === 'string' && body.studentNumber.trim().length > 0;
+function isStudentJoinBody(body: StudentJoinBody): body is Readonly<{ classId: string; studentNumber: string; displayName?: string }> {
+  return typeof body.classId === 'string' && body.classId.length > 0 && typeof body.studentNumber === 'string' && body.studentNumber.trim().length > 0;
 }
 
 class RequestBodyError extends Error {}

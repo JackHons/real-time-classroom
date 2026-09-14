@@ -36,25 +36,25 @@ describe('SQLite class roster repository', () => {
     expect(database?.prepare('SELECT count(*) AS count FROM students').get()).toEqual({ count: 1 });
   });
 
-  it('atomically rechecks pending approval and preserves a conflict without authorization', () => {
+  it('creates a durable number-only member without using pending approval', () => {
     const subject = setup();
     const classroom = subject.createClass('teacher', '1A');
-    const join = subject.requestJoin(classroom.id, 'Unauthorised', 'S1');
-    if (join.outcome !== 'pending') throw new Error('test setup');
-    database?.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run('concurrent-roster', classroom.id, 'Roster', 'S1', 'S1', 0, '2026-09-07T00:00:00.000Z');
-    expect(() => subject.approvePendingRequest('teacher', join.request.id)).toThrow('PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT');
-    expect(database?.prepare('SELECT status FROM pending_student_requests WHERE id=?').get(join.request.id)).toEqual({ status: 'pending' });
-    expect(() => database?.prepare("INSERT INTO pending_student_requests (id,class_id,display_name,raw_student_number,normalized_student_number,requested_at_utc,status,resolved_at_utc) VALUES (?,?,?,?,?,?, 'pending',NULL)").run('duplicate', classroom.id, 'Other', 'S1', 'S1', 'now')).toThrow();
+    const join = subject.requestJoin(classroom.id, 'S1');
+    expect(join).toMatchObject({ outcome: 'joined', created: true, student: { normalizedStudentNumber: 'S1' } });
+    expect(database?.prepare('SELECT count(*) AS count FROM student_class_joins').get()).toEqual({ count: 1 });
+    expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 0 });
   });
 
-  it('creates exactly one pending request under repeated joins, never a student or session', () => {
+  it('reuses one number-only member under repeated joins and records the class entry', () => {
     const subject = setup();
     const classroom = subject.createClass('teacher', '1A');
-    const first = subject.requestJoin(classroom.id, 'Guest', 'G1');
-    const second = subject.requestJoin(classroom.id, 'Guest 2', 'g1');
-    expect(first).toEqual(second);
-    expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 1 });
-    expect(database?.prepare('SELECT count(*) AS count FROM students').get()).toEqual({ count: 0 });
+    const first = subject.requestJoin(classroom.id, 'G1');
+    const second = subject.requestJoin(classroom.id, 'g1');
+    expect(first).toMatchObject({ outcome: 'joined', created: true });
+    expect(second).toMatchObject({ outcome: 'joined', created: false });
+    expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 0 });
+    expect(database?.prepare('SELECT count(*) AS count FROM students').get()).toEqual({ count: 1 });
+    expect(database?.prepare('SELECT count(*) AS count FROM student_class_joins').get()).toEqual({ count: 1 });
     expect(database?.prepare('SELECT count(*) AS count FROM student_sessions').get()).toEqual({ count: 0 });
   });
 });

@@ -26,6 +26,7 @@ import { RealtimeNotificationBus, type RealtimeGatewayOptions } from './realtime
 import { createUploadRoutes } from './uploads/http-routes.js';
 import { UploadPipeline } from './uploads/pipeline.js';
 import { UploadStorage, type UploadStorageOptions } from './uploads/storage.js';
+import { createMaterialRoutes } from './materials/http-routes.js';
 import { closeUnconsumedRequestBody } from './http/rejected-request.js';
 
 export type ApplicationOptions = Readonly<{
@@ -89,8 +90,7 @@ export function createApplication(options: ApplicationOptions): Application {
   const studentJoin: StudentJoinPort = {
     join: (request) => {
       try {
-        const outcome = classService.requestJoin(request.classId, request.displayName, request.studentNumber);
-        return outcome.outcome === 'matched' ? outcome.student : undefined;
+        return classService.requestJoin(request.classId, request.studentNumber).student;
       } catch (error) {
         // The login boundary deliberately does not reveal whether an arbitrary
         // class ID exists; non-approved joins all receive the same denial.
@@ -159,6 +159,7 @@ export function createApplication(options: ApplicationOptions): Application {
   });
   const fileRepository = new SqliteFileSubmissionTaskRepository(options.database, () => clock.now().toISOString());
   const storage = options.uploadStorage ?? new UploadStorage(options.uploadStorageRoot ?? 'runtime-data/uploads', options.uploadStorageOptions);
+  const materialHandler = createMaterialRoutes({ database: options.database, storage, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   const fileTaskService = new FileTaskService({
     repository: fileRepository,
     storage,
@@ -218,7 +219,7 @@ export function createApplication(options: ApplicationOptions): Application {
         }
         try {
           if (pathname.includes('/file-tasks/') && !uploadsReady) { sendJson(request, response, 503, { error: 'UPLOADS_INITIALIZING' }); return true; }
-          const handled = await exportHandler(request, response) || await classHandler(request, response) || await questionBankHandler(request, response) || await fileTaskHandler(request, response) || await uploadHandler(request, response);
+          const handled = await exportHandler(request, response) || await classHandler(request, response) || await materialHandler(request, response) || await questionBankHandler(request, response) || await fileTaskHandler(request, response) || await uploadHandler(request, response);
           if (!handled) sendJson(request, response, 404, { error: 'NOT_FOUND' });
         } catch (error) { sendError(request, response, error); }
         return true;
@@ -288,11 +289,11 @@ function sendError(request: IncomingMessage, response: ServerResponse, error: un
   // rejected an opaque token.
   if (code === 'REQUEST_CURSOR_INVALID') { sendJson(request, response, 400, { error: 'INVALID_REQUEST' }); return; }
   if (code === 'CLASS_NOT_FOUND' || code === 'PENDING_REQUEST_NOT_FOUND_OR_RESOLVED' || code.endsWith('_NOT_FOUND') || code === 'ANSWER_NOT_FOUND') { sendJson(request, response, 404, { error: code }); return; }
-  if (code === 'REQUEST_BODY_TOO_LARGE' || code === 'UPLOAD_TOO_LARGE') { sendJson(request, response, 413, { error: code }); return; }
+  if (code === 'REQUEST_BODY_TOO_LARGE' || code === 'UPLOAD_TOO_LARGE' || code === 'MATERIAL_TOO_LARGE') { sendJson(request, response, 413, { error: code }); return; }
   if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(request, response, 403, { error: code }); return; }
   if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT' || code === 'QUESTION_EXPORT_CLOSED_REQUIRED' || code === 'FILE_SUBMISSION_ALREADY_EXISTS' || code === 'FILE_TASK_TRANSITION_CONFLICT') { sendJson(request, response, 409, { error: code }); return; }
   if (code === 'UPLOAD_STREAM_LIMIT_REACHED') { sendJson(request, response, 429, { error: 'UPLOAD_REJECTED' }); return; }
-  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(request, response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
+  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code.startsWith('MATERIAL_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'JOIN_STUDENT_NUMBER_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(request, response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
   sendJson(request, response, 500, { error: 'CLASS_INTERNAL_ERROR' });
 }
 

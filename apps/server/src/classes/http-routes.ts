@@ -58,18 +58,14 @@ export function createClassRoutes(dependencies: ClassRoutesDependencies): (reque
     if (request.method === 'POST' && joinMatch?.[1] !== undefined) {
       const body = await readJson(request);
       const classId = decodeURIComponent(joinMatch[1]) as ClassId;
-      const displayName = stringField(body, 'displayName');
       const studentNumber = stringField(body, 'studentNumber');
-      const reservation = studentJoinRateLimiter.reserve(remoteAddress(request), { classId, displayName, studentNumber }, new Date());
+      const reservation = studentJoinRateLimiter.reserve(remoteAddress(request), { classId, studentNumber }, new Date());
       if (reservation === undefined) { json(response, 429, { error: 'RATE_LIMITED' }); return true; }
       let result;
-      try { result = dependencies.service.requestJoin(classId, displayName, studentNumber); }
+      try { result = dependencies.service.requestJoin(classId, studentNumber); }
       catch (error) { reservation.release(); throw error; }
-      // A pending outcome is deliberately not a student session or authorization.
-      if (result.outcome === 'matched') reservation.succeed(); else reservation.fail();
-      // This route may create/reuse a pending request, but it is public. Never
-      // make a roster match distinguishable from a pending identity, nor expose
-      // the student/pending identifiers or their timestamps here.
+      reservation.succeed();
+      // This compatibility endpoint deliberately never creates a cookie.
       json(response, 202, { outcome: 'accepted' });
       return true;
     }

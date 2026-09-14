@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SqliteDatabase } from '../db/connection.js';
 import type { AuthorizedStudentContext } from '../domain/types.js';
+import { listStudentMaterials } from '../materials/http-routes.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -12,6 +13,7 @@ type Cursor = readonly [string, ...string[]];
 type Page<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
 type ClassRow = Readonly<{ id: string; name: string; createdAtUtc: string; updatedAtUtc: string }>;
 type StudentRow = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: number; approvedAtUtc: string }>;
+type JoinedStudentRow = Readonly<{ id: string; displayName: string; studentNumber: string; joinedAtUtc: string; lastJoinedAtUtc: string }>;
 type PendingRow = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string; requestedAtUtc: string }>;
 type QuestionRow = Readonly<{ id: string; classId: string; kind: string; prompt: string; state: string; templateId: string | null; createdAtUtc: string }>;
 type FileTaskRow = Readonly<{ id: string; classId: string; title: string; description: string; state: string; deadlineAtUtc: string; maxBytes: number; reopenedAtUtc: string | null; createdAtUtc: string }>;
@@ -30,7 +32,7 @@ export function createActivityRoutes(dependencies: Readonly<{ database: SqliteDa
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (request.method !== 'GET') return false;
 
-    const teacherClass = /^\/api\/teacher\/classes\/([^/]+)\/(roster|pending-student-requests|questions|file-tasks)$/.exec(url.pathname);
+    const teacherClass = /^\/api\/teacher\/classes\/([^/]+)\/(roster|joined-students|pending-student-requests|questions|file-tasks)$/.exec(url.pathname);
     if (teacherClass !== null) {
       dependencies.teacherContext(request);
       const classId = decodeURIComponent(teacherClass[1]!);
@@ -38,6 +40,7 @@ export function createActivityRoutes(dependencies: Readonly<{ database: SqliteDa
       const limit = readLimit(url);
       const resource = teacherClass[2]!;
       if (resource === 'roster') return send(response, students(dependencies.database, classId, limit, readCursor(url, `teacher:${classId}:roster`)));
+      if (resource === 'joined-students') return send(response, joinedStudents(dependencies.database, classId, limit, readCursor(url, `teacher:${classId}:joined-students`)));
       if (resource === 'pending-student-requests') return send(response, pending(dependencies.database, classId, limit, readCursor(url, `teacher:${classId}:pending`)));
       if (resource === 'questions') return send(response, questions(dependencies.database, classId, limit, readCursor(url, `teacher:${classId}:questions`)));
       return send(response, fileTasks(dependencies.database, classId, limit, readCursor(url, `teacher:${classId}:file-tasks`)));
@@ -52,7 +55,8 @@ export function createActivityRoutes(dependencies: Readonly<{ database: SqliteDa
       const limit = readLimit(url);
       return send(response, {
         questions: studentQuestions(dependencies.database, student.classId, limit, readCursor(url, `student:${student.classId}:questions`, 'questionCursor', 3)),
-        fileTasks: studentFileTasks(dependencies.database, student.classId, limit, readCursor(url, `student:${student.classId}:file-tasks`, 'fileTaskCursor', 3))
+        fileTasks: studentFileTasks(dependencies.database, student.classId, limit, readCursor(url, `student:${student.classId}:file-tasks`, 'fileTaskCursor', 3)),
+        materials: { items: listStudentMaterials(dependencies.database, student.classId) }
       });
     }
     return false;
@@ -72,6 +76,12 @@ function students(database: SqliteDatabase, classId: string, limit: number, curs
     ? database.prepare('SELECT id,display_name AS displayName,raw_student_number AS studentNumber,is_temporary AS isTemporary,approved_at_utc AS approvedAtUtc FROM students WHERE class_id=? ORDER BY display_name,id LIMIT ?').all(classId, limit + 1) as readonly StudentRow[]
     : database.prepare('SELECT id,display_name AS displayName,raw_student_number AS studentNumber,is_temporary AS isTemporary,approved_at_utc AS approvedAtUtc FROM students WHERE class_id=? AND (display_name>? OR (display_name=? AND id>?)) ORDER BY display_name,id LIMIT ?').all(classId, cursor[0], cursor[0], cursor[1], limit + 1) as readonly StudentRow[];
   return page(rows, limit, `teacher:${classId}:roster`, (row) => [row.displayName, row.id]);
+}
+function joinedStudents(database: SqliteDatabase, classId: string, limit: number, cursor: Cursor | undefined): Page<JoinedStudentRow> {
+  const rows = cursor === undefined
+    ? database.prepare('SELECT s.id,s.display_name AS displayName,s.raw_student_number AS studentNumber,j.joined_at_utc AS joinedAtUtc,j.last_joined_at_utc AS lastJoinedAtUtc FROM student_class_joins j JOIN students s ON s.id=j.student_id AND s.class_id=j.class_id WHERE j.class_id=? ORDER BY j.last_joined_at_utc DESC,s.id DESC LIMIT ?').all(classId, limit + 1) as readonly JoinedStudentRow[]
+    : database.prepare('SELECT s.id,s.display_name AS displayName,s.raw_student_number AS studentNumber,j.joined_at_utc AS joinedAtUtc,j.last_joined_at_utc AS lastJoinedAtUtc FROM student_class_joins j JOIN students s ON s.id=j.student_id AND s.class_id=j.class_id WHERE j.class_id=? AND (j.last_joined_at_utc<? OR (j.last_joined_at_utc=? AND s.id<?)) ORDER BY j.last_joined_at_utc DESC,s.id DESC LIMIT ?').all(classId, cursor[0], cursor[0], cursor[1], limit + 1) as readonly JoinedStudentRow[];
+  return page(rows, limit, `teacher:${classId}:joined-students`, (row) => [row.lastJoinedAtUtc, row.id]);
 }
 function pending(database: SqliteDatabase, classId: string, limit: number, cursor: Cursor | undefined): Page<PendingRow> {
   const rows = cursor === undefined

@@ -37,6 +37,7 @@ export type StudentFileTask = Readonly<{
 export type StudentActivities = Readonly<{
   questions: Readonly<{ items: readonly Readonly<{ id: string; prompt: string; kind: AnswerPayload['kind']; state: 'open' | 'closed' }>[]; nextCursor?: string }>;
   fileTasks: Readonly<{ items: readonly Readonly<{ id: string; title: string; description: string; state: 'open' | 'closed'; deadlineAtUtc: string }>[]; nextCursor?: string }>;
+  materials: Readonly<{ items: readonly Readonly<{ id: string; classId: string; displayFilename: string; declaredMimeType: string; byteLength: number; createdAtUtc: string }>[] }>;
 }>;
 
 export type QueuedAnswer = Readonly<{

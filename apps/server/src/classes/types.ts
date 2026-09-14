@@ -14,8 +14,9 @@ export type CsvPreview = Readonly<{
   ignoredColumnLines?: readonly number[];
 }>;
 export type JoinResult =
-  | Readonly<{ outcome: 'matched'; student: Student }>
-  | Readonly<{ outcome: 'pending'; request: PendingStudentRequest }>;
+  /** A student-number login always resolves to a class member.  Existing
+   * roster records are reused so old course data continues to work. */
+  Readonly<{ outcome: 'joined'; student: Student; created: boolean }>;
 
 /** Integration supplies a session/CSRF-aware implementation. This bounded service never treats a pending request as a teacher. */
 export interface TeacherAuthorization {
@@ -28,9 +29,14 @@ export type ClassRosterRepository = Readonly<{
   deleteClass: (classId: ClassId) => void;
   classExists: (classId: ClassId) => boolean;
   hasStudentNumber: (classId: ClassId, normalizedStudentNumber: string) => boolean;
+  findStudentByNumber: (classId: ClassId, normalizedStudentNumber: string) => Student | undefined;
   findStudentByRosterIdentity: (classId: ClassId, displayName: string, normalizedStudentNumber: string) => Student | undefined;
   findPendingRequest: (classId: ClassId, normalizedStudentNumber: string) => PendingStudentRequest | undefined;
   createOrGetPendingRequest: (input: PendingStudentRequest) => PendingStudentRequest;
   importRoster: (classId: ClassId, entries: readonly RosterEntry[], createStudentId: () => StudentId, approvedAtUtc: string) => void;
   approvePendingRequest: (requestId: PendingStudentRequestId, createStudentId: () => StudentId, approvedAtUtc: string) => Student;
+  /** Atomically inserts a number-only class member unless it already exists. */
+  createStudentIfAbsent: (input: Student) => Readonly<{ student: Student; created: boolean }>;
+  /** Durable membership telemetry for the teacher dashboard. */
+  recordStudentJoin: (student: Student, atUtc: string) => void;
 }>;

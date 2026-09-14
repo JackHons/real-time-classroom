@@ -1,11 +1,15 @@
 <script lang="ts">
-  import { onMount } from 'svelte'; import { goto } from '$app/navigation';
-  import { TeacherApi } from '$lib/teacher-api'; import TeacherNav from '$lib/teacher/TeacherNav.svelte'; import '$lib/teacher/teacher.css';
-  const api = new TeacherApi(); let ready = false;
-  onMount(() => { void (async () => { if (!await api.restoreTeacher()) await goto('/'); else ready = true; })(); });
-  async function logout(): Promise<void> { await api.logout(); await goto('/'); }
+  import { onMount } from 'svelte';
+  import { TeacherApi, readableError, type ClassRoom, type JoinedStudent } from '$lib/teacher-api'; import TeacherNav from '$lib/teacher/TeacherNav.svelte'; import '$lib/teacher/teacher.css';
+  const api = new TeacherApi(); let state: 'checking' | 'login' | 'ready' = 'checking'; let password = ''; let error = ''; let busy = false;
+  let classes: readonly ClassRoom[] = []; let selectedClassId = ''; let joined: readonly JoinedStudent[] = [];
+  onMount(() => { void initialise(); });
+  async function initialise(): Promise<void> { state = await api.restoreTeacher() ? 'ready' : 'login'; if (state === 'ready') await refresh(); }
+  async function refresh(): Promise<void> { const page = await api.classes(); classes = page.items; if (!classes.some((item) => item.id === selectedClassId)) selectedClassId = classes[0]?.id ?? ''; joined = selectedClassId ? (await api.joinedStudents(selectedClassId)).items : []; }
+  async function login(): Promise<void> { busy = true; error = ''; try { await api.login(password); password = ''; state = 'ready'; await refresh(); } catch (cause) { error = readableError(cause); } finally { busy = false; } }
+  async function logout(): Promise<void> { await api.logout(); state = 'login'; classes = []; joined = []; }
 </script>
-<main aria-busy={!ready}>
-  <TeacherNav current="home" onLogout={logout}/>
-  {#if ready}<section class="panel"><h2>教師工作台</h2><p>各項功能已分為獨立頁面，方便在課堂中快速切換。</p><div class="grid two"><a class="button" href="/teacher/roster">班級與名單：建立班級、匯入學生</a><a class="button" href="/teacher/questions">題庫與即時題：暫存、建立草稿、開放及收答</a><a class="button" href="/teacher/assignments">收功課：進度、交件清單、預覽及下載</a></div></section>{:else}<p>正在確認教師登入狀態…</p>{/if}
-</main>
+{#if state === 'checking'}<main><p>正在確認教師登入狀態…</p></main>
+{:else if state === 'login'}<main class="login-page"><section class="panel login"><h1>教師登入</h1><p>請使用共用教師密碼。</p><form on:submit|preventDefault={() => void login()}><label for="password">教師密碼</label><input id="password" type="password" bind:value={password} autocomplete="current-password" required/><button class="primary" disabled={busy}>{busy ? '登入中…' : '登入'}</button></form>{#if error}<p class="error" role="alert">{error}</p>{/if}<p><a href="/student">前往學生入口</a></p></section></main>
+{:else}<main><TeacherNav current="home" onLogout={logout}/><h2>教師工作台</h2><div class="grid two"><a class="button" href="/teacher/roster">班級與已加入學生</a><a class="button" href="/teacher/questions">題庫與即時題</a><a class="button" href="/teacher/assignments">收功課儀表板</a><a class="button" href="/teacher/materials">上傳教材</a></div><section class="panel"><div class="actions"><h3>本班已加入學生（{joined.length}）</h3><label for="overview-class">班級</label><select id="overview-class" bind:value={selectedClassId} on:change={() => void refresh()}>{#each classes as room}<option value={room.id}>{room.name}</option>{/each}</select><button on:click={() => void refresh()}>更新</button></div>{#if joined.length === 0}<p class="muted">尚未有學生加入這個班級。</p>{:else}<ul>{#each joined.slice(0, 10) as student}<li>{student.studentNumber} · {student.displayName} · 最近加入 {new Date(student.lastJoinedAtUtc).toLocaleString()}</li>{/each}</ul>{#if joined.length > 10}<p class="muted">顯示首 10 位；到「班級與已加入學生」查看完整清單。</p>{/if}{/if}</section></main>{/if}
+<style>.login-page{min-height:100vh;display:grid;place-items:center}.login{width:min(100%,32rem)}form{display:grid;gap:.65rem}.login a{color:#003f88;font-weight:700}</style>

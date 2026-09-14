@@ -6,7 +6,7 @@
   let kind: QuestionKind = 'single_choice'; let prompt = ''; let optionText = 'A | 選項一\nB | 選項二'; let reference = '';
   let detail: Awaited<ReturnType<TeacherApi['question']>> | undefined;
   onMount(() => { void initialise(); });
-  async function initialise(): Promise<void> { if (!await api.restoreTeacher()) { await goto('/'); return; } ready = true; await refresh(); }
+  async function initialise(): Promise<void> { if (!await api.restoreTeacher()) { await goto('/teacher'); return; } ready = true; await refresh(); }
   async function work(action: () => Promise<void>): Promise<void> { busy = true; error = ''; notice = ''; try { await action(); } catch (cause) { error = readableError(cause); } finally { busy = false; } }
   async function refresh(): Promise<void> { const page = await api.classes(); classes = page.items; if (!classes.some((entry) => entry.id === selectedClassId)) selectedClassId = classes[0]?.id ?? ''; questions = selectedClassId ? (await api.questions(selectedClassId)).items : []; }
   function input(): TemplateInput { const options = optionText.split('\n').map((line) => { const [, ...afterSeparator] = line.split('|'); return { label: (afterSeparator.length === 0 ? line : afterSeparator.join('|')).trim() }; }).filter((item) => item.label); return { kind, prompt, ...(kind === 'short_text' ? {} : { options }), referenceAnswer: kind === 'multiple_choice' ? reference.split(',').map((item) => item.trim()).filter(Boolean) : reference.trim() || null }; }
@@ -15,7 +15,7 @@
   async function load(): Promise<void> { if (!questionId) { error = '請選擇題目。'; return; } await work(async () => { detail = await api.question(questionId); }); }
   async function open(): Promise<void> { if (!questionId) { error = '請選擇題目。'; return; } await work(async () => { await api.openQuestion(questionId); await load(); await refresh(); notice = '題目已開放。'; }); }
   async function close(): Promise<void> { if (!questionId) { error = '請選擇題目。'; return; } await work(async () => { await api.closeQuestion(questionId); await load(); await refresh(); notice = '題目已關閉，現在可查看具名作答。'; }); }
-  async function logout(): Promise<void> { await api.logout(); await goto('/'); }
+  async function logout(): Promise<void> { await api.logout(); await goto('/teacher'); }
 </script>
 <main aria-busy={!ready}><TeacherNav current="questions" onLogout={logout}/>
 {#if !ready}<p>正在確認教師登入狀態…</p>{:else}<h2>題庫與即時題</h2><div aria-live="polite">{#if notice}<p class="notice">{notice}</p>{/if}{#if error}<p class="error" role="alert">{error}</p>{/if}</div>

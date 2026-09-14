@@ -35,6 +35,11 @@ export class SqliteClassRosterRepository implements ClassRosterRepository {
     return row === undefined ? undefined : student(row);
   }
 
+  findStudentByNumber(classId: ClassId, normalizedStudentNumber: string): Student | undefined {
+    const row = this.database.prepare('SELECT id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc FROM students WHERE class_id=? AND normalized_student_number=?').get(classId, normalizedStudentNumber) as StudentRow | undefined;
+    return row === undefined ? undefined : student(row);
+  }
+
   findPendingRequest(classId: ClassId, normalizedStudentNumber: string): PendingStudentRequest | undefined {
     const row = this.database.prepare("SELECT id,class_id,display_name,raw_student_number,normalized_student_number,requested_at_utc,status FROM pending_student_requests WHERE class_id=? AND normalized_student_number=? AND status='pending'").get(classId, normalizedStudentNumber) as PendingRow | undefined;
     return row === undefined ? undefined : pending(row);
@@ -90,6 +95,28 @@ export class SqliteClassRosterRepository implements ClassRosterRepository {
       if (updated.changes !== 1) throw new Error('PENDING_APPROVAL_CONFLICT');
       return created;
     })();
+  }
+
+  createStudentIfAbsent(input: Student): Readonly<{ student: Student; created: boolean }> {
+    return this.database.transaction(() => {
+      if (!this.classExists(input.classId)) throw new Error('CLASS_NOT_FOUND');
+      const existing = this.findStudentByNumber(input.classId, input.normalizedStudentNumber);
+      if (existing !== undefined) return { student: existing, created: false };
+      try {
+        this.database.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run(input.id, input.classId, input.displayName, input.rawStudentNumber, input.normalizedStudentNumber, Number(input.isTemporary), input.approvedAtUtc);
+      } catch (error) {
+        if (isConstraint(error)) {
+          const concurrent = this.findStudentByNumber(input.classId, input.normalizedStudentNumber);
+          if (concurrent !== undefined) return { student: concurrent, created: false };
+        }
+        throw error;
+      }
+      return { student: input, created: true };
+    })();
+  }
+
+  recordStudentJoin(student: Student, atUtc: string): void {
+    this.database.prepare('INSERT INTO student_class_joins (student_id,class_id,joined_at_utc,last_joined_at_utc) VALUES (?,?,?,?) ON CONFLICT(student_id) DO UPDATE SET last_joined_at_utc=excluded.last_joined_at_utc').run(student.id, student.classId, atUtc, atUtc);
   }
 }
 
