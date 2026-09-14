@@ -147,6 +147,25 @@ function Initialize-LanRuntime {
   $settings
 }
 
+function Get-LanFileSha256 {
+  param([Parameter(Mandatory)][string] $Path)
+  # Get-FileHash is absent from some Windows PowerShell 5.1 installations.
+  # Use it when available, otherwise stream the same SHA-256 calculation via
+  # the .NET Framework APIs.  This is an integrity-preserving compatibility
+  # fallback, not a bypass: callers still compare the full digest to the
+  # release manifest.
+  $fileHash = Get-Command -Name Get-FileHash -CommandType Cmdlet -ErrorAction SilentlyContinue
+  if ($null -ne $fileHash) { return ([string](Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash).ToLowerInvariant() }
+  $algorithm = [Security.Cryptography.SHA256]::Create(); $stream = $null
+  try {
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+    $algorithm.Dispose()
+  }
+}
+
 function Test-LanDeployment {
   param([Parameter(Mandatory)][string] $RepositoryRoot)
   $required = @('apps\server\dist\main.js', 'apps\web\build\handler.js', 'apps\server\dist\db\migrations\0001_initial.sql')
@@ -163,7 +182,7 @@ function Test-LanDeployment {
   foreach ($entry in @($manifest.migrations)) {
     $name = [string]$entry.name; $expected = [string]$entry.sha256
     if ([string]::IsNullOrEmpty($name) -or [string]::IsNullOrEmpty($expected) -or $name -match '[\\/]' -or -not (Test-Path -LiteralPath (Join-Path $RepositoryRoot "apps\server\dist\db\migrations\$name") -PathType Leaf)) { throw 'Deployment manifest contains an invalid migration entry.' }
-    $actual = (Get-FileHash -LiteralPath (Join-Path $RepositoryRoot "apps\server\dist\db\migrations\$name") -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = Get-LanFileSha256 -Path (Join-Path $RepositoryRoot "apps\server\dist\db\migrations\$name")
     if ($actual -ne $expected.ToLowerInvariant()) { throw "Deployment migration hash mismatch: $name" }
   }
 }

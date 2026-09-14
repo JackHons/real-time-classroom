@@ -27,6 +27,22 @@ $scratch = Join-Path $env:TEMP ('lan-launcher-test-' + [guid]::NewGuid().ToStrin
 [IO.Directory]::CreateDirectory($scratch) | Out-Null
 try {
   $repo = Join-Path $scratch 'repo'; $runtime = Join-Path $scratch 'runtime'; [IO.Directory]::CreateDirectory($repo) | Out-Null; [IO.Directory]::CreateDirectory($runtime) | Out-Null
+  $hashFixture = Join-Path $scratch 'sha256-fallback.txt'; [IO.File]::WriteAllText($hashFixture, 'manifest integrity fallback', [Text.UTF8Encoding]::new($false))
+  $expectedAlgorithm = [Security.Cryptography.SHA256]::Create()
+  try { $expectedHash = ([BitConverter]::ToString($expectedAlgorithm.ComputeHash([IO.File]::ReadAllBytes($hashFixture)))).Replace('-', '').ToLowerInvariant() }
+  finally { $expectedAlgorithm.Dispose() }
+  $fallbackHash = & (Get-Module LanClassroomLauncher) {
+    param($p)
+    # Model Windows PowerShell installations where Get-FileHash is absent.
+    function Get-Command {
+      [CmdletBinding()]
+      param([string] $Name, [object] $CommandType)
+      if ($Name -eq 'Get-FileHash') { return $null }
+      Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
+    }
+    Get-LanFileSha256 -Path $p
+  } $hashFixture
+  Assert-True ($fallbackHash -eq $expectedHash) 'missing Get-FileHash must use the equivalent .NET SHA-256 fallback'
   Assert-True ((Assert-LanRuntimeRoot -RuntimeRoot $runtime -RepositoryRoot $repo) -eq $null) 'sibling dedicated runtime should be accepted'
   $settings = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
   Assert-True (Test-Path -LiteralPath $settings -PathType Leaf) 'runtime preflight should create private launcher settings'
