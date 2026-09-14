@@ -65,12 +65,20 @@ function Test-LanPortAvailable {
   } finally { foreach ($socket in $sockets) { $socket.Stop() } }
 }
 
+function Import-LanWindowsSecurityModule {
+  # `pnpm` launched from PowerShell 7 can pass its module search path to the
+  # supported Windows PowerShell 5.1 launcher. Load the in-box module by
+  # absolute PSHOME path so Get-Acl cannot resolve the incompatible Core one.
+  # A supervisor reads its authenticated handoff before it writes any file,
+  # so this must be available to both ACL assertion and ACL provisioning.
+  if ($null -eq (Get-Module -Name Microsoft.PowerShell.Security)) {
+    Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security') -ErrorAction Stop
+  }
+}
+
 function Set-PrivateRuntimeAcl {
   param([Parameter(Mandatory)][string] $Path)
-  # `pnpm` launched from PowerShell 7 can pass its module search path to the
-  # supported Windows PowerShell 5.1 launcher.  Load the in-box module by
-  # absolute PSHOME path so Get-Acl cannot resolve the incompatible Core one.
-  Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security') -Force -ErrorAction Stop
+  Import-LanWindowsSecurityModule
   $item = Get-Item -LiteralPath $Path -Force
   if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Runtime path may not be a reparse point: $Path" }
   $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -84,12 +92,21 @@ function Set-PrivateRuntimeAcl {
 
 function Assert-PrivateRuntimeAcl {
   param([Parameter(Mandatory)][string] $Path)
+  Import-LanWindowsSecurityModule
   $acl = Get-Acl -LiteralPath $Path; $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $allowed = @($owner, 'S-1-5-18', 'S-1-5-32-544')
-  if (-not $acl.AreAccessRulesProtected -or ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw "Runtime ACL owner or inheritance is unsafe: $Path" }
+  # Earlier releases could leave a lock with the normal inherited DACL from a
+  # private, current-user directory.  Inheritance itself is not authority:
+  # every effective ACE still has to be one of the three principals below.
+  # Accepting that safe legacy shape lets us read/recover the lock and then
+  # normalise it through Set-PrivateRuntimeAcl.  Do not accept an inherited
+  # Users/Everyone/Authenticated Users ACE (even Read): it would let a lower
+  # privilege local account influence lock or state handling.
+  $ownerSid = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
+  if ($ownerSid -ne $owner) { throw "Runtime ACL owner is unsafe: $Path" }
   foreach ($entry in @($acl.Access)) {
     $sid = $entry.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-    if ($entry.IsInherited -or $entry.AccessControlType -ne 'Allow' -or $sid -notin $allowed -or (($entry.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne [Security.AccessControl.FileSystemRights]::FullControl)) { throw "Runtime ACL is not owner-only: $Path" }
+    if ($entry.AccessControlType -ne 'Allow' -or $sid -notin $allowed -or (($entry.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne [Security.AccessControl.FileSystemRights]::FullControl)) { throw "Runtime ACL is not private: $Path" }
   }
   foreach ($sid in $allowed) { if (@($acl.Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $sid }).Count -eq 0) { throw "Runtime ACL is incomplete: $Path" } }
 }

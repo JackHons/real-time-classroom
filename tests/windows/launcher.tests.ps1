@@ -32,6 +32,20 @@ try {
   Assert-True (Test-Path -LiteralPath $settings -PathType Leaf) 'runtime preflight should create private launcher settings'
   Assert-True ((Assert-PrivateRuntimeAcl -Path $runtime) -eq $null) 'runtime root ACL must be verified owner-only'
   Assert-True ((Assert-PrivateRuntimeAcl -Path $settings) -eq $null) 'runtime secret ACL must be verified owner-only'
+  # Legacy releases could create a lock before its DACL was made protected.
+  # It is still safe when all inherited authority is limited to this user,
+  # SYSTEM, and Administrators; it must remain readable so stale-lock recovery
+  # can normalise it instead of leaving the launcher permanently unavailable.
+  $legacyParent = Join-Path $scratch 'private-legacy-parent'; [IO.Directory]::CreateDirectory($legacyParent) | Out-Null
+  & (Get-Module LanClassroomLauncher) { param($p) Set-PrivateRuntimeAcl -Path $p } $legacyParent
+  $legacyLock = Join-Path $legacyParent 'launcher.lock'; [IO.File]::WriteAllText($legacyLock, '{}', [Text.UTF8Encoding]::new($false))
+  $legacyAcl = & (Get-Module LanClassroomLauncher) { param($p) Get-Acl -LiteralPath $p } $legacyLock
+  Assert-True (-not $legacyAcl.AreAccessRulesProtected) 'legacy lock test setup must preserve inherited ACLs'
+  Assert-True ((Assert-PrivateRuntimeAcl -Path $legacyLock) -eq $null) 'an inherited local-owner lock with no untrusted ACE must be accepted'
+  & icacls.exe $legacyLock '/grant' '*S-1-1-0:(R)' | Out-Null
+  Assert-True ($LASTEXITCODE -eq 0) 'unsafe inherited lock test setup failed'
+  $blocked = $false; try { Assert-PrivateRuntimeAcl -Path $legacyLock } catch { $blocked = $true }
+  Assert-True $blocked 'an inherited lock granting Everyone must be rejected'
   $blocked = $false; try { Assert-LanRuntimeRoot -RuntimeRoot $scratch -RepositoryRoot $repo } catch { $blocked = $true }
   Assert-True $blocked 'a shared parent may not be used as RuntimeRoot'
   $link = Join-Path $scratch 'runtime-link'; New-Item -ItemType Junction -Path $link -Target $runtime | Out-Null
