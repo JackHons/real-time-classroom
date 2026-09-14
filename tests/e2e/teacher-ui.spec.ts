@@ -17,7 +17,7 @@ test.describe('teacher management UI (real server)', () => {
     await expect(page.getByRole('navigation', { name: '教師功能' })).toBeVisible();
     await page.getByRole('navigation', { name: '教師功能' }).getByRole('link', { name: '班級與已加入學生', exact: true }).click();
     await page.waitForURL('**/teacher/roster');
-    await expect(page.getByRole('heading', { name: /已加入學生/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^已加入學生（/ })).toBeVisible();
     await expect(page.getByText('不需要預先匯入名單。')).toBeVisible();
     await expectMinimumTarget(page, '重新整理');
     await expectAxeClean(page);
