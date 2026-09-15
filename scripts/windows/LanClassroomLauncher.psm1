@@ -167,13 +167,22 @@ function Get-LanFileSha256 {
 }
 
 function Test-LanDeployment {
-  param([Parameter(Mandatory)][string] $RepositoryRoot)
+  param(
+    [Parameter(Mandatory)][string] $RepositoryRoot,
+    # A source checkout has the same built server/web output as a release
+    # package, but deliberately does not carry the generated release manifest.
+    # This opt-in is used only by Start-WebGui after it has positively
+    # identified a checkout and built it.  Packaged deployments keep the
+    # manifest and migration-integrity requirement below.
+    [switch] $SourceCheckout
+  )
   $required = @('apps\server\dist\main.js', 'apps\web\build\handler.js', 'apps\server\dist\db\migrations\0001_initial.sql')
   foreach ($relative in $required) { if (-not (Test-Path -LiteralPath (Join-Path $RepositoryRoot $relative) -PathType Leaf)) { throw "Deployment is incomplete: missing $relative. Run pnpm build first." } }
   $node = Get-Command node -ErrorAction SilentlyContinue
   if ($null -eq $node) { throw 'Node.js 22 or 24 LTS is required.' }
   $version = [version]((& $node.Source --version).Trim().TrimStart('v'))
   if ($version.Major -notin @(22, 24)) { throw "Node.js 22 or 24 LTS is required; found $version." }
+  if ($SourceCheckout) { return }
   $manifestPath = Join-Path $RepositoryRoot 'release-manifest.json'
   if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Deployment is incomplete: missing release-manifest.json. Run pnpm release:assemble.' }
   try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json } catch { throw 'Deployment manifest is invalid.' }

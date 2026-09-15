@@ -6,7 +6,10 @@ param(
   [switch] $ConfigureFirewall,
   # Used by the double-click Web GUI entry point.  It deliberately binds only
   # to loopback and therefore never needs, creates, or changes a firewall rule.
-  [switch] $LocalOnly
+  [switch] $LocalOnly,
+  # Internal checkout mode used by Start-WebGui.  Release packages never use
+  # this: they must retain their generated manifest integrity verification.
+  [switch] $SourceCheckout
 )
 Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -36,7 +39,7 @@ try {
   }
   $addresses = @('127.0.0.1', $selected.Address) | Select-Object -Unique
   Test-LanPortAvailable -Addresses $addresses -Port $Port
-  Test-LanDeployment -RepositoryRoot $repo
+  Test-LanDeployment -RepositoryRoot $repo -SourceCheckout:$SourceCheckout
   Test-LanSqlite -RepositoryRoot $repo -RuntimeRoot $runtime
   $node = (Get-Command node -ErrorAction Stop).Source
   $priorOwned = $false; $priorStatePath = Join-Path $runtime 'launcher-state.json'

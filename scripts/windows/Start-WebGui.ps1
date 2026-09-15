@@ -24,6 +24,24 @@ function Resolve-WebGuiRuntime {
 
 $runtime = Resolve-WebGuiRuntime
 
+function Test-SourceCheckout {
+  return (Test-Path -LiteralPath (Join-Path $packageRoot 'pnpm-workspace.yaml') -PathType Leaf) -and
+    (Test-Path -LiteralPath (Join-Path $packageRoot 'apps\server\src\main.ts') -PathType Leaf) -and
+    (Test-Path -LiteralPath (Join-Path $packageRoot 'apps\web\src') -PathType Container)
+}
+
+function Build-SourceCheckout {
+  # The root-level double-click control is useful to developers and testers as
+  # well as to a packaged release.  Build before starting so it cannot serve a
+  # stale dist/web UI after a source edit.  No runtime database or uploads are
+  # touched here.
+  $pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+  if ($null -eq $pnpm) { throw 'This is a source checkout. pnpm is required for its one-click build; install pnpm 11+ or use the packaged release instead.' }
+  Write-Host 'Building the current LAN Classroom project...'
+  & $pnpm.Source '--dir' $packageRoot 'build'
+  if ($LASTEXITCODE -ne 0) { throw 'Project build failed. The Web GUI was not started; correct the build error above and try again.' }
+}
+
 function Get-RecordedRunningInstance {
   $statePath = Join-Path $runtime 'launcher-state.json'
   if (-not (Test-Path -LiteralPath $statePath)) { return $null }
@@ -63,5 +81,12 @@ if ($null -ne $running) {
   exit 0
 }
 
-& (Join-Path $PSScriptRoot 'Start-LanClassroom.ps1') -Port $Port -RuntimeRoot $runtime -LocalOnly
+$sourceCheckout = $false
+if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'release-manifest.json') -PathType Leaf)) {
+  if (-not (Test-SourceCheckout)) { throw 'Deployment is incomplete: release-manifest.json is missing. Use a complete release package or a full source checkout.' }
+  Build-SourceCheckout
+  $sourceCheckout = $true
+}
+
+& (Join-Path $PSScriptRoot 'Start-LanClassroom.ps1') -Port $Port -RuntimeRoot $runtime -LocalOnly -SourceCheckout:$sourceCheckout
 Open-WebGui -TargetPort $Port

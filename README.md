@@ -21,6 +21,8 @@ pnpm release:verify
 
 在教師電腦只需安裝 Windows x64 Node.js 22 或 24 LTS；不需 pnpm、原始碼或 Visual Studio。解壓發佈包後，可直接雙擊根目錄的 `Start Classroom.cmd`，它會在背景啟動本機 Web GUI 並開啟 `http://127.0.0.1:50165/`（首次使用會開啟 `/setup`）；雙擊 `Stop Classroom.cmd` 可安全停止同一個實例。包內有 `RELEASE-PREREQUISITES.md`；啟動器會先測試 SQLite/WAL，若原生檔不相容會安全停止。
 
+在原始專案根目錄雙擊同名的 `Start Classroom.cmd` 也可以一鍵使用目前程式：它會先執行目前 checkout 的建置，然後以相同的本機模式啟動；此開發／測試模式需要已安裝 pnpm 11+。重複雙擊只會開啟已運行的同一個服務，不會建立第二個實例。雙擊 `Stop Classroom.cmd` 會安全停止服務並保留教師密碼、SQLite 資料與上傳檔案。
+
 ## 開發環境
 
 - Windows 10 或 Windows 11
