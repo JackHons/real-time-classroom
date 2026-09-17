@@ -431,10 +431,18 @@ function Get-LanProcessIdentityStatus {
   param([Parameter(Mandatory)][int] $Id, [Parameter(Mandatory)][object] $StartedAtUtc, [Parameter(Mandatory)][string] $CommandToken)
   $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
   if ($null -eq $process) { return 'Absent' }
-  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - (ConvertTo-LanUtc $StartedAtUtc)).TotalSeconds) -gt 2) { return 'Mismatch' }
+  # A worker or supervisor can exit between Get-Process and its StartTime
+  # property read. Treat that unavoidable race as absent; never turn a safe
+  # cleanup into a null-property error or target a different PID.
+  try { $processStartedAtUtc = $process.StartTime.ToUniversalTime() } catch { try { $process.Dispose() } catch { }; return 'Absent' }
+  if ($null -eq $processStartedAtUtc) { try { $process.Dispose() } catch { }; return 'Absent' }
+  if ([Math]::Abs(($processStartedAtUtc - (ConvertTo-LanUtc $StartedAtUtc)).TotalSeconds) -gt 2) { try { $process.Dispose() } catch { }; return 'Mismatch' }
   $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
-  if ($null -eq $cim -or $null -eq $cim.CommandLine -or $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return 'Mismatch' }
-  return 'Running'
+  try {
+    if ($null -eq $cim) { return 'Absent' }
+    if ($null -eq $cim.CommandLine -or $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return 'Mismatch' }
+    return 'Running'
+  } finally { try { $process.Dispose() } catch { } }
 }
 
 function Invoke-LanIdentityCheckedStop {
@@ -449,7 +457,9 @@ function Invoke-LanIdentityCheckedStop {
   # later process after PID reuse.
   $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
   if ($null -eq $process) { return 'Absent' }
-  if ([Math]::Abs(($process.StartTime.ToUniversalTime() - (ConvertTo-LanUtc $StartedAtUtc)).TotalSeconds) -gt 2) { $process.Dispose(); return 'Mismatch' }
+  try { $processStartedAtUtc = $process.StartTime.ToUniversalTime() } catch { try { $process.Dispose() } catch { }; return 'Absent' }
+  if ($null -eq $processStartedAtUtc) { try { $process.Dispose() } catch { }; return 'Absent' }
+  if ([Math]::Abs(($processStartedAtUtc - (ConvertTo-LanUtc $StartedAtUtc)).TotalSeconds) -gt 2) { $process.Dispose(); return 'Mismatch' }
   $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $Id" -ErrorAction SilentlyContinue
   if ($null -eq $cim -or $null -eq $cim.CommandLine -or $cim.CommandLine.IndexOf($CommandToken, [StringComparison]::OrdinalIgnoreCase) -lt 0) { $process.Dispose(); return 'Mismatch' }
   try { & $StopAction $process; return 'Stopped' }
