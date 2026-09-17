@@ -24,7 +24,7 @@ try {
   # Runtime initialization is the minimum prerequisite for an owner-only lock.
   # All later preflight, port, firewall, and process work is covered by the
   # lock and by the failure cleanup below.
-  $settingsPath = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo
+  $settingsPath = Initialize-LanRuntime -RuntimeRoot $runtime -RepositoryRoot $repo -AllowWorkspaceLegacyRuntime:$SourceCheckout
   Acquire-LanLaunchLock -LockPath $lockPath -OwnerToken $ownerToken -OwnerPid $PID -CommandToken 'Start-LanClassroom.ps1'
   $ownsLock = $true
   if ($LocalOnly -and $ConfigureFirewall) { throw 'Local-only Web GUI mode never changes Windows Firewall.' }

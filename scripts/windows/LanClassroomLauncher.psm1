@@ -126,10 +126,17 @@ function Assert-PrivateRuntimeTree {
 
 function Initialize-LanRuntime {
   [CmdletBinding()]
-  param([Parameter(Mandatory)][string] $RuntimeRoot, [Parameter(Mandatory)][string] $RepositoryRoot)
+  param(
+    [Parameter(Mandatory)][string] $RuntimeRoot,
+    [Parameter(Mandatory)][string] $RepositoryRoot,
+    # A previous development release stored its already-configured runtime in
+    # this checkout's artifacts directory. This narrow compatibility route is
+    # only passed by the source Web GUI control; packaged releases never opt in.
+    [switch] $AllowWorkspaceLegacyRuntime
+  )
   $root = [IO.Path]::GetFullPath($RuntimeRoot)
   $repo = [IO.Path]::GetFullPath($RepositoryRoot)
-  Assert-LanRuntimeRoot -RuntimeRoot $root -RepositoryRoot $repo
+  Assert-LanRuntimeRoot -RuntimeRoot $root -RepositoryRoot $repo -AllowWorkspaceLegacyRuntime:$AllowWorkspaceLegacyRuntime
   foreach ($directory in @($root, (Join-Path $root 'database'), (Join-Path $root 'uploads'), (Join-Path $root 'uploads\staging'), (Join-Path $root 'uploads\files'))) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
   Assert-PrivateRuntimeTree -RuntimeRoot $root
   $probe = Join-Path $root ('.write-probe-' + [guid]::NewGuid().ToString('N')); $stream = $null
@@ -145,6 +152,36 @@ function Initialize-LanRuntime {
   }
   Assert-PrivateRuntimeTree -RuntimeRoot $root
   $settings
+}
+
+function Test-LanRuntimeSelectionMarker {
+  # This marker deliberately contains no account data, passwords, CSRF secret,
+  # classroom data, or database-derived value. It records only that the
+  # launcher has successfully adopted this private runtime, so a later clean
+  # stop (which removes the temporary process state) does not lose the user's
+  # selected classroom.
+  param([Parameter(Mandatory)][string] $RuntimeRoot)
+  $marker = Join-Path $RuntimeRoot 'launcher-runtime.json'
+  if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
+  try {
+    Assert-PrivateRuntimeAcl -Path $marker
+    $record = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+    return [string]$record.format -eq 'lan-classroom-runtime-v1'
+  } catch { return $false }
+}
+
+function Write-LanRuntimeSelectionMarker {
+  param([Parameter(Mandatory)][string] $RuntimeRoot)
+  $marker = Join-Path $RuntimeRoot 'launcher-runtime.json'
+  $temporary = Join-Path $RuntimeRoot ('.launcher-runtime-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  $backup = Join-Path $RuntimeRoot ('.launcher-runtime-' + [guid]::NewGuid().ToString('N') + '.bak')
+  try {
+    $record = @{ format = 'lan-classroom-runtime-v1'; selectedAtUtc = [DateTime]::UtcNow.ToString('o') }
+    [IO.File]::WriteAllText($temporary, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    Set-PrivateRuntimeAcl -Path $temporary
+    if (Test-Path -LiteralPath $marker) { [IO.File]::Replace($temporary, $marker, $backup) } else { [IO.File]::Move($temporary, $marker) }
+    Set-PrivateRuntimeAcl -Path $marker
+  } finally { Remove-Item -LiteralPath $temporary, $backup -Force -ErrorAction SilentlyContinue }
 }
 
 function Get-LanFileSha256 {
@@ -243,15 +280,23 @@ function Add-LanPrivateFirewallRule {
 }
 
 function Assert-LanRuntimeRoot {
-  param([Parameter(Mandatory)][string] $RuntimeRoot, [Parameter(Mandatory)][string] $RepositoryRoot)
+  param(
+    [Parameter(Mandatory)][string] $RuntimeRoot,
+    [Parameter(Mandatory)][string] $RepositoryRoot,
+    [switch] $AllowWorkspaceLegacyRuntime
+  )
   $root = Get-LanCanonicalPath -Path $RuntimeRoot; $repo = Get-LanCanonicalPath -Path $RepositoryRoot
   $rootPrefix = "$root$([IO.Path]::DirectorySeparatorChar)"; $repoPrefix = "$repo$([IO.Path]::DirectorySeparatorChar)"
-  if ($root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\') -or $root -eq $repo -or $root.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or $repo.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'RuntimeRoot must be a dedicated leaf outside, and not containing, the source checkout.' }
+  $workspaceLegacyParent = Join-Path $repo 'artifacts'
+  $isWorkspaceLegacyRuntime = $AllowWorkspaceLegacyRuntime -and
+    [IO.Path]::GetDirectoryName($root).Equals($workspaceLegacyParent, [StringComparison]::OrdinalIgnoreCase) -and
+    [IO.Path]::GetFileName($root) -match '^lan-classroom-local-runtime-[A-Za-z0-9._-]+$'
+  if ($root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\') -or $root -eq $repo -or ((($root.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) -or $repo.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase))) -and -not $isWorkspaceLegacyRuntime)) { throw 'RuntimeRoot must be a dedicated leaf outside, and not containing, the source checkout.' }
   foreach ($broad in @($env:LOCALAPPDATA, $env:USERPROFILE, $env:ProgramData)) { if ($null -ne $broad -and $root -eq [IO.Path]::GetFullPath($broad).TrimEnd('\')) { throw 'RuntimeRoot must be a dedicated leaf directory, not a profile or shared parent.' } }
   Assert-LanNoReparseAncestor -Path $RuntimeRoot
   # Both directions are checked after resolving final filesystem paths, so a
   # junction cannot make a sibling spelling alias the checkout or its parent.
-  if ((Test-LanPathContains -Parent $root -Child $repo) -or (Test-LanPathContains -Parent $repo -Child $root)) { throw 'RuntimeRoot must not resolve inside, or contain, the source checkout.' }
+  if ((Test-LanPathContains -Parent $root -Child $repo) -or ((Test-LanPathContains -Parent $repo -Child $root) -and -not $isWorkspaceLegacyRuntime)) { throw 'RuntimeRoot must not resolve inside, or contain, the source checkout.' }
 }
 
 function Test-LanPathContains {
@@ -322,12 +367,17 @@ function ConvertTo-LanWindowsArgument {
 
 function Write-LanLauncherState {
   param([Parameter(Mandatory)][string] $StatePath, [Parameter(Mandatory)][object] $State)
-  $directory = Split-Path -Parent $StatePath; $temporary = Join-Path $directory ('.launcher-state-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  $directory = Split-Path -Parent $StatePath
+  $temporary = Join-Path $directory ('.launcher-state-' + [guid]::NewGuid().ToString('N') + '.tmp')
+  $backup = Join-Path $directory ('.launcher-state-' + [guid]::NewGuid().ToString('N') + '.bak')
   try {
     [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-    if (Test-Path -LiteralPath $StatePath) { [IO.File]::Replace($temporary, $StatePath, $null) } else { [IO.File]::Move($temporary, $StatePath) }
+    # .NET on current Windows rejects a null backup pathname for File.Replace.
+    # Use a private short-lived backup so supervisor state updates remain atomic
+    # across both Windows PowerShell 5.1 and recent Node/PowerShell installs.
+    if (Test-Path -LiteralPath $StatePath) { [IO.File]::Replace($temporary, $StatePath, $backup) } else { [IO.File]::Move($temporary, $StatePath) }
     Set-PrivateRuntimeAcl -Path $StatePath
-  } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+  } finally { Remove-Item -LiteralPath $temporary, $backup -Force -ErrorAction SilentlyContinue }
 }
 
 function Test-LanFirewallRuleExact {
@@ -500,4 +550,4 @@ function Write-LanSupervisorHandoff {
   [IO.File]::WriteAllText($Path, (@{ ownerToken = $OwnerToken } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); Set-PrivateRuntimeAcl -Path $Path
 }
 
-Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Initialize-LanLogFile, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Get-LanProcessIdentityStatus, Invoke-LanIdentityCheckedStop, New-LanOwnerToken, Read-LanJsonPrivateFile, Test-LanLockOwned, Remove-LanLockIfOwned, Acquire-LanLaunchLock, Update-LanLaunchLockOwner, Write-LanSupervisorHandoff, Remove-LanOwnedFirewallRule
+Export-ModuleMember -Function Get-LanCandidates, Get-LanCandidateSelection, Test-PrivateIPv4, Test-LanPortAvailable, Initialize-LanRuntime, Test-LanRuntimeSelectionMarker, Write-LanRuntimeSelectionMarker, Test-LanDeployment, Test-LanSqlite, Test-LanAdministrator, Add-LanPrivateFirewallRule, Assert-LanRuntimeRoot, Assert-PrivateRuntimeAcl, ConvertTo-LanWindowsArgument, Write-LanLauncherState, Initialize-LanLogFile, Test-LanFirewallRuleExact, Test-LanProcessIdentity, Get-LanProcessIdentityStatus, Invoke-LanIdentityCheckedStop, New-LanOwnerToken, Read-LanJsonPrivateFile, Test-LanLockOwned, Remove-LanLockIfOwned, Acquire-LanLaunchLock, Update-LanLaunchLockOwner, Write-LanSupervisorHandoff, Remove-LanOwnedFirewallRule
