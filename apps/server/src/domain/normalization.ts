@@ -7,6 +7,17 @@ export function normalizeStudentNumber(value: string): string {
   return value.normalize('NFKC').trim().replace(/[a-z]/g, (character) => character.toUpperCase());
 }
 
+/**
+ * New student self-service joins deliberately use a narrow, locale-neutral
+ * identifier.  Do not NFKC-normalize before this check: full-width digits,
+ * signs, decimals and lookalikes must be rejected rather than silently
+ * becoming a different student's number.  Whitespace around a pasted number
+ * is harmless and is removed by the caller.
+ */
+export function isAsciiDigitStudentNumber(value: string): boolean {
+  return /^[0-9]+$/.test(value.trim());
+}
+
 export function utc(value: Date): IsoUtc {
   return value.toISOString() as IsoUtc;
 }

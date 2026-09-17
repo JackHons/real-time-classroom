@@ -18,6 +18,8 @@
   let refreshController: AbortController | undefined;
   let realtime: RealtimeClient | undefined;
   let realtimeStatus: RealtimeStatus | undefined;
+  let leaving = false;
+  let leaveError = '';
 
   async function expireSession(): Promise<void> {
     if (refreshTimer !== undefined) clearInterval(refreshTimer);
@@ -28,6 +30,21 @@
     await studentApi.endSession();
     state = 'session-expired';
     message = '登入已失效。請重新加入課堂。';
+  }
+
+  async function leaveClass(): Promise<void> {
+    if (!globalThis.confirm('確定要退出這個課堂嗎？你將需要重新輸入學號才能再次加入。已提交的作業與作答紀錄不會被刪除。')) return;
+    leaving = true;
+    leaveError = '';
+    try {
+      refreshController?.abort();
+      realtime?.stop();
+      await studentApi.leaveClass(fetch);
+      await goto('/student');
+    } catch (error) {
+      if (isSessionExpired(error)) { await expireSession(); return; }
+      leaveError = '暫時無法退出課堂，請稍後再試。';
+    } finally { leaving = false; }
   }
 
   async function refreshActivities(): Promise<void> {
@@ -101,11 +118,12 @@
 <StudentShell title="我的課堂">
   <section class="intro" aria-labelledby="title">
     <div><h1 id="title">我的課堂</h1><p>即時題與檔案作業分開顯示；開放、關閉或交件狀態會自動更新。</p></div>
-    {#if state === 'ready'}<button class="secondary" onclick={() => void refreshActivities()} disabled={refreshInFlight}>{refreshInFlight ? '更新中…' : '重新整理'}</button>{/if}
+    {#if state === 'ready'}<div class="actions"><button class="secondary" onclick={() => void refreshActivities()} disabled={refreshInFlight || leaving}>{refreshInFlight ? '更新中…' : '重新整理'}</button><button class="leave" onclick={() => void leaveClass()} disabled={leaving}>{leaving ? '正在退出…' : '退出課堂'}</button></div>{/if}
   </section>
 
   {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="connection" role="status">即時更新暫時中斷，系統仍會定時檢查活動。</p>{/if}
   {#if activitiesError}<p class="error" role="status">{activitiesError}</p>{/if}
+  {#if leaveError}<p class="error" role="alert">{leaveError}</p>{/if}
   {#if state === 'loading'}<p role="status">正在讀取課堂活動…</p>
   {:else if state === 'session-expired' || state === 'error'}<section class="empty"><p role="status">{message}</p><a class="button" href="/student">返回加入課堂</a></section>
   {:else}
@@ -128,7 +146,7 @@
 </StudentShell>
 
 <style>
-  .intro { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+  .intro { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; } .actions { display: flex; flex-wrap: wrap; gap: .5rem; }
   h1 { margin: 0; font-size: clamp(2rem, 6vw, 3rem); line-height: 1.15; } h2 { margin: 0; font-size: 1.35rem; } .activities-heading { margin: 1.4rem 0 .75rem; }
   .intro p { margin-bottom: 0; color: #475569; } .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
   .panel,.empty { border: 1px solid #cbd5e1; border-radius: .8rem; padding: 1.1rem; background: #fff; box-shadow: 0 1px 2px #17255412; }
@@ -136,7 +154,7 @@
   .activity-list { display: grid; gap: .65rem; padding: 0; list-style: none; } .activity-list li { margin: 0; }
   .activity-list a { display: grid; gap: .3rem; min-height: 6rem; padding: .8rem; color: #172554; border: 1px solid #cbd5e1; border-radius: .6rem; text-decoration: none; } .activity-list a:hover { background: #f0f9ff; border-color: #0284c7; }
   .badge { width: max-content; padding: .1rem .45rem; border-radius: 99px; color: #475569; background: #e2e8f0; font-size: .8rem; font-weight: 800; } .badge.open { color: #065f46; background: #d1fae5; }
-  button,.button { min-height: 44px; border: 0; border-radius: .45rem; padding: .55rem .9rem; color: #fff; background: #075985; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; } button:disabled { opacity: .65; cursor: wait; } .secondary { color: #075985; background: #e0f2fe; } .more { display: block; margin: 1rem auto; }
+  button,.button { min-height: 44px; border: 0; border-radius: .45rem; padding: .55rem .9rem; color: #fff; background: #075985; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; } button:disabled { opacity: .65; cursor: wait; } .secondary { color: #075985; background: #e0f2fe; } .leave { background: #9f1239; } .more { display: block; margin: 1rem auto; }
   .error,.connection { margin: 1rem 0; padding: .7rem; border-left: 4px solid #b91c1c; color: #7f1d1d; background: #fef2f2; } .connection { border-color: #0369a1; color: #075985; background: #e0f2fe; }
   .empty { max-width: 40rem; } @media (max-width: 46rem) { .intro { align-items: flex-start; flex-direction: column; } .columns { grid-template-columns: 1fr; } }
 </style>

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { normalizeStudentNumber } from '../domain/normalization.js';
+import { isAsciiDigitStudentNumber, normalizeStudentNumber } from '../domain/normalization.js';
 import type { Class, ClassId, IsoUtc, PendingStudentRequest, PendingStudentRequestId, StudentId } from '../domain/types.js';
 import type { ClassDeletionImpact, ClassRosterRepository, ClassSummary, CsvIssue, CsvPreview, JoinResult, RosterEntry, TeacherAuthorization } from './types.js';
 
@@ -109,7 +109,11 @@ export class ClassService {
   }
 
   requestJoin(classId: ClassId, studentNumberOrLegacyDisplayName: string, legacyStudentNumber?: string): JoinResult {
-    const rawStudentNumber = normalizeText(legacyStudentNumber ?? studentNumberOrLegacyDisplayName);
+    // A new self-service identity is intentionally digits only. Existing
+    // imported records may still contain legacy identifiers and remain fully
+    // readable; this boundary does not rewrite or delete them.
+    const rawStudentNumber = (legacyStudentNumber ?? studentNumberOrLegacyDisplayName).trim();
+    if (!isAsciiDigitStudentNumber(rawStudentNumber)) throw new Error('JOIN_STUDENT_NUMBER_DIGITS_ONLY');
     const normalizedStudentNumber = normalizeStudentNumber(rawStudentNumber);
     if (normalizedStudentNumber.length === 0) throw new Error('JOIN_STUDENT_NUMBER_REQUIRED');
     const now = this.now() as IsoUtc;

@@ -26,9 +26,9 @@ describe('CSV exports v1', () => {
     const base = await applicationBase();
     const teacher = await teacherLogin(base);
     const classId = await createClass(base, teacher, '1A');
-    const imported = await fetch(`${base}/api/classes/${classId}/roster/import`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ csv: 'name,studentNumber\n"=SUM(1,1)","\t@A1"' }) });
+    const imported = await fetch(`${base}/api/classes/${classId}/roster/import`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ csv: 'name,studentNumber\n"=SUM(1,1)","1001"' }) });
     expect(imported.status).toBe(200);
-    const joined = await studentLogin(base, classId, '=SUM(1,1)', '\t@A1');
+    const joined = await studentLogin(base, classId, '=SUM(1,1)', '1001');
     const questionId = await createShortTextQuestion(base, teacher, classId);
     expect((await fetch(`${base}/api/questions/${questionId}/open`, { method: 'POST', headers: teacherHeaders(teacher), body: '{}' })).status).toBe(204);
     const answer = '臺灣,"quoted"\nnext\u0000';
@@ -47,9 +47,7 @@ describe('CSV exports v1', () => {
     expect(bytes.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
     const csv = bytes.subarray(3).toString('utf8');
     expect(csv).toContain('studentNumber,displayName,status,answer,closedAtUtc\r\n');
-    // Roster normalization trims the tab before storage; the persisted @ value
-    // remains formula-safe in the actual download.
-    expect(csv).toContain("'@A1");
+    expect(csv).toContain('1001');
     expect(csv).toContain("\"'=SUM(1,1)\"");
     expect(csv).toContain('"臺灣,""quoted""\nnext�"');
     expect(csv).not.toContain('late replacement');
@@ -78,8 +76,8 @@ describe('CSV exports v1', () => {
     const base = await applicationBase();
     const teacher = await teacherLogin(base);
     const classId = await createClass(base, teacher, 'Choices');
-    await fetch(`${base}/api/classes/${classId}/roster/import`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ csv: 'name,studentNumber\nAda,A1' }) });
-    const student = await studentLogin(base, classId, 'Ada', 'A1');
+    await fetch(`${base}/api/classes/${classId}/roster/import`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ csv: 'name,studentNumber\nAda,1001' }) });
+    const student = await studentLogin(base, classId, 'Ada', '1001');
     const drafted = await fetch(`${base}/api/classes/${classId}/question-drafts`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ question: { kind: 'multiple_choice', prompt: 'Pick', options: [{ label: 'Second' }, { label: 'First' }] } }) });
     const question = await drafted.json() as { id: string; options: readonly { id: string }[] };
     const first = question.options[0]; const second = question.options[1];
@@ -88,7 +86,7 @@ describe('CSV exports v1', () => {
     expect((await fetch(`${base}/api/questions/${question.id}/answers`, { method: 'POST', headers: studentHeaders(student), body: JSON.stringify({ revision: 0, idempotencyKey: 'choices-0', payload: { kind: 'multiple_choice', selectedOptions: [second.id, first.id] } }) })).status).toBe(200);
     expect((await fetch(`${base}/api/questions/${question.id}/close`, { method: 'POST', headers: teacherHeaders(teacher), body: '{}' })).status).toBe(200);
     const csv = Buffer.from(await (await fetch(`${base}/api/questions/${question.id}/answers/export.csv`, { headers: { cookie: teacher.cookie } })).arrayBuffer()).subarray(3).toString('utf8');
-    expect(csv).toContain('A1,Ada,answered,Second; First,');
+    expect(csv).toContain('1001,Ada,answered,Second; First,');
   });
 
   it('keyset streams large snapshots and retains only an immutable deleted status row', async () => {

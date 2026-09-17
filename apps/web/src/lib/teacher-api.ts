@@ -5,7 +5,7 @@ export type CsvIssue = Readonly<{ line: number; message: string }>;
 export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: string; rawStudentNumber: string; normalizedStudentNumber: string }>[]; issues: readonly CsvIssue[]; ignoredColumnLines?: readonly number[] }>;
 export type PendingApproval = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string }>;
 export type RosterStudent = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: boolean; approvedAtUtc: string }>;
-export type JoinedStudent = Readonly<{ id: string; displayName: string; studentNumber: string; joinedAtUtc: string; lastJoinedAtUtc: string }>;
+export type JoinedStudent = Readonly<{ id: string; displayName: string; studentNumber: string; joinedAtUtc: string; lastJoinedAtUtc: string; leftAtUtc: string | null }>;
 export type ClassMaterial = Readonly<{ id: string; classId: string; displayFilename: string; declaredMimeType: string; byteLength: number; createdAtUtc: string }>;
 export type QuestionSummary = Readonly<{ id: string; classId: string; templateId: string | null; kind: QuestionKind; prompt: string; state: 'draft' | 'open' | 'closed' }>;
 export type QuestionKind = 'single_choice' | 'multiple_choice' | 'short_text';
@@ -56,7 +56,7 @@ export class TeacherApi {
   async importRoster(id: string, csv: string): Promise<CsvPreview> { return this.request(`/api/classes/${encodeURIComponent(id)}/roster/import`, { method: 'POST', body: { csv }, acceptStatuses: [422] }); }
   async approvePending(id: string): Promise<PendingApproval> { return this.request(`/api/pending-student-requests/${encodeURIComponent(id)}/approve`, { method: 'POST', body: {} }); }
   async materials(classId: string): Promise<readonly ClassMaterial[]> { return this.request(`/api/classes/${encodeURIComponent(classId)}/materials`, { method: 'GET' }); }
-  async uploadMaterial(classId: string, file: File): Promise<ClassMaterial> { const response = await fetch(`/api/classes/${encodeURIComponent(classId)}/materials`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': this.requireCsrf(), 'x-upload-filename': file.name, 'content-type': file.type || 'application/octet-stream' }, body: file }); if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new ApiError(response.status, body.error ?? 'REQUEST_FAILED'); } return response.json() as Promise<ClassMaterial>; }
+  async uploadMaterial(classId: string, file: Readonly<{ name: string; type: string }>): Promise<ClassMaterial> { const response = await fetch(`/api/classes/${encodeURIComponent(classId)}/materials`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': this.requireCsrf(), 'x-upload-filename': file.name, 'content-type': file.type || 'application/octet-stream' }, body: file as never }); if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new ApiError(response.status, body.error ?? 'REQUEST_FAILED'); } return response.json() as Promise<ClassMaterial>; }
   async deleteMaterial(classId: string, id: string): Promise<void> { await this.request(`/api/classes/${encodeURIComponent(classId)}/materials/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} }); }
   async templates(): Promise<readonly Template[]> { return this.request('/api/question-templates', { method: 'GET' }); }
   async createTemplate(input: TemplateInput): Promise<Template> { return this.request('/api/question-templates', { method: 'POST', body: input }); }

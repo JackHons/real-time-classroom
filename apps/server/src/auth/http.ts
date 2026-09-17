@@ -5,6 +5,7 @@ import type { AuthSessionRepository } from '../db/auth-session-repository.js';
 import type { ClassId, Student } from '../domain/types.js';
 import { verifyTeacherPassword } from './password.js';
 import { AuthSessions, STUDENT_SESSION_COOKIE, TEACHER_SESSION_COOKIE } from './session.js';
+import { isAsciiDigitStudentNumber } from '../domain/normalization.js';
 import { readBoundedJsonObject } from '../http/bounded-json.js';
 import { closeUnconsumedRequestBody } from '../http/rejected-request.js';
 
@@ -34,6 +35,8 @@ export type AuthHttpHandlerOptions = Readonly<{
   studentJoinRateLimiter?: StudentJoinRateLimiter;
   /** Receives a private reason for a deliberately generic student-facing denial. */
   auditStudentJoinDenial?: (entry: Readonly<{ code: 'STUDENT_JOIN_NOT_APPROVED' | 'STUDENT_SESSION_ALREADY_ACTIVE'; remoteAddress: string; classId: ClassId }>) => void;
+  /** Best-effort socket eviction after the durable leave + session revoke. */
+  onStudentLeft?: (entry: Readonly<{ studentSessionId: string; studentId: string; classId: ClassId }>) => void;
 }>;
 
 type LoginBody = Readonly<{ password?: unknown }>;
@@ -285,6 +288,7 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
       if (request.method === 'POST' && pathname === '/api/auth/student/join') {
         const body = await readJson<StudentJoinBody>(request);
         if (!isStudentJoinBody(body)) { json(request, response, 400, { error: 'INVALID_REQUEST' }); return; }
+        if (!isAsciiDigitStudentNumber(body.studentNumber)) { json(request, response, 400, { error: 'STUDENT_NUMBER_DIGITS_ONLY' }); return; }
         const now = new Date();
         const address = remoteAddress(request);
         const reservation = studentJoinRateLimiter.reserve(address, body, now);
@@ -311,6 +315,16 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         reservation.succeed();
         setSessionCookie(response, STUDENT_SESSION_COOKIE, login.token);
         json(request, response, 200, { actor: 'student', csrfToken: csrfToken(login.token, options.csrfSecret), sessionId: login.session.id }); return;
+      }
+
+      if (request.method === 'POST' && pathname === '/api/auth/student/leave') {
+        const token = parseCookies(request.headers.cookie)[STUDENT_SESSION_COOKIE];
+        if (token === undefined || !isValidCsrfToken(request.headers['x-csrf-token'], token, options.csrfSecret)) { json(request, response, 403, { error: 'CSRF_REQUIRED' }); return; }
+        const left = options.sessions.leaveStudentSession(token);
+        if (left === undefined) { clearSessionCookie(response, STUDENT_SESSION_COOKIE); json(request, response, 401, { error: 'STUDENT_AUTH_REQUIRED' }); return; }
+        try { options.onStudentLeft?.(left); } catch { /* durable leave is authoritative */ }
+        clearSessionCookie(response, STUDENT_SESSION_COOKIE);
+        response.writeHead(204, { 'cache-control': 'no-store' }); response.end(); return;
       }
 
       if (request.method === 'POST' && pathname === '/api/auth/logout') {

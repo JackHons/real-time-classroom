@@ -2,7 +2,13 @@
 import { expect, test } from '@playwright/test';
 import { expectAxeClean, expectMinimumTarget, expectNoHorizontalOverflow } from './a11y.js';
 
-function studentNumber(project: string, suffix = ''): string { return `S-${project.toUpperCase()}${suffix}`; }
+function studentNumber(project: string, suffix = ''): string {
+  // New joins intentionally accept ASCII digits only. Keep distinct values per
+  // browser/test without relying on a legacy alphanumeric identifier.
+  const prefix = project === 'edge' ? '2' : project === 'firefox' ? '3' : '1';
+  const suffixCode = suffix === '-ZOOM' ? '02' : suffix === '-F7A' ? '03' : '01';
+  return `${prefix}000${suffixCode}`;
+}
 
 test.describe('student interface (real server)', () => {
   test('student joins a real seeded class and can navigate its live activities @a11y', async ({ page }, testInfo) => {
@@ -20,6 +26,10 @@ test.describe('student interface (real server)', () => {
     await expect(page.getByRole('link', { name: /今天的課堂重點/ })).toBeVisible();
     await expect(page.getByRole('link', { name: /課堂作業/ })).toBeVisible();
     await expectAxeClean(page);
+    page.once('dialog', (dialog) => void dialog.accept());
+    await page.getByRole('button', { name: '退出課堂', exact: true }).click();
+    await page.waitForURL('**/student');
+    await expect(page.getByRole('heading', { name: '學生登入' })).toBeVisible();
   });
 
   test('student flow supports keyboard-only navigation, 200% zoom/reflow, motion preferences, and semantic activity pages @a11y', async ({ page }, testInfo) => {
@@ -45,11 +55,20 @@ test.describe('student interface (real server)', () => {
   test('keeps the join form available and explains when a class code is unknown', async ({ page }) => {
     await page.goto('/student');
     await page.getByLabel('班級代碼', { exact: true }).fill('  \uff26\uff17\uff3a-UNKNOWN  ');
-    await page.getByLabel('學號').fill('S-UNKNOWN-CODE');
+    await page.getByLabel('學號').fill('999999');
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
     await expect(page.getByRole('alert')).toHaveText(/找不到這個課堂/);
     await expect(page.getByLabel('班級代碼', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '加入課堂', exact: true })).toBeEnabled();
+  });
+
+  test('shows a clear client-side error for a non-digit student number', async ({ page }) => {
+    await page.goto('/student');
+    await page.getByLabel('班級代碼', { exact: true }).fill('F7A');
+    await page.getByLabel('學號').fill('A-100');
+    await page.getByRole('button', { name: '加入課堂', exact: true }).click();
+    await expect(page.getByRole('alert')).toHaveText(/只能輸入半形數字/);
+    await expect(page).toHaveURL(/\/student$/);
   });
 
   test('normalizes an F7A-like class code and displays the joined student to the teacher', async ({ page, browser }, testInfo) => {

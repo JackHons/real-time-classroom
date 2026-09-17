@@ -83,6 +83,11 @@ export const studentApi = {
       return { classId: result.classId, queueOwner: await rememberQueueOwner(result.sessionId) };
     } catch (error) { if (isSessionExpired(error)) { await forgetSession(); return undefined; } throw error; }
   },
+  /** Leaves only this browser's current class membership and session. */
+  async leaveClass(fetcher: Fetcher = fetch): Promise<void> {
+    await request<void>(fetcher, '/api/auth/student/leave', { method: 'POST', body: JSON.stringify({}) });
+    await forgetSession();
+  },
   queueOwner(): string | undefined { return queueOwner; },
   /** Session expiry/logout drops only the current owner's local answer JSON. */
   endSession(): Promise<void> { return forgetSession(); },

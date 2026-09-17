@@ -21,6 +21,7 @@ class MemoryRepository implements AuthSessionRepository {
   revokeStudentSession(hash: string, now: IsoUtc): boolean { return this.revoke(this.student, hash, now); }
   revokeTeacherSessionById(id: TeacherSession['id'], now: IsoUtc): boolean { return this.revokeById(this.teacher, id, now); }
   revokeStudentSessionById(id: StudentSession['id'], now: IsoUtc): boolean { return this.revokeById(this.student, id, now); }
+  leaveStudentSession(hash: string, now: IsoUtc): StudentSession | undefined { const session = this.student.get(hash); return this.revoke(this.student, hash, now) ? session : undefined; }
   private revoke<T extends TeacherSession | StudentSession>(map: Map<string, T>, hash: string, now: IsoUtc): boolean { const value = map.get(hash); if (value === undefined || value.revokedAtUtc !== null) return false; map.set(hash, { ...value, revokedAtUtc: now } as T); return true; }
   private revokeById<T extends TeacherSession | StudentSession>(map: Map<string, T>, id: string, now: IsoUtc): boolean { const item = [...map.entries()].find(([, value]) => value.id === id); return item === undefined ? false : this.revoke(map, item[0], now); }
 }
@@ -68,5 +69,14 @@ describe('auth session service', () => {
     clock.set('2026-09-07T01:00:00.000Z');
     expect(sessions.logoutTeacher(created.token)).toBe(true);
     expect(sessions.authenticateTeacher(created.token)).toBeUndefined();
+  });
+
+  it('revokes only the current student session when leaving a class', () => {
+    const repository = new MemoryRepository();
+    const sessions = new AuthSessions(repository, new MutableClock(new Date('2026-09-07T00:00:00.000Z')), () => 'student-token' as SessionToken);
+    const student = { id: 'student-1', classId: 'class-1', displayName: '學生 1001', rawStudentNumber: '1001', normalizedStudentNumber: '1001', isTemporary: true, approvedAtUtc: '2026-09-07T00:00:00.000Z' as IsoUtc } as never;
+    const login = sessions.createStudentSession(student);
+    expect(sessions.leaveStudentSession(login.token)).toMatchObject({ studentSessionId: login.session.id, studentId: student.id, classId: student.classId });
+    expect(sessions.authenticateStudent(login.token)).toBeUndefined();
   });
 });

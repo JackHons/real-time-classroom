@@ -19,6 +19,7 @@ class TestRepository implements AuthSessionRepository {
   touchStudentSession(hash: string, now: IsoUtc, idle: IsoUtc): StudentSession | undefined { const value = this.students.get(hash); if (value === undefined || value.revokedAtUtc !== null || value.idleExpiresAtUtc <= now || value.absoluteExpiresAtUtc <= now) return undefined; const next = { ...value, lastSeenAtUtc: now, idleExpiresAtUtc: idle }; this.students.set(hash, next); return next; }
   revokeTeacherSession(hash: string, now: IsoUtc): boolean { return revoke(this.teachers, hash, now); } revokeStudentSession(hash: string, now: IsoUtc): boolean { return revoke(this.students, hash, now); }
   revokeTeacherSessionById(): boolean { return false; } revokeStudentSessionById(): boolean { return false; }
+  leaveStudentSession(hash: string, now: IsoUtc): StudentSession | undefined { const session = this.students.get(hash); return revoke(this.students, hash, now) ? session : undefined; }
 }
 function revoke<T extends TeacherSession | StudentSession>(map: Map<string, T>, hash: string, now: IsoUtc): boolean { const value = map.get(hash); if (value === undefined || value.revokedAtUtc !== null) return false; map.set(hash, { ...value, revokedAtUtc: now } as T); return true; }
 class FixedClock implements Clock { now(): Date { return new Date('2026-09-07T00:00:00.000Z'); } }
@@ -134,9 +135,9 @@ describe('auth HTTP listener', () => {
   });
 
   it('makes active-device, unknown, and unapproved student joins externally indistinguishable', async () => {
-    const student: Student = { id: 'student-1' as StudentId, classId: 'class-1' as ClassId, displayName: 'Ada', rawStudentNumber: 'A1', normalizedStudentNumber: 'A1', isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never };
+    const student: Student = { id: 'student-1' as StudentId, classId: 'class-1' as ClassId, displayName: 'Ada', rawStudentNumber: '1001', normalizedStudentNumber: '1001', isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never };
     const base = await authServer({ join: ({ displayName }) => displayName === 'Ada' ? student : undefined });
-    const join = (displayName: string) => fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', displayName, studentNumber: 'A1' }) });
+    const join = (displayName: string) => fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', displayName, studentNumber: '1001' }) });
     expect((await join('Ada')).status).toBe(200);
     const secondDevice = await join('Ada');
     const unknown = await join('Unknown');
@@ -148,10 +149,10 @@ describe('auth HTTP listener', () => {
   });
 
   it('does not let successful student joins behind one NAT consume its failure budget', async () => {
-    const students = new Map(Array.from({ length: 6 }, (_, index) => [`Student ${index}`, { id: `student-${index}` as StudentId, classId: 'class-1' as ClassId, displayName: `Student ${index}`, rawStudentNumber: `S${index}`, normalizedStudentNumber: `S${index}`, isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never }]));
+    const students = new Map(Array.from({ length: 6 }, (_, index) => [`Student ${index}`, { id: `student-${index}` as StudentId, classId: 'class-1' as ClassId, displayName: `Student ${index}`, rawStudentNumber: `${1000 + index}`, normalizedStudentNumber: `${1000 + index}`, isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never }]));
     const base = await authServer({ join: ({ displayName }) => students.get(displayName) });
     for (const index of Array.from({ length: 6 }, (_, item) => item)) {
-      const response = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', displayName: `Student ${index}`, studentNumber: `S${index}` }) });
+      const response = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', displayName: `Student ${index}`, studentNumber: `${1000 + index}` }) });
       expect(response.status).toBe(200);
     }
   });
@@ -167,6 +168,32 @@ describe('auth HTTP listener', () => {
     const accepted = await logout({ 'x-csrf-token': csrfToken });
     expect(accepted.status).toBe(204);
     expect(accepted.headers.get('set-cookie')).toContain('Max-Age=0');
+  });
+
+  it('requires CSRF then clears only the leaving student session', async () => {
+    const student: Student = { id: 'student-1' as StudentId, classId: 'class-1' as ClassId, displayName: '學生 1001', rawStudentNumber: '1001', normalizedStudentNumber: '1001', isTemporary: true, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never };
+    const base = await authServer({ join: () => student });
+    const joined = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', studentNumber: '1001' }) });
+    const csrf = (await joined.json() as { csrfToken: string }).csrfToken;
+    const cookie = joined.headers.get('set-cookie')?.split(';')[0];
+    if (cookie === undefined) throw new Error('missing student cookie');
+    const rejected = await fetch(`${base}/api/auth/student/leave`, { method: 'POST', headers: { origin: 'http://classroom.test', cookie, 'content-type': 'application/json' }, body: '{}' });
+    expect(rejected.status).toBe(403);
+    const accepted = await fetch(`${base}/api/auth/student/leave`, { method: 'POST', headers: { origin: 'http://classroom.test', cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: '{}' });
+    expect(accepted.status).toBe(204);
+    expect(accepted.headers.get('set-cookie')).toContain('student_session=; Max-Age=0');
+    expect((await fetch(`${base}/api/auth/session`, { headers: { cookie } })).status).toBe(401);
+  });
+
+  it('rejects non-digit student numbers before invoking the join port', async () => {
+    let calls = 0;
+    const base = await authServer({ join: () => { calls += 1; return undefined; } });
+    for (const studentNumber of ['A100', '12.3', '+123', '１２３']) {
+      const response = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', studentNumber }) });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: 'STUDENT_NUMBER_DIGITS_ONLY' });
+    }
+    expect(calls).toBe(0);
   });
 
   it('restores a teacher CSRF token only after same-origin bootstrap proof', async () => {

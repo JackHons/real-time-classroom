@@ -148,7 +148,7 @@ export class SqliteClassRosterRepository implements ClassRosterRepository {
   }
 
   recordStudentJoin(student: Student, atUtc: string): void {
-    this.database.prepare('INSERT INTO student_class_joins (student_id,class_id,joined_at_utc,last_joined_at_utc) VALUES (?,?,?,?) ON CONFLICT(student_id) DO UPDATE SET last_joined_at_utc=excluded.last_joined_at_utc').run(student.id, student.classId, atUtc, atUtc);
+    this.database.prepare('INSERT INTO student_class_joins (student_id,class_id,joined_at_utc,last_joined_at_utc,left_at_utc) VALUES (?,?,?,?,NULL) ON CONFLICT(student_id) DO UPDATE SET last_joined_at_utc=excluded.last_joined_at_utc,left_at_utc=NULL').run(student.id, student.classId, atUtc, atUtc);
   }
 }
 

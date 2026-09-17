@@ -29,6 +29,8 @@ export type RealtimeGateway = Readonly<{
   publishTeacher: (change: Omit<RealtimeChangeInput, 'classId' | 'audience'>) => void;
   /** A deleted class must not retain stale room membership. */
   evictClass: (classId: ClassId) => void;
+  /** A student explicitly left; do not wait for the periodic token check. */
+  evictStudentSession: (studentSessionId: string) => void;
   close: () => Promise<void>;
 }>;
 
@@ -51,6 +53,7 @@ export class RealtimeNotificationBus {
   publish(change: RealtimeChangeInput): void { for (const gateway of this.gateways) gateway.publish(change); }
   publishTeacher(change: Omit<RealtimeChangeInput, 'classId' | 'audience'>): void { for (const gateway of this.gateways) gateway.publishTeacher(change); }
   evictClass(classId: ClassId): void { for (const gateway of this.gateways) gateway.evictClass(classId); }
+  evictStudentSession(studentSessionId: string): void { for (const gateway of this.gateways) gateway.evictStudentSession(studentSessionId); }
 }
 
 /** Attaches Socket.IO to the already-created single Node HTTP server. */
@@ -191,6 +194,12 @@ export function attachRealtimeGateway(server: HttpServer, options: RealtimeGatew
       for (const socket of io.sockets.adapter.rooms.get(studentRoom) ?? []) io.sockets.sockets.get(socket)?.disconnect(true);
       io.in(teacherRoom).socketsLeave(teacherRoom);
     },
+    evictStudentSession: (studentSessionId) => {
+      for (const socket of io.sockets.sockets.values()) {
+        const principal = socket.data.principal as RealtimePrincipal | undefined;
+        if (principal?.actor === 'student' && principal.studentSessionId === studentSessionId) socket.disconnect(true);
+      }
+    },
     close: () => new Promise((resolve) => io.close(() => resolve()))
   };
 }
@@ -229,7 +238,7 @@ function validChange(change: RealtimeChangeInput): boolean {
     question: ['question_opened', 'question_closed', 'answer_updated', 'draft_created', 'draft_updated', 'draft_deleted', 'template_created', 'template_updated', 'template_deleted'],
     'file-task': ['filetask_created', 'filetask_updated', 'filetask_opened', 'filetask_closed', 'filetask_deleted'],
     pending: ['pending_requested', 'pending_resolved'],
-    roster: ['roster_imported', 'roster_changed', 'student_joined', 'class_deleted'],
+    roster: ['roster_imported', 'roster_changed', 'student_joined', 'student_left', 'class_deleted'],
     submission: ['submission_committed', 'submission_deleted']
   };
   return typeof change.classId === 'string' && change.classId.length > 0 && change.classId.length <= 200

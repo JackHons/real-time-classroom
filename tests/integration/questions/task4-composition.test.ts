@@ -57,10 +57,10 @@ describe('Task 4 composed question API', () => {
   it('preserves authenticated class-scoped question and answer lifecycle boundaries', async () => {
     const base = await applicationBase();
     const teacher = await login(base, '/api/auth/teacher/login', { password: 'correct' });
-    const classA = await createClass(base, teacher, '1A', 'name,studentNumber\nAda,A1');
-    const classB = await createClass(base, teacher, '1B', 'name,studentNumber\nBea,B1');
-    const ada = await login(base, '/api/auth/student/join', { classId: classA, displayName: 'Ada', studentNumber: 'A1' });
-    const bea = await login(base, '/api/auth/student/join', { classId: classB, displayName: 'Bea', studentNumber: 'B1' });
+    const classA = await createClass(base, teacher, '1A', 'name,studentNumber\nAda,1001');
+    const classB = await createClass(base, teacher, '1B', 'name,studentNumber\nBea,2001');
+    const ada = await login(base, '/api/auth/student/join', { classId: classA, displayName: 'Ada', studentNumber: '1001' });
+    const bea = await login(base, '/api/auth/student/join', { classId: classB, displayName: 'Bea', studentNumber: '2001' });
 
     const csrfRejected = await fetch(`${base}/api/question-templates`, { method: 'POST', headers: { origin, cookie: teacher.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'single_choice', prompt: 'Q?', options: [{ label: 'Yes' }, { label: 'No' }] }) });
     expect(csrfRejected.status).toBe(403);

@@ -31,10 +31,10 @@ describe('composed Socket.IO server', () => {
     const teacher = await teacherLogin(base);
     const classA = await createClass(base, teacher, '1A');
     const classB = await createClass(base, teacher, '1B');
-    await importRoster(base, teacher, classA, 'Ada', 'A1');
-    await importRoster(base, teacher, classB, 'Bea', 'B1');
-    const studentA = await studentLogin(base, classA, 'Ada', 'A1');
-    const studentB = await studentLogin(base, classB, 'Bea', 'B1');
+    await importRoster(base, teacher, classA, 'Ada', '1001');
+    await importRoster(base, teacher, classB, 'Bea', '2001');
+    const studentA = await studentLogin(base, classA, 'Ada', '1001');
+    const studentB = await studentLogin(base, classB, 'Bea', '2001');
 
     await expectRejectedSocket(base, 'teacher_session=forged');
     const teacherSocket = await connected(base, teacher.cookie);
@@ -47,7 +47,7 @@ describe('composed Socket.IO server', () => {
     expect(await crossClassError).toEqual({ code: 'CLASS_SCOPE_FORBIDDEN' });
 
     const pendingHint = waitForChange(teacherSocket, 'student_joined');
-    const pending = await fetch(`${base}/api/classes/${classA}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Pending', studentNumber: 'P1' }) });
+    const pending = await fetch(`${base}/api/classes/${classA}/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Pending', studentNumber: '1002' }) });
     expect(pending.status).toBe(202);
     expect(await pendingHint).toEqual(expect.objectContaining({ resourceType: 'roster', event: 'student_joined' }));
 

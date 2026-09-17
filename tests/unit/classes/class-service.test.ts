@@ -117,10 +117,10 @@ describe('ClassService', () => {
     const repo = repository();
     const subject = service(repo);
     subject.createClass('teacher', '1A');
-    subject.importRosterCsv('teacher', ids.class, 'name,studentNumber\nAda,A1');
-    expect(subject.requestJoin(ids.class, ' Ada ', ' ａ1 ')).toMatchObject({ outcome: 'matched', student: { isTemporary: false } });
-    const first = subject.requestJoin(ids.class, 'Not Ada', 'A1');
-    const duplicate = subject.requestJoin(ids.class, 'Other', 'a1');
+    subject.importRosterCsv('teacher', ids.class, 'name,studentNumber\nAda,1001');
+    expect(subject.requestJoin(ids.class, ' Ada ', ' 1001 ')).toMatchObject({ outcome: 'matched', student: { isTemporary: false } });
+    const first = subject.requestJoin(ids.class, 'Not Ada', '1001');
+    const duplicate = subject.requestJoin(ids.class, 'Other', '1001');
     expect(first).toMatchObject({ outcome: 'pending', request: { id: ids.pending, status: 'pending' } });
     expect(duplicate).toEqual(first);
     expect(repo.students).toHaveLength(1);
@@ -130,10 +130,19 @@ describe('ClassService', () => {
     const repo = repository();
     const subject = service(repo);
     subject.createClass('teacher', '1A');
-    const pending = subject.requestJoin(ids.class, 'Ada', 'A1');
+    const pending = subject.requestJoin(ids.class, 'Ada', '1001');
     if (pending.outcome !== 'pending') throw new Error('test setup');
     expect(() => subject.approvePendingRequest('student', pending.request.id)).toThrow('TEACHER_AUTH_REQUIRED');
-    expect(subject.approvePendingRequest('teacher', pending.request.id)).toMatchObject({ isTemporary: true, normalizedStudentNumber: 'A1' });
+    expect(subject.approvePendingRequest('teacher', pending.request.id)).toMatchObject({ isTemporary: true, normalizedStudentNumber: '1001' });
     expect(() => subject.approvePendingRequest('teacher', pending.request.id)).toThrow('PENDING_REQUEST_NOT_FOUND_OR_RESOLVED');
+  });
+
+  it('accepts only ASCII decimal digits for new student self-service joins', () => {
+    const subject = service();
+    subject.createClass('teacher', '1A');
+    for (const number of ['A100', '12.3', '+123', '１２３', '']) expect(() => subject.requestJoin(ids.class, number)).toThrow('JOIN_STUDENT_NUMBER_DIGITS_ONLY');
+    // Pasted outer whitespace is intentionally harmless, while the stored ID
+    // is the unambiguous ASCII value.
+    expect(subject.requestJoin(ids.class, ' 00123 ')).toMatchObject({ outcome: 'pending', request: { rawStudentNumber: '00123' } });
   });
 });

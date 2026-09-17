@@ -39,8 +39,8 @@ describe('SQLite class roster repository', () => {
   it('creates a durable number-only member without using pending approval', () => {
     const subject = setup();
     const classroom = subject.createClass('teacher', '1A');
-    const join = subject.requestJoin(classroom.id, 'S1');
-    expect(join).toMatchObject({ outcome: 'joined', created: true, student: { normalizedStudentNumber: 'S1' } });
+    const join = subject.requestJoin(classroom.id, '1001');
+    expect(join).toMatchObject({ outcome: 'joined', created: true, student: { normalizedStudentNumber: '1001' } });
     expect(database?.prepare('SELECT count(*) AS count FROM student_class_joins').get()).toEqual({ count: 1 });
     expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 0 });
   });
@@ -48,8 +48,8 @@ describe('SQLite class roster repository', () => {
   it('reuses one number-only member under repeated joins and records the class entry', () => {
     const subject = setup();
     const classroom = subject.createClass('teacher', '1A');
-    const first = subject.requestJoin(classroom.id, 'G1');
-    const second = subject.requestJoin(classroom.id, 'g1');
+    const first = subject.requestJoin(classroom.id, '1001');
+    const second = subject.requestJoin(classroom.id, '1001');
     expect(first).toMatchObject({ outcome: 'joined', created: true });
     expect(second).toMatchObject({ outcome: 'joined', created: false });
     expect(database?.prepare('SELECT count(*) AS count FROM pending_student_requests').get()).toEqual({ count: 0 });
@@ -61,7 +61,7 @@ describe('SQLite class roster repository', () => {
   it('journals generated material, submission and staging objects before atomically cascading one class', async () => {
     const subject = setup();
     const first = subject.createClass('teacher', '1A'); const second = subject.createClass('teacher', '1B');
-    const joined = subject.requestJoin(first.id, 'S1').student;
+    const joined = subject.requestJoin(first.id, '1001').student;
     database?.prepare("INSERT INTO file_submission_tasks (id,class_id,title,description,state,max_bytes,deadline_at_utc,opened_at_utc,closed_at_utc,created_at_utc,updated_at_utc) VALUES ('task',?,'T','', 'closed',100000000,'2026-10-01T00:00:00.000Z',NULL,NULL,'2026-09-07T00:00:00.000Z','2026-09-07T00:00:00.000Z')").run(first.id);
     database?.prepare("INSERT INTO file_submissions (id,task_id,student_id,original_filename,display_filename,storage_key,declared_mime_type,byte_length,sha256,received_complete_at_utc,deleted_at_utc) VALUES ('submission','task',?,'a.txt','a.txt','11111111-1111-4111-8111-111111111111','text/plain',1,?, '2026-09-07T00:00:00.000Z',NULL)").run(joined.id, 'a'.repeat(64));
     database?.prepare("INSERT INTO upload_sessions (id,task_id,student_id,idempotency_key,state,staging_key,final_storage_key,bytes_received,sha256,received_complete_at_utc,error_code,created_at_utc,updated_at_utc) VALUES ('upload','task',?,'k','failed','staging/22222222-2222-4222-8222-222222222222.part',NULL,0,NULL,NULL,NULL,'2026-09-07T00:00:00.000Z','2026-09-07T00:00:00.000Z')").run(joined.id);

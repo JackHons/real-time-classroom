@@ -56,6 +56,11 @@ export class AuthSessions {
 
   logoutTeacher(token: string | undefined): boolean { return token !== undefined && this.repository.revokeTeacherSession(hashSessionToken(token), utc(this.clock.now())); }
   logoutStudent(token: string | undefined): boolean { return token !== undefined && this.repository.revokeStudentSession(hashSessionToken(token), utc(this.clock.now())); }
+  leaveStudentSession(token: string | undefined): AuthenticatedStudentSession | undefined {
+    if (token === undefined) return undefined;
+    const session = this.repository.leaveStudentSession(hashSessionToken(token), utc(this.clock.now()));
+    return session === undefined ? undefined : { studentSessionId: session.id, studentId: session.studentId, classId: session.classId };
+  }
   revokeTeacher(id: TeacherSession['id']): boolean { return this.repository.revokeTeacherSessionById(id, utc(this.clock.now())); }
   revokeStudent(id: StudentSession['id']): boolean { return this.repository.revokeStudentSessionById(id, utc(this.clock.now())); }
 }

@@ -13,7 +13,7 @@ type Cursor = readonly [string, ...string[]];
 type Page<T> = Readonly<{ items: readonly T[]; nextCursor?: string }>;
 type ClassRow = Readonly<{ id: string; name: string; createdAtUtc: string; updatedAtUtc: string }>;
 type StudentRow = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: number; approvedAtUtc: string }>;
-type JoinedStudentRow = Readonly<{ id: string; displayName: string; studentNumber: string; joinedAtUtc: string; lastJoinedAtUtc: string }>;
+type JoinedStudentRow = Readonly<{ id: string; displayName: string; studentNumber: string; joinedAtUtc: string; lastJoinedAtUtc: string; leftAtUtc: string | null }>;
 type PendingRow = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string; requestedAtUtc: string }>;
 type QuestionRow = Readonly<{ id: string; classId: string; kind: string; prompt: string; state: string; templateId: string | null; createdAtUtc: string }>;
 type FileTaskRow = Readonly<{ id: string; classId: string; title: string; description: string; state: string; deadlineAtUtc: string; maxBytes: number; reopenedAtUtc: string | null; createdAtUtc: string }>;
@@ -79,8 +79,8 @@ function students(database: SqliteDatabase, classId: string, limit: number, curs
 }
 function joinedStudents(database: SqliteDatabase, classId: string, limit: number, cursor: Cursor | undefined): Page<JoinedStudentRow> {
   const rows = cursor === undefined
-    ? database.prepare('SELECT s.id,s.display_name AS displayName,s.raw_student_number AS studentNumber,j.joined_at_utc AS joinedAtUtc,j.last_joined_at_utc AS lastJoinedAtUtc FROM student_class_joins j JOIN students s ON s.id=j.student_id AND s.class_id=j.class_id WHERE j.class_id=? ORDER BY j.last_joined_at_utc DESC,s.id DESC LIMIT ?').all(classId, limit + 1) as readonly JoinedStudentRow[]
-    : database.prepare('SELECT s.id,s.display_name AS displayName,s.raw_student_number AS studentNumber,j.joined_at_utc AS joinedAtUtc,j.last_joined_at_utc AS lastJoinedAtUtc FROM student_class_joins j JOIN students s ON s.id=j.student_id AND s.class_id=j.class_id WHERE j.class_id=? AND (j.last_joined_at_utc<? OR (j.last_joined_at_utc=? AND s.id<?)) ORDER BY j.last_joined_at_utc DESC,s.id DESC LIMIT ?').all(classId, cursor[0], cursor[0], cursor[1], limit + 1) as readonly JoinedStudentRow[];
+    ? database.prepare('SELECT s.id,s.display_name AS displayName,s.raw_student_number AS studentNumber,j.joined_at_utc AS joinedAtUtc,j.last_joined_at_utc AS lastJoinedAtUtc,j.left_at_utc AS leftAtUtc FROM student_class_joins j JOIN students s ON s.id=j.student_id AND s.class_id=j.class_id WHERE j.class_id=? ORDER BY j.last_joined_at_utc DESC,s.id DESC LIMIT ?').all(classId, limit + 1) as readonly JoinedStudentRow[]
+    : database.prepare('SELECT s.id,s.display_name AS displayName,s.raw_student_number AS studentNumber,j.joined_at_utc AS joinedAtUtc,j.last_joined_at_utc AS lastJoinedAtUtc,j.left_at_utc AS leftAtUtc FROM student_class_joins j JOIN students s ON s.id=j.student_id AND s.class_id=j.class_id WHERE j.class_id=? AND (j.last_joined_at_utc<? OR (j.last_joined_at_utc=? AND s.id<?)) ORDER BY j.last_joined_at_utc DESC,s.id DESC LIMIT ?').all(classId, cursor[0], cursor[0], cursor[1], limit + 1) as readonly JoinedStudentRow[];
   return page(rows, limit, `teacher:${classId}:joined-students`, (row) => [row.lastJoinedAtUtc, row.id]);
 }
 function pending(database: SqliteDatabase, classId: string, limit: number, cursor: Cursor | undefined): Page<PendingRow> {

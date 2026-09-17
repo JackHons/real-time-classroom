@@ -131,6 +131,10 @@ export function createApplication(options: ApplicationOptions): Application {
     allowedOrigin: options.allowedOrigin,
     csrfSecret: options.csrfSecret,
     studentJoinRateLimiter,
+    onStudentLeft: (entry) => {
+      realtimeNotifications.publish({ classId: entry.classId, resourceType: 'roster', id: entry.studentId, event: 'student_left', audience: 'teacher' });
+      realtimeNotifications.evictStudentSession(entry.studentSessionId);
+    },
     ...(options.passwordVerifier === undefined ? {} : { passwordVerifier: options.passwordVerifier })
   });
   const domainRepository = new SqliteDomainRepository(options.database, () => clock.now().toISOString());
@@ -298,7 +302,7 @@ function sendError(request: IncomingMessage, response: ServerResponse, error: un
   if (code === 'QUESTION_CLASS_FORBIDDEN') { sendJson(request, response, 403, { error: code }); return; }
   if (code === 'PENDING_APPROVAL_STUDENT_NUMBER_CONFLICT' || code === 'ROSTER_IMPORT_STUDENT_NUMBER_CONFLICT' || code === 'STALE_ANSWER_REVISION' || code === 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST' || code === 'QUESTION_TRANSITION_CONFLICT' || code === 'QUESTION_EXPORT_CLOSED_REQUIRED' || code === 'FILE_SUBMISSION_ALREADY_EXISTS' || code === 'FILE_TASK_TRANSITION_CONFLICT') { sendJson(request, response, 409, { error: code }); return; }
   if (code === 'UPLOAD_STREAM_LIMIT_REACHED') { sendJson(request, response, 429, { error: 'UPLOAD_REJECTED' }); return; }
-  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'CLASS_DELETE_NAME_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code.startsWith('MATERIAL_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'JOIN_STUDENT_NUMBER_REQUIRED' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(request, response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
+  if (code === 'CLASS_DELETE_CONFIRMATION_REQUIRED' || code === 'CLASS_DELETE_NAME_CONFIRMATION_REQUIRED' || code === 'DELETE_CONFIRMATION_REQUIRED' || code.startsWith('REQUEST_') || code.startsWith('QUESTION_') || code.startsWith('ANSWER_') || code.startsWith('FILE_') || code.startsWith('UPLOAD_') || code.startsWith('MATERIAL_') || code === 'JOIN_IDENTITY_REQUIRED' || code === 'JOIN_STUDENT_NUMBER_REQUIRED' || code === 'JOIN_STUDENT_NUMBER_DIGITS_ONLY' || code === 'IDEMPOTENCY_KEY_INVALID') { sendJson(request, response, 400, { error: code.startsWith('UPLOAD_') ? 'UPLOAD_REJECTED' : code }); return; }
   sendJson(request, response, 500, { error: 'CLASS_INTERNAL_ERROR' });
 }
 

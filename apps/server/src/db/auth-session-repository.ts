@@ -18,6 +18,8 @@ export interface AuthSessionRepository {
   revokeStudentSession(tokenHash: string, revokedAtUtc: IsoUtc): boolean;
   revokeTeacherSessionById(id: TeacherSessionId, revokedAtUtc: IsoUtc): boolean;
   revokeStudentSessionById(id: StudentSessionId, revokedAtUtc: IsoUtc): boolean;
+  /** Atomically records a student leaving their current class and revokes only this session. */
+  leaveStudentSession(tokenHash: string, revokedAtUtc: IsoUtc): StoredStudentSession | undefined;
 }
 
 type TeacherRow = {
@@ -74,6 +76,18 @@ export class SqliteAuthSessionRepository implements AuthSessionRepository {
   revokeStudentSession(tokenHash: string, revokedAtUtc: IsoUtc): boolean { return this.revoke('student_sessions', 'token_hash', tokenHash, revokedAtUtc); }
   revokeTeacherSessionById(id: TeacherSessionId, revokedAtUtc: IsoUtc): boolean { return this.revoke('teacher_sessions', 'id', id, revokedAtUtc); }
   revokeStudentSessionById(id: StudentSessionId, revokedAtUtc: IsoUtc): boolean { return this.revoke('student_sessions', 'id', id, revokedAtUtc); }
+  leaveStudentSession(tokenHash: string, revokedAtUtc: IsoUtc): StoredStudentSession | undefined {
+    return this.database.transaction(() => {
+      const session = this.findStudentSession(tokenHash);
+      if (session === undefined || session.revokedAtUtc !== null || session.absoluteExpiresAtUtc <= revokedAtUtc || session.idleExpiresAtUtc <= revokedAtUtc) return undefined;
+      const revoked = this.database.prepare('UPDATE student_sessions SET revoked_at_utc=? WHERE token_hash=? AND revoked_at_utc IS NULL').run(revokedAtUtc, tokenHash);
+      if (revoked.changes !== 1) return undefined;
+      // Leave history is preserved for the teacher dashboard. Student rows,
+      // answers, submissions and materials are never touched here.
+      this.database.prepare('UPDATE student_class_joins SET left_at_utc=? WHERE student_id=? AND class_id=? AND left_at_utc IS NULL').run(revokedAtUtc, session.studentId, session.classId);
+      return session;
+    })();
+  }
 
   private touch<T>(table: 'teacher_sessions' | 'student_sessions', tokenHash: string, now: IsoUtc, idleExpiresAtUtc: IsoUtc, find: () => T | undefined): T | undefined {
     const result = this.database.prepare(`UPDATE ${table} SET last_seen_at_utc=?,idle_expires_at_utc=? WHERE token_hash=? AND revoked_at_utc IS NULL AND absolute_expires_at_utc>? AND idle_expires_at_utc>?`).run(now, idleExpiresAtUtc, tokenHash, now, now);

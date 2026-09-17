@@ -36,10 +36,16 @@
         : '找不到這個課堂。請輸入老師提供的班級代碼，例如 F7A，或從建議清單選擇。';
       return;
     }
+    const trimmedNumber = studentNumber.trim();
+    if (!/^[0-9]+$/.test(trimmedNumber)) {
+      message = '學號只能輸入半形數字（0–9），不可包含英文字母、符號、小數點或全形數字。';
+      state = 'form';
+      return;
+    }
     message = '';
     state = 'joining';
     try {
-      const outcome = await studentApi.join(fetch, match.classId, studentNumber);
+      const outcome = await studentApi.join(fetch, match.classId, trimmedNumber);
       if (outcome === 'active') { await goto('/student/activities'); return; }
       state = 'denied';
       message = '目前無法加入課堂。此學號可能已在另一部裝置登入，請先關閉原本的學生頁面後再試。';
@@ -79,12 +85,16 @@
       <p role="status">正在準備課堂資料…</p>
     {:else if state === 'form' || state === 'joining'}
       {#if classes.length === 0}<p class="error" role="status">目前沒有可加入的課堂，請向老師確認課堂是否已建立。</p>{/if}
-      <form onsubmit={(event) => { event.preventDefault(); void join(); }}>
+      <!-- Keep the numeric input hint/pattern, but let the explicit JS message
+           explain invalid pasted values instead of the browser silently
+           blocking submission with an unlocalised native validation bubble. -->
+      <form novalidate onsubmit={(event) => { event.preventDefault(); void join(); }}>
         <label for="class">班級代碼</label>
         <input id="class" bind:value={classReference} list="class-suggestions" required autocomplete="organization" placeholder="例如 F7A" disabled={state === 'joining' || classes.length === 0}/>
         <datalist id="class-suggestions">{#each classes as item}<option value={item.name}>{item.name}</option>{/each}</datalist>
         <label for="number">學號</label>
-        <input id="number" bind:value={studentNumber} required autocomplete="username" disabled={state === 'joining'} />
+        <input id="number" bind:value={studentNumber} required autocomplete="username" inputmode="numeric" pattern="[0-9]*" aria-describedby="number-help" disabled={state === 'joining'} />
+        <p id="number-help" class="hint">只可輸入半形數字 0–9。</p>
         <button type="submit" disabled={state === 'joining' || classes.length === 0}>{state === 'joining' ? '正在送出…' : '加入課堂'}</button>
       </form>
       {#if message}<p class="error" role="alert">{message}</p>{/if}
@@ -107,4 +117,5 @@
   button { margin-top: .5rem; border: 0; padding: .6rem 1rem; background: #075985; color: #fff; font-weight: 700; cursor: pointer; }
   button:disabled { opacity: .65; cursor: wait; }
   .error { color: #7f1d1d; background: #fef2f2; border-left: 4px solid #b91c1c; padding: .7rem; }
+  .hint { margin: -.2rem 0 .2rem; color: #475569; font-size: .9rem; }
 </style>
