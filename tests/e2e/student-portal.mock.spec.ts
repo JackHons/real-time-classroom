@@ -35,3 +35,17 @@ test('a re-closed late-reopened assignment no longer presents an upload form', a
   await expect(page.getByText('此作業目前不接受上傳。')).toBeVisible();
   await expect(page.getByRole('button', { name: '上傳並繳交' })).toHaveCount(0);
 });
+
+test('student sees a readable submitted answer after a question closes', async ({ page }) => {
+  await page.route('**/api/auth/session', (route) => route.fulfill({ json: { actor: 'student', classId: 'class-1', sessionId: 'session-a' } }));
+  await page.route('**/api/auth/student/csrf', (route) => route.fulfill({ json: { csrfToken: 'mock' } }));
+  await page.route('**/api/questions/q-closed?as=student', (route) => route.fulfill({ json: {
+    question: { id: 'q-closed', classId: 'class-1', kind: 'single_choice', prompt: '選擇你的名字', state: 'closed', options: [{ key: 'private-id', label: '陳大文' }] },
+    answer: { revision: 0, payload: { kind: 'single_choice', selectedOptions: ['private-id'] } },
+    answerAtClose: { noAnswer: false, payload: { kind: 'single_choice', selectedOptions: ['private-id'] } }
+  } }));
+  await page.goto('/student/question/q-closed');
+  await expect(page.getByText('已提交，以下是結束時保存的答案。')).toBeVisible();
+  await expect(page.getByText('單選：陳大文')).toBeVisible();
+  await expect(page.getByText('private-id')).toHaveCount(0);
+});

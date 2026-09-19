@@ -57,9 +57,10 @@ describe('Task 4 composed question API', () => {
   it('preserves authenticated class-scoped question and answer lifecycle boundaries', async () => {
     const base = await applicationBase();
     const teacher = await login(base, '/api/auth/teacher/login', { password: 'correct' });
-    const classA = await createClass(base, teacher, '1A', 'name,studentNumber\nAda,1001');
+    const classA = await createClass(base, teacher, '1A', 'name,studentNumber\nAda,1001\nBob,1002');
     const classB = await createClass(base, teacher, '1B', 'name,studentNumber\nBea,2001');
     const ada = await login(base, '/api/auth/student/join', { classId: classA, displayName: 'Ada', studentNumber: '1001' });
+    await login(base, '/api/auth/student/join', { classId: classA, displayName: 'Bob', studentNumber: '1002' });
     const bea = await login(base, '/api/auth/student/join', { classId: classB, displayName: 'Bea', studentNumber: '2001' });
 
     const csrfRejected = await fetch(`${base}/api/question-templates`, { method: 'POST', headers: { origin, cookie: teacher.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'single_choice', prompt: 'Q?', options: [{ label: 'Yes' }, { label: 'No' }] }) });
@@ -116,9 +117,17 @@ describe('Task 4 composed question API', () => {
     expect(await late.json()).toMatchObject({ revision: 2, late: true });
 
     const closedTeacherView = await fetch(`${base}/api/questions/${question.id}`, { headers: { cookie: teacher.cookie } });
-    const closedView = await closedTeacherView.json() as { snapshot: { counts: Record<string, number> }; answers: Array<{ studentId: string }> };
+    const closedView = await closedTeacherView.json() as {
+      snapshot: { counts: Record<string, number> };
+      summary: { eligibleStudentCount: number; answeredStudentCount: number; unansweredStudentCount: number };
+      answers: Array<{ studentId: string; answer?: { noAnswer: boolean; payload: unknown } }>;
+    };
     expect(closedView.snapshot.counts).toEqual({ [template.options[1]?.id ?? 'missing']: 1 });
-    expect(closedView.answers).toHaveLength(1);
+    expect(closedView.summary).toEqual({ eligibleStudentCount: 2, answeredStudentCount: 1, unansweredStudentCount: 1 });
+    expect(closedView.answers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ studentId: expect.any(String), answer: expect.objectContaining({ noAnswer: false, payload: expect.objectContaining({ selectedOptions: [template.options[1]?.id] }) }) }),
+      expect.objectContaining({ studentId: expect.any(String), answer: expect.objectContaining({ noAnswer: true, payload: null }) })
+    ]));
     database?.prepare("UPDATE questions SET reference_answer='teacher-secret' WHERE id=?").run(question.id);
     const studentRead = await fetch(`${base}/api/questions/${question.id}?as=student`, { headers: { cookie: ada.cookie } });
     expect(studentRead.status).toBe(200);
@@ -137,7 +146,14 @@ describe('Task 4 composed question API', () => {
     const deleteReplay = await fetch(`${base}/api/questions/${question.id}/answers/${studentId.id}`, { method: 'DELETE', headers: headers(teacher), body: JSON.stringify(deletion) });
     expect(deleteReplay.status).toBe(204);
     expect(database?.prepare('SELECT count(*) AS count FROM answer_current WHERE question_id=?').get(question.id)).toEqual({ count: 0 });
-    expect(database?.prepare('SELECT count(*) AS count FROM answer_at_close WHERE question_id=?').get(question.id)).toEqual({ count: 0 });
+    // Deleting Ada's answer does not erase Bob's close-time no-answer audit row.
+    expect(database?.prepare('SELECT count(*) AS count FROM answer_at_close WHERE question_id=?').get(question.id)).toEqual({ count: 1 });
+    const afterDelete = await (await fetch(`${base}/api/questions/${question.id}`, { headers: { cookie: teacher.cookie } })).json() as {
+      summary: { eligibleStudentCount: number; answeredStudentCount: number; unansweredStudentCount: number };
+      answers: Array<{ studentId: string; answer?: unknown }>;
+    };
+    expect(afterDelete.summary).toEqual({ eligibleStudentCount: 2, answeredStudentCount: 0, unansweredStudentCount: 2 });
+    expect(afterDelete.answers.some((answer) => !Object.hasOwn(answer, 'answer'))).toBe(true);
   });
 
   it('bounds named closed-answer pages for a large roster', async () => {

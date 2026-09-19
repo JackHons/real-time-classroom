@@ -53,7 +53,20 @@ export class LiveQuestionService {
     if (question.state === 'closed') {
       const snapshot = this.dependencies.repository.snapshot(questionId);
       if (snapshot === undefined) throw new Error('QUESTION_CLOSE_SNAPSHOT_MISSING');
-      return { question, snapshot, answers: this.dependencies.repository.closedAnswers(questionId) };
+      const answers = this.dependencies.repository.closedAnswers(questionId);
+      // `answer_at_close` intentionally records every eligible student.  A
+      // noAnswer row is an attendance/result snapshot, never a submission.
+      const answeredStudentCount = answers.filter((entry) => entry.answer !== undefined && !entry.answer.noAnswer && entry.answer.payload !== null).length;
+      return {
+        question,
+        snapshot,
+        summary: {
+          eligibleStudentCount: answers.length,
+          answeredStudentCount,
+          unansweredStudentCount: answers.length - answeredStudentCount
+        },
+        answers
+      };
     }
     // Draft and open views must never expose student-level answer data.
     return { question, aggregate: this.dependencies.repository.openAggregate(questionId) };

@@ -52,7 +52,22 @@ describe('live question service', () => {
     expect(target.readForTeacher('teacher', question.id)).toEqual({ question, aggregate: { eligibleStudentCount: 2, answeredStudentCount: 1, counts: { a: 1 }, shortTextResponseCount: 0 } });
     const closed = { ...question, state: 'closed' as const, closedAtUtc: '2026-01-01T00:01:00.000Z' as never };
     const closedTarget = service({ question: () => closed });
-    expect(closedTarget.readForTeacher('teacher', question.id)).toMatchObject({ answers: [{ studentId: 'student-a' }] });
+    expect(closedTarget.readForTeacher('teacher', question.id)).toMatchObject({
+      summary: { eligibleStudentCount: 1, answeredStudentCount: 1, unansweredStudentCount: 0 },
+      answers: [{ studentId: 'student-a' }]
+    });
+  });
+
+  it('does not count close-time no-answer audit rows as submitted answers', () => {
+    const noAnswer: AnswerAtClose = { questionId: question.id, studentId: 'student-b' as StudentId, revision: null, submittedAtUtc: null, payload: null, noAnswer: true, closedAtUtc: '2026-01-01T00:01:00.000Z' as never };
+    const closed = { ...question, state: 'closed' as const, closedAtUtc: '2026-01-01T00:01:00.000Z' as never };
+    const target = service({ question: () => closed, closedAnswers: () => [
+      { studentId: student.studentId, displayName: 'Ada', studentNumber: '1001', answer: atClose() },
+      { studentId: 'student-b' as StudentId, displayName: 'Bob', studentNumber: '1002', answer: noAnswer }
+    ] });
+    expect(target.readForTeacher('teacher', question.id)).toMatchObject({
+      summary: { eligibleStudentCount: 2, answeredStudentCount: 1, unansweredStudentCount: 1 }
+    });
   });
 
   it('uses the repository close transaction and never supplies a client clock', () => {

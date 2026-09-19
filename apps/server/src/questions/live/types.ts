@@ -33,6 +33,8 @@ export type ClosedNamedAnswer = Readonly<{
 export type ClosedQuestionView = Readonly<{
   question: Question;
   snapshot: QuestionResultSnapshot;
+  /** Counts are for the entire close snapshot, not merely the current page. */
+  summary: Readonly<{ eligibleStudentCount: number; answeredStudentCount: number; unansweredStudentCount: number }>;
   answers: readonly ClosedNamedAnswer[];
 }>;
 

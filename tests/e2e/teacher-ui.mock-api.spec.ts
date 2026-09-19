@@ -28,6 +28,27 @@ test.describe('teacher management UI (mock API contracts)', () => {
     await expect(page.getByText('已建立草稿；可讀取後開放給學生。')).toBeVisible();
   });
 
+  test('closed question dashboard separates submitted answers from close-time no-answer rows', async ({ page }) => {
+    await page.route('**/api/teacher/classes/class-1/questions', (route) => route.fulfill({ json: { items: [{ id: 'question-closed', classId: 'class-1', kind: 'single_choice', prompt: '你叫甚麼名字？', state: 'closed' }] } }));
+    await page.route('**/api/questions/question-closed', (route) => route.fulfill({ json: {
+      question: { id: 'question-closed', classId: 'class-1', kind: 'single_choice', prompt: '你叫甚麼名字？', state: 'closed', options: [{ key: 'opaque-option-id', label: '陳大文', ordinal: 0 }] },
+      snapshot: { counts: { 'opaque-option-id': 1 } },
+      summary: { eligibleStudentCount: 3, answeredStudentCount: 1, unansweredStudentCount: 2 },
+      answers: [
+        { studentId: 'student-1', displayName: '學生 1', studentNumber: '1', answer: { revision: 0, submittedAtUtc: '2026-01-01T00:00:00.000Z', payload: { kind: 'single_choice', selectedOptions: ['opaque-option-id'] }, noAnswer: false, closedAtUtc: '2026-01-01T00:01:00.000Z' } },
+        { studentId: 'student-2', displayName: '學生 2', studentNumber: '2', answer: { revision: null, submittedAtUtc: null, payload: null, noAnswer: true, closedAtUtc: '2026-01-01T00:01:00.000Z' } },
+        { studentId: 'student-3', displayName: '學生 3', studentNumber: '3', answer: { revision: null, submittedAtUtc: null, payload: null, noAnswer: true, closedAtUtc: '2026-01-01T00:01:00.000Z' } }
+      ]
+    } }));
+    await page.goto('/teacher/questions');
+    await page.getByLabel('選擇題目').selectOption('question-closed');
+    await page.getByRole('button', { name: '讀取狀態', exact: true }).click();
+    await expect(page.getByText('已關閉：已作答 1 / 3；未作答 2。')).toBeVisible();
+    await expect(page.getByRole('cell', { name: '單選：陳大文' })).toBeVisible();
+    await expect(page.getByText('opaque-option-id')).toHaveCount(0);
+    await expect(page.getByRole('cell', { name: '未作答', exact: true })).toHaveCount(2);
+  });
+
   test('assignment dashboard shows submitted and missing students, and a closed task can reopen', async ({ page }) => {
     let state: 'closed' | 'open' = 'closed';
     const dashboard = () => ({ completion: { eligibleStudentCount: 2, submittedStudentCount: 1 }, submissions: [{ studentId: 'student-1', displayName: '王小明', studentNumber: 'S1', displayFilename: 'homework.pdf', declaredMimeType: 'application/pdf', byteLength: 42, receivedCompleteAtUtc: '2026-01-01T01:00:00Z' }], missingStudents: [{ studentId: 'student-2', displayName: '李四', studentNumber: 'S2' }] });

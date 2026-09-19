@@ -15,9 +15,15 @@ export type Option = Readonly<{ id: string; label: string; ordinal: number }>;
 export type ReferenceAnswer = string | readonly string[] | null;
 export type Template = Readonly<{ id: string; kind: QuestionKind; prompt: string; options: readonly Option[]; referenceAnswer: ReferenceAnswer }>;
 export type Draft = Readonly<{ id: string; classId: string; templateId: string | null; kind: QuestionKind; prompt: string; options: readonly Option[]; referenceAnswer: ReferenceAnswer; state: 'draft' }>;
-export type Question = Readonly<{ id: string; classId: string; kind: QuestionKind; prompt: string; options: readonly Option[]; referenceAnswer: ReferenceAnswer; state: 'draft' | 'open' | 'closed' }>;
+export type Question = Readonly<{ id: string; classId: string; kind: QuestionKind; prompt: string; options: readonly Readonly<{ key: string; label: string; ordinal: number }>[]; referenceAnswer: ReferenceAnswer; state: 'draft' | 'open' | 'closed' }>;
 export type OpenQuestionView = Readonly<{ question: Question; aggregate: Readonly<{ eligibleStudentCount: number; answeredStudentCount: number; counts: Record<string, number>; shortTextResponseCount: number }> }>;
-export type ClosedQuestionView = Readonly<{ question: Question; snapshot: Record<string, unknown>; answers: readonly Readonly<{ studentId: string; displayName: string; studentNumber: string; answer?: unknown }>[]; nextCursor?: string }>;
+export type ClosedQuestionAnswer = Readonly<{
+  studentId: string;
+  displayName: string;
+  studentNumber: string;
+  answer?: Readonly<{ revision: number | null; submittedAtUtc: string | null; payload: Readonly<{ kind: QuestionKind; selectedOptions?: readonly string[]; text?: string }> | null; noAnswer: boolean; closedAtUtc: string }>;
+}>;
+export type ClosedQuestionView = Readonly<{ question: Question; snapshot: Record<string, unknown>; summary: Readonly<{ eligibleStudentCount: number; answeredStudentCount: number; unansweredStudentCount: number }>; answers: readonly ClosedQuestionAnswer[]; nextCursor?: string }>;
 export type FileTask = Readonly<{ id: string; classId: string; title: string; description: string; state: 'draft' | 'open' | 'closed'; deadlineAtUtc: string; maxBytes: number; reopenedAtUtc: string | null }>;
 export type FileTaskView = Readonly<{ task: FileTask; completion?: Readonly<{ eligibleStudentCount: number; submittedStudentCount: number }>; submissions?: readonly Readonly<{ studentId: string; displayName: string; studentNumber: string; displayFilename: string; declaredMimeType: string | null; byteLength: number; receivedCompleteAtUtc: string }>[]; dashboard?: Readonly<{ completion: Readonly<{ eligibleStudentCount: number; submittedStudentCount: number }>; submissions: readonly Readonly<{ studentId: string; displayName: string; studentNumber: string; displayFilename: string; declaredMimeType: string | null; byteLength: number; receivedCompleteAtUtc: string }>[]; missingStudents: readonly Readonly<{ studentId: string; displayName: string; studentNumber: string }>[] }> }>;
 export type TemplateInput = Readonly<{ kind: QuestionKind; prompt: string; options?: readonly Readonly<{ id?: string; label: string }>[]; referenceAnswer?: ReferenceAnswer }>;

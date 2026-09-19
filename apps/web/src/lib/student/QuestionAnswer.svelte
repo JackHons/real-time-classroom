@@ -1,11 +1,13 @@
 <script lang="ts">
   import type { AnswerPayload, StudentQuestion } from './types';
+  import { displayAnswer, questionKindLabel } from '$lib/question-answer-display';
 
   let { view, onSubmit, pending = false }: { view: StudentQuestion; onSubmit: (payload: AnswerPayload) => void; pending?: boolean } = $props();
   let selected = $state<string[]>([]);
   let text = $state('');
   const question = $derived(view.question);
   const closed = $derived(question.state === 'closed');
+  const submitted = $derived(view.answer?.payload);
 
   $effect(() => {
     selected = [...(view.answer?.payload.selectedOptions ?? [])];
@@ -25,10 +27,10 @@
   <p class="eyebrow">{closed ? '題目已結束' : '進行中的題目'}</p>
   <h1 id="question-title">{question.prompt}</h1>
   {#if closed}
-    <p class="status" role="status">此題已結束，答案不再接受。{view.answerAtClose?.noAnswer ? '結束時未收到你的答案。' : '以下是結束時保存的答案。'}</p>
-    {#if view.answerAtClose?.payload?.kind === 'short_text'}<p class="saved-answer">你的答案：{view.answerAtClose.payload.text}</p>
-    {:else if view.answerAtClose?.payload?.selectedOptions}<p class="saved-answer">你的答案：{view.answerAtClose.payload.selectedOptions.join('、')}</p>{/if}
+    <p class="status" role="status">此題已結束，答案不再接受。{view.answerAtClose?.noAnswer ? '結束時未收到你的答案。' : '已提交，以下是結束時保存的答案。'}</p>
+    <p class="saved-answer">{displayAnswer(question, view.answerAtClose?.noAnswer ? undefined : view.answerAtClose?.payload)}</p>
   {:else}
+    {#if submitted}<p class="status" role="status">已提交（{questionKindLabel(question.kind)}）：{displayAnswer(question, submitted)}。你可在題目結束前修改後再次送出。</p>{/if}
     <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
       <fieldset disabled={pending}>
         <legend>請選擇或輸入你的答案</legend>
