@@ -238,7 +238,7 @@ function validChange(change: RealtimeChangeInput): boolean {
     question: ['question_opened', 'question_closed', 'answer_updated', 'draft_created', 'draft_updated', 'draft_deleted', 'template_created', 'template_updated', 'template_deleted'],
     'file-task': ['filetask_created', 'filetask_updated', 'filetask_opened', 'filetask_closed', 'filetask_deleted'],
     pending: ['pending_requested', 'pending_resolved'],
-    roster: ['roster_imported', 'roster_changed', 'student_joined', 'student_left', 'class_deleted'],
+    roster: ['roster_imported', 'roster_changed', 'student_joined', 'student_left', 'student_session_revoked', 'class_deleted'],
     submission: ['submission_committed', 'submission_deleted']
   };
   return typeof change.classId === 'string' && change.classId.length > 0 && change.classId.length <= 200

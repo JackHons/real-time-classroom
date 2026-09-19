@@ -1,18 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte'; import { goto } from '$app/navigation';
-  import { TeacherApi, readableError, type ClassDeletionImpact, type ClassRoom, type JoinedStudent } from '$lib/teacher-api'; import TeacherNav from '$lib/teacher/TeacherNav.svelte'; import '$lib/teacher/teacher.css';
+  import { TeacherApi, readableError, type ActiveStudentSession, type ClassDeletionImpact, type ClassRoom, type JoinedStudent } from '$lib/teacher-api'; import TeacherNav from '$lib/teacher/TeacherNav.svelte'; import '$lib/teacher/teacher.css';
   const api = new TeacherApi(); let ready = false; let busy = false; let error = ''; let notice = '';
-  let classes: readonly ClassRoom[] = []; let selectedClassId = ''; let className = ''; let joined: readonly JoinedStudent[] = [];
+  let classes: readonly ClassRoom[] = []; let selectedClassId = ''; let className = ''; let joined: readonly JoinedStudent[] = []; let activeSessions: readonly ActiveStudentSession[] = [];
   let deletion: ClassDeletionImpact | undefined; let confirmationName = ''; let deleteDialog: HTMLDialogElement | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   onMount(() => { void initialise(); return () => { if (refreshTimer !== undefined) clearInterval(refreshTimer); }; });
   async function initialise(): Promise<void> { if (!await api.restoreTeacher()) { await goto('/teacher'); return; } ready = true; await refresh(); refreshTimer = setInterval(() => { void refreshJoined(); }, 10_000); }
   async function work(action: () => Promise<void>): Promise<void> { busy = true; error = ''; notice = ''; try { await action(); } catch (cause) { error = readableError(cause); } finally { busy = false; } }
   async function refresh(): Promise<void> { const page = await api.classes(); classes = page.items; if (!classes.some((room) => room.id === selectedClassId)) selectedClassId = classes[0]?.id ?? ''; await refreshJoined(); }
-  async function refreshJoined(): Promise<void> { joined = selectedClassId ? (await api.joinedStudents(selectedClassId)).items : []; }
+  async function refreshJoined(): Promise<void> { [joined, activeSessions] = selectedClassId ? await Promise.all([api.joinedStudents(selectedClassId).then((page) => page.items), api.studentSessions(selectedClassId).then((page) => page.items)]) : [[], []]; }
   async function createClass(): Promise<void> { await work(async () => { const created = await api.createClass(className); className = ''; selectedClassId = created.id; await refresh(); notice = `已建立「${created.name}」。學生現在可以只輸入學號加入。`; }); }
   async function askDelete(): Promise<void> { await work(async () => { if (!selectedClassId) return; deletion = await api.classDeletionImpact(selectedClassId); confirmationName = ''; deleteDialog?.showModal(); }); }
   async function deleteClass(): Promise<void> { await work(async () => { if (deletion === undefined || selectedClassId !== deletion.classId) return; const removed = deletion.className; await api.deleteClass(deletion.classId, confirmationName); deleteDialog?.close(); deletion = undefined; await refresh(); notice = `已刪除「${removed}」及其班級資料。`; }); }
+  async function revokeSession(session: ActiveStudentSession): Promise<void> { await work(async () => { if (!selectedClassId) return; await api.revokeStudentSession(selectedClassId, session.sessionId); await refreshJoined(); notice = `已撤銷學號 ${session.studentNumber} 的這個裝置登入。`; }); }
   function closeDelete(): void { deleteDialog?.close(); deletion = undefined; confirmationName = ''; }
   async function logout(): Promise<void> { await api.logout(); await goto('/teacher'); }
 </script>
@@ -26,6 +27,10 @@
       <section class="panel"><h3>班級管理</h3><label for="class-picker">選擇班級</label><select id="class-picker" bind:value={selectedClassId} on:change={() => void work(refreshJoined)}>{#each classes as room}<option value={room.id}>{room.name}</option>{/each}</select><div class="actions"><button on:click={() => void work(refresh)} disabled={busy}>重新整理</button><button class="danger" on:click={() => void askDelete()} disabled={busy || !selectedClassId}>刪除班級</button></div><p class="muted">刪除會移除本班學生加入紀錄、教材、題目、作業及交件，且不能復原。</p></section></div>
     <section class="panel" aria-labelledby="joined-title"><div class="actions"><h3 id="joined-title">已加入學生（{joined.filter((student) => student.leftAtUtc === null).length} 位在課／{joined.length} 筆紀錄）</h3><button on:click={() => void work(refreshJoined)} disabled={busy || !selectedClassId}>更新名單</button></div>
       {#if !selectedClassId}<p class="muted">請先建立班級。</p>{:else if joined.length === 0}<p class="muted">尚未有學生加入。請請學生前往學生入口，選擇此班並輸入學號。</p>{:else}<div class="table-wrap"><table><thead><tr><th>學號</th><th>顯示名稱</th><th>狀態</th><th>首次加入</th><th>最近加入</th><th>退出時間</th></tr></thead><tbody>{#each joined as student}<tr><td>{student.studentNumber}</td><td>{student.displayName}</td><td>{student.leftAtUtc === null ? '在課中' : '已退出'}</td><td>{new Date(student.joinedAtUtc).toLocaleString()}</td><td>{new Date(student.lastJoinedAtUtc).toLocaleString()}</td><td>{student.leftAtUtc === null ? '—' : new Date(student.leftAtUtc).toLocaleString()}</td></tr>{/each}</tbody></table></div>{/if}
+    </section>
+    <section class="panel" aria-labelledby="sessions-title"><div class="actions"><h3 id="sessions-title">目前學生裝置登入（{activeSessions.length}）</h3><button on:click={() => void work(refreshJoined)} disabled={busy || !selectedClassId}>更新登入狀態</button></div>
+      <p class="muted">同一學號可同時在不同裝置使用。撤銷只會登出所選裝置，不會刪除學生、加入紀錄、作答或交件。</p>
+      {#if !selectedClassId}<p class="muted">尚未選擇班級，無登入狀態。</p>{:else if activeSessions.length === 0}<p class="muted">目前沒有有效的學生裝置登入。</p>{:else}<div class="table-wrap"><table><thead><tr><th>學號</th><th>顯示名稱</th><th>登入時間</th><th>最近活動</th><th>操作</th></tr></thead><tbody>{#each activeSessions as session}<tr><td>{session.studentNumber}</td><td>{session.displayName}</td><td>{new Date(session.createdAtUtc).toLocaleString()}</td><td>{new Date(session.lastSeenAtUtc).toLocaleString()}</td><td><button class="danger" on:click={() => void revokeSession(session)} disabled={busy}>撤銷這個裝置</button></td></tr>{/each}</tbody></table></div>{/if}
     </section>
   {/if}
 </main>

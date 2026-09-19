@@ -13,10 +13,11 @@ const migrations = [
   { id: '0009_student_class_joins', sql: readFileSync(new URL('./migrations/0009_student_class_joins.sql', import.meta.url), 'utf8') },
   { id: '0010_class_materials', sql: readFileSync(new URL('./migrations/0010_class_materials.sql', import.meta.url), 'utf8') },
   { id: '0011_class_deletion_cleanup', sql: readFileSync(new URL('./migrations/0011_class_deletion_cleanup.sql', import.meta.url), 'utf8') },
-  { id: '0012_student_class_leave_audit', sql: readFileSync(new URL('./migrations/0012_student_class_leave_audit.sql', import.meta.url), 'utf8') }
+  { id: '0012_student_class_leave_audit', sql: readFileSync(new URL('./migrations/0012_student_class_leave_audit.sql', import.meta.url), 'utf8') },
+  { id: '0013_multi_device_student_sessions', sql: readFileSync(new URL('./migrations/0013_multi_device_student_sessions.sql', import.meta.url), 'utf8') }
 ] as const;
 
-export const LATEST_SCHEMA_MIGRATION = '0012_student_class_leave_audit';
+export const LATEST_SCHEMA_MIGRATION = '0013_multi_device_student_sessions';
 export type MigrationReadiness = Readonly<{ schemaVersion: string; pendingMigrations: number; upgradeReady: boolean }>;
 
 export function migrate(database: SqliteDatabase): void {

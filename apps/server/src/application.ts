@@ -181,7 +181,14 @@ export function createApplication(options: ApplicationOptions): Application {
   const fileTaskHandler = createFileTaskRoutes({ service: fileTaskService, repository: fileRepository, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
   const uploadPipeline = new UploadPipeline({ repository: new SqliteUploadPipelineRepository(options.database, () => clock.now().toISOString()), storage, now: () => clock.now(), onTaskClosed: (task) => realtimeNotifications.publish({ classId: task.classId, resourceType: 'file-task', id: task.taskId, event: 'filetask_closed', audience: 'all' }) });
   const uploadHandler = createUploadRoutes({ pipeline: uploadPipeline, repository: fileRepository, storage, studentContext: authenticateStudent, teacherContext: authenticateTeacher, notify: (event) => realtimeNotifications.publish(event), ...(options.uploadIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.uploadIdleTimeoutMs }), ...(options.uploadAbsoluteRequestTimeoutMs === undefined ? {} : { absoluteRequestTimeoutMs: options.uploadAbsoluteRequestTimeoutMs }) });
-  const activityHandler = createActivityRoutes({ database: options.database, teacherContext: authenticateTeacher, studentContext: authenticateStudent });
+  const activityHandler = createActivityRoutes({
+    database: options.database, teacherContext: authenticateTeacher, studentContext: authenticateStudent, now: () => clock.now().toISOString(),
+    revokeStudentSession: (classId, sessionId) => sessions.revokeStudentInClass(sessionId, classId) !== undefined,
+    onStudentSessionRevoked: (entry) => {
+      realtimeNotifications.publish({ classId: entry.classId, resourceType: 'roster', id: entry.studentId, event: 'student_session_revoked', audience: 'teacher' });
+      realtimeNotifications.evictStudentSession(entry.studentSessionId);
+    }
+  });
   const exportHandler = createExportRoutes({ database: options.database, teacherContext: authenticateTeacher });
   let uploadsReady = false;
 

@@ -6,6 +6,8 @@ export type CsvPreview = Readonly<{ rows: readonly Readonly<{ displayName: strin
 export type PendingApproval = Readonly<{ id: string; classId: string; displayName: string; studentNumber: string }>;
 export type RosterStudent = Readonly<{ id: string; displayName: string; studentNumber: string; isTemporary: boolean; approvedAtUtc: string }>;
 export type JoinedStudent = Readonly<{ id: string; displayName: string; studentNumber: string; joinedAtUtc: string; lastJoinedAtUtc: string; leftAtUtc: string | null }>;
+/** Opaque session id is used only as the revoke target; it is never rendered. */
+export type ActiveStudentSession = Readonly<{ sessionId: string; studentId: string; displayName: string; studentNumber: string; createdAtUtc: string; lastSeenAtUtc: string; absoluteExpiresAtUtc: string; idleExpiresAtUtc: string }>;
 export type ClassMaterial = Readonly<{ id: string; classId: string; displayFilename: string; declaredMimeType: string; byteLength: number; createdAtUtc: string }>;
 export type QuestionSummary = Readonly<{ id: string; classId: string; templateId: string | null; kind: QuestionKind; prompt: string; state: 'draft' | 'open' | 'closed' }>;
 export type QuestionKind = 'single_choice' | 'multiple_choice' | 'short_text';
@@ -46,6 +48,8 @@ export class TeacherApi {
   async classes(cursor?: string): Promise<Page<ClassRoom>> { return this.request(`/api/teacher/classes${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async roster(classId: string, cursor?: string): Promise<Page<RosterStudent>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/roster${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async joinedStudents(classId: string, cursor?: string): Promise<Page<JoinedStudent>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/joined-students${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
+  async studentSessions(classId: string, cursor?: string): Promise<Page<ActiveStudentSession>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/student-sessions${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
+  async revokeStudentSession(classId: string, sessionId: string): Promise<void> { await this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/student-sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE', body: {} }); }
   async pending(classId: string, cursor?: string): Promise<Page<PendingApproval>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/pending-student-requests${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async questions(classId: string, cursor?: string): Promise<Page<QuestionSummary>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/questions${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }
   async fileTasks(classId: string, cursor?: string): Promise<Page<FileTask>> { return this.request(`/api/teacher/classes/${encodeURIComponent(classId)}/file-tasks${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`, { method: 'GET' }); }

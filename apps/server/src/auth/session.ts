@@ -63,6 +63,14 @@ export class AuthSessions {
   }
   revokeTeacher(id: TeacherSession['id']): boolean { return this.repository.revokeTeacherSessionById(id, utc(this.clock.now())); }
   revokeStudent(id: StudentSession['id']): boolean { return this.repository.revokeStudentSessionById(id, utc(this.clock.now())); }
+  /** Caller is already a teacher. Class scope is checked before mutation. */
+  revokeStudentInClass(id: StudentSession['id'], classId: StudentSession['classId']): AuthenticatedStudentSession | undefined {
+    const session = this.repository.findStudentSessionById(id);
+    if (session === undefined || session.classId !== classId) return undefined;
+    if (isSessionActive(session, this.clock.now())) this.repository.revokeStudentSessionById(id, utc(this.clock.now()));
+    // Same-class retries are idempotent; an already-revoked token stays revoked.
+    return { studentSessionId: session.id, studentId: session.studentId, classId: session.classId };
+  }
 }
 
 export function secureSessionToken(): SessionToken { return randomBytes(32).toString('base64url') as SessionToken; }

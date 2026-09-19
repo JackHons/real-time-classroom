@@ -13,12 +13,13 @@ class TestRepository implements AuthSessionRepository {
   teacherPasswordHash(): string | undefined { return '$argon2id$fake'; }
   setTeacherPasswordHashIfAbsent(): boolean { return false; }
   createTeacherSession(value: TeacherSession): void { this.teachers.set(value.tokenHash, value); }
-  createStudentSession(value: StudentSession): void { if ([...this.students.values()].some((existing) => existing.studentId === value.studentId && existing.revokedAtUtc === null)) throw new Error('STUDENT_SESSION_ALREADY_ACTIVE'); this.students.set(value.tokenHash, value); }
+  createStudentSession(value: StudentSession): void { this.students.set(value.tokenHash, value); }
   findTeacherSession(hash: string): TeacherSession | undefined { return this.teachers.get(hash); } findStudentSession(hash: string): StudentSession | undefined { return this.students.get(hash); }
   touchTeacherSession(hash: string, now: IsoUtc, idle: IsoUtc): TeacherSession | undefined { const value = this.teachers.get(hash); if (value === undefined || value.revokedAtUtc !== null || value.idleExpiresAtUtc <= now || value.absoluteExpiresAtUtc <= now) return undefined; const next = { ...value, lastSeenAtUtc: now, idleExpiresAtUtc: idle }; this.teachers.set(hash, next); return next; }
   touchStudentSession(hash: string, now: IsoUtc, idle: IsoUtc): StudentSession | undefined { const value = this.students.get(hash); if (value === undefined || value.revokedAtUtc !== null || value.idleExpiresAtUtc <= now || value.absoluteExpiresAtUtc <= now) return undefined; const next = { ...value, lastSeenAtUtc: now, idleExpiresAtUtc: idle }; this.students.set(hash, next); return next; }
   revokeTeacherSession(hash: string, now: IsoUtc): boolean { return revoke(this.teachers, hash, now); } revokeStudentSession(hash: string, now: IsoUtc): boolean { return revoke(this.students, hash, now); }
   revokeTeacherSessionById(): boolean { return false; } revokeStudentSessionById(): boolean { return false; }
+  findStudentSessionById(id: StudentSession['id']): StudentSession | undefined { return [...this.students.values()].find((value) => value.id === id); }
   leaveStudentSession(hash: string, now: IsoUtc): StudentSession | undefined { const session = this.students.get(hash); return revoke(this.students, hash, now) ? session : undefined; }
 }
 function revoke<T extends TeacherSession | StudentSession>(map: Map<string, T>, hash: string, now: IsoUtc): boolean { const value = map.get(hash); if (value === undefined || value.revokedAtUtc !== null) return false; map.set(hash, { ...value, revokedAtUtc: now } as T); return true; }
@@ -134,18 +135,17 @@ describe('auth HTTP listener', () => {
     expect(limiter.allow('second', new Date(start.getTime() + 1_001))).toBe(true);
   });
 
-  it('makes active-device, unknown, and unapproved student joins externally indistinguishable', async () => {
+  it('allows multiple student devices while keeping unknown joins denied', async () => {
     const student: Student = { id: 'student-1' as StudentId, classId: 'class-1' as ClassId, displayName: 'Ada', rawStudentNumber: '1001', normalizedStudentNumber: '1001', isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never };
     const base = await authServer({ join: ({ displayName }) => displayName === 'Ada' ? student : undefined });
     const join = (displayName: string) => fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin: 'http://classroom.test', 'content-type': 'application/json' }, body: JSON.stringify({ classId: 'class-1', displayName, studentNumber: '1001' }) });
     expect((await join('Ada')).status).toBe(200);
     const secondDevice = await join('Ada');
     const unknown = await join('Unknown');
-    expect(secondDevice.status).toBe(403);
-    expect(await secondDevice.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
-    expect(unknown.status).toBe(secondDevice.status);
+    expect(secondDevice.status).toBe(200);
+    expect(unknown.status).toBe(403);
     expect(await unknown.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
-    expect(auditCodes).toEqual(['STUDENT_SESSION_ALREADY_ACTIVE', 'STUDENT_JOIN_NOT_APPROVED']);
+    expect(auditCodes).toEqual(['STUDENT_JOIN_NOT_APPROVED']);
   });
 
   it('does not let successful student joins behind one NAT consume its failure budget', async () => {

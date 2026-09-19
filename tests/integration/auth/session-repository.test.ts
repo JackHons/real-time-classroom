@@ -27,13 +27,14 @@ describe('auth session SQLite repository', () => {
     expect(database?.prepare('SELECT token_hash FROM teacher_sessions').get()).not.toEqual({ token_hash: login.token });
   });
 
-  it('rejects a second active student device without revoking the original session', () => {
+  it('allows a second active student device without revoking the original session', () => {
     const { repository, clock } = setup();
     let counter = 0;
     const sessions = new AuthSessions(repository, clock, () => `token-${counter++}` as SessionToken);
     const student = { id: 'student-1' as StudentId, classId: 'class-1' as ClassId, displayName: 'Ada', rawStudentNumber: 'a1', normalizedStudentNumber: 'A1', isTemporary: false, approvedAtUtc: '2026-09-07T00:00:00.000Z' as never };
     const first = sessions.createStudentSession(student);
-    expect(() => sessions.createStudentSession(student)).toThrow('STUDENT_SESSION_ALREADY_ACTIVE');
+    const second = sessions.createStudentSession(student);
+    expect(second.session.id).not.toBe(first.session.id);
     expect(database?.prepare('SELECT revoked_at_utc FROM student_sessions WHERE id=?').get(first.session.id)).toEqual({ revoked_at_utc: null });
   });
 

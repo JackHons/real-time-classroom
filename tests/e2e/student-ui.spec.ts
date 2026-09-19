@@ -71,9 +71,9 @@ test.describe('student interface (real server)', () => {
     await page.waitForURL('**/student/activities');
 
     // Simulate only the initial restore request being interrupted. The browser
-    // still owns a valid HttpOnly session. Retrying must restore that local
-    // session rather than leave the student on a misleading device-conflict
-    // screen or displace another device.
+    // still owns a valid HttpOnly session. Retrying can restore that cookie or
+    // create another permitted device session; it must never show the old
+    // single-device conflict screen.
     let sessionReads = 0;
     await page.route('**/api/auth/session', async (route) => {
       sessionReads += 1;
@@ -89,7 +89,7 @@ test.describe('student interface (real server)', () => {
     await page.getByLabel('學號').fill(number);
     await page.getByRole('button', { name: '加入課堂', exact: true }).click();
     await page.waitForURL('**/student/activities');
-    expect(sessionReads).toBeGreaterThanOrEqual(2);
+    expect(sessionReads).toBeGreaterThanOrEqual(1);
   });
 
   test('shows a clear client-side error for a non-digit student number', async ({ page }) => {

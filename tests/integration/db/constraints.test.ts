@@ -78,7 +78,8 @@ describe('SQLite migration and repository transactions', () => {
     expect(database?.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='upload_sessions'").get()).toBeDefined();
     expect(() => database?.prepare('INSERT INTO students (id,class_id,display_name,raw_student_number,normalized_student_number,is_temporary,approved_at_utc) VALUES (?,?,?,?,?,?,?)').run('duplicate', 'class-1', 'Other', 'A1', 'A1', 0, '2026-09-07T00:00:00.000Z')).toThrow();
     database?.prepare('INSERT INTO student_sessions VALUES (?,?,?,?,?,?,?,?,?)').run('s1', 'student-1', 'class-1', 'token-1', 'now', 'now', 'later', 'later', null);
-    expect(() => database?.prepare('INSERT INTO student_sessions VALUES (?,?,?,?,?,?,?,?,?)').run('s2', 'student-1', 'class-1', 'token-2', 'now', 'now', 'later', 'later', null)).toThrow();
+    // Multiple devices may hold separate active opaque student sessions.
+    expect(() => database?.prepare('INSERT INTO student_sessions VALUES (?,?,?,?,?,?,?,?,?)').run('s2', 'student-1', 'class-1', 'token-2', 'now', 'now', 'later', 'later', null)).not.toThrow();
     expect(() => database?.prepare('INSERT INTO student_sessions VALUES (?,?,?,?,?,?,?,?,?)').run('cross-class', 'student-1', 'wrong-class', 'token-3', 'now', 'now', 'later', 'later', null)).toThrow();
     expect(() => database?.prepare('INSERT INTO app_settings VALUES (?,?,?,?)').run('invalid_setting', 'x', 'now', 'now')).toThrow();
   });

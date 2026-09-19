@@ -9,12 +9,10 @@ class MemoryRepository implements AuthSessionRepository {
   teacherPasswordHash(): string | undefined { return undefined; }
   setTeacherPasswordHashIfAbsent(): boolean { return false; }
   createTeacherSession(input: TeacherSession): void { this.teacher.set(input.tokenHash, input); }
-  createStudentSession(input: StudentSession): void {
-    if ([...this.student.values()].some((session) => session.studentId === input.studentId && session.revokedAtUtc === null)) throw new Error('STUDENT_SESSION_ALREADY_ACTIVE');
-    this.student.set(input.tokenHash, input);
-  }
+  createStudentSession(input: StudentSession): void { this.student.set(input.tokenHash, input); }
   findTeacherSession(hash: string): TeacherSession | undefined { return this.teacher.get(hash); }
   findStudentSession(hash: string): StudentSession | undefined { return this.student.get(hash); }
+  findStudentSessionById(id: StudentSession['id']): StudentSession | undefined { return [...this.student.values()].find((session) => session.id === id); }
   touchTeacherSession(hash: string, now: IsoUtc, idle: IsoUtc): TeacherSession | undefined { const session = this.teacher.get(hash); if (session === undefined || !active(session, now)) return undefined; const next = { ...session, lastSeenAtUtc: now, idleExpiresAtUtc: idle }; this.teacher.set(hash, next); return next; }
   touchStudentSession(hash: string, now: IsoUtc, idle: IsoUtc): StudentSession | undefined { const session = this.student.get(hash); if (session === undefined || !active(session, now)) return undefined; const next = { ...session, lastSeenAtUtc: now, idleExpiresAtUtc: idle }; this.student.set(hash, next); return next; }
   revokeTeacherSession(hash: string, now: IsoUtc): boolean { return this.revoke(this.teacher, hash, now); }
@@ -78,5 +76,16 @@ describe('auth session service', () => {
     const login = sessions.createStudentSession(student);
     expect(sessions.leaveStudentSession(login.token)).toMatchObject({ studentSessionId: login.session.id, studentId: student.id, classId: student.classId });
     expect(sessions.authenticateStudent(login.token)).toBeUndefined();
+  });
+
+  it('allows concurrent devices and teacher revocation affects only the selected same-class session', () => {
+    const repository = new MemoryRepository();
+    let token = 0;
+    const sessions = new AuthSessions(repository, new MutableClock(new Date('2026-09-07T00:00:00.000Z')), () => `student-${token++}` as SessionToken);
+    const student = { id: 'student-1', classId: 'class-1', displayName: '學生 1001', rawStudentNumber: '1001', normalizedStudentNumber: '1001', isTemporary: true, approvedAtUtc: '2026-09-07T00:00:00.000Z' as IsoUtc } as never;
+    const first = sessions.createStudentSession(student); const second = sessions.createStudentSession(student);
+    expect(sessions.authenticateStudent(first.token)).toBeDefined(); expect(sessions.authenticateStudent(second.token)).toBeDefined();
+    expect(sessions.revokeStudentInClass(first.session.id, student.classId)).toMatchObject({ studentSessionId: first.session.id });
+    expect(sessions.authenticateStudent(first.token)).toBeUndefined(); expect(sessions.authenticateStudent(second.token)).toBeDefined();
   });
 });

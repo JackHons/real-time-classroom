@@ -161,14 +161,62 @@ describe('Task 3 composed API routes', () => {
     expect(await unknown.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
 
     expect(database?.prepare('SELECT count(*) AS count FROM student_class_joins WHERE class_id=?').get(classroom.id)).toEqual({ count: 2 });
-    const activeEntryBeforeRetry = database?.prepare('SELECT last_joined_at_utc,left_at_utc FROM student_class_joins WHERE class_id=? AND student_id=(SELECT id FROM students WHERE class_id=? AND raw_student_number=?)').get(classroom.id, classroom.id, '1002');
     clock.advance(60_000);
     const secondDevice = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: '1002' }) });
-    expect(secondDevice.status).toBe(403);
-    expect(await secondDevice.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
-    // The conflict is deliberately non-destructive: it cannot refresh the
-    // first device's entry or make a left student appear rejoined.
-    expect(database?.prepare('SELECT last_joined_at_utc,left_at_utc FROM student_class_joins WHERE class_id=? AND student_id=(SELECT id FROM students WHERE class_id=? AND raw_student_number=?)').get(classroom.id, classroom.id, '1002')).toEqual(activeEntryBeforeRetry);
+    expect(secondDevice.status).toBe(200);
+    // A second device refreshes the same enrolment's latest join timestamp;
+    // it does not create a duplicate enrollment record.
+    expect(database?.prepare('SELECT count(*) AS count FROM student_class_joins WHERE class_id=? AND student_id=(SELECT id FROM students WHERE class_id=? AND raw_student_number=?)').get(classroom.id, classroom.id, '1002')).toEqual({ count: 1 });
+    expect(database?.prepare('SELECT count(*) AS count FROM student_sessions WHERE student_id=(SELECT id FROM students WHERE class_id=? AND raw_student_number=?)').get(classroom.id, '1002')).toEqual({ count: 2 });
+  });
+
+  it('allows two devices for one student and lets a teacher revoke exactly one class-scoped session', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name: '1A' }) });
+    const classroom = await created.json() as { id: string };
+    const secondClass = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name: '1B' }) });
+    const other = await secondClass.json() as { id: string };
+    const one = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, studentNumber: '1001' }) });
+    const two = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, studentNumber: '1001' }) });
+    const otherDevice = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: other.id, studentNumber: '2002' }) });
+    expect(one.status).toBe(200); expect(two.status).toBe(200); expect(otherDevice.status).toBe(200);
+    const cookieOne = one.headers.get('set-cookie')?.split(';')[0]; const cookieTwo = two.headers.get('set-cookie')?.split(';')[0];
+    if (cookieOne === undefined || cookieTwo === undefined) throw new Error('missing student cookies');
+    expect((await fetch(`${base}/api/student/activities`, { headers: { cookie: cookieOne } })).status).toBe(200);
+    expect((await fetch(`${base}/api/student/activities`, { headers: { cookie: cookieTwo } })).status).toBe(200);
+    const sessions = await fetch(`${base}/api/teacher/classes/${classroom.id}/student-sessions`, { headers: { cookie: teacher.cookie } });
+    expect(sessions.status).toBe(200);
+    const sessionPage = await sessions.json() as { items: Array<{ sessionId: string; studentNumber: string; lastSeenAtUtc: string }> };
+    expect(sessionPage.items).toHaveLength(2);
+    expect(sessionPage.items[0]).toEqual(expect.objectContaining({ studentNumber: '1001', lastSeenAtUtc: expect.any(String) }));
+    const target = sessionPage.items[0]!.sessionId;
+    // CSRF protects this teacher mutation.
+    expect((await fetch(`${base}/api/teacher/classes/${classroom.id}/student-sessions/${target}`, { method: 'DELETE', headers: { origin, cookie: teacher.cookie } })).status).toBe(403);
+    // A valid opaque id belonging to another class is not a revocation target.
+    const otherSessions = await (await fetch(`${base}/api/teacher/classes/${other.id}/student-sessions`, { headers: { cookie: teacher.cookie } })).json() as { items: Array<{ sessionId: string }> };
+    expect((await fetch(`${base}/api/teacher/classes/${classroom.id}/student-sessions/${otherSessions.items[0]!.sessionId}`, { method: 'DELETE', headers: teacherHeaders(teacher), body: '{}' })).status).toBe(404);
+    expect((await fetch(`${base}/api/teacher/classes/${classroom.id}/student-sessions/${target}`, { method: 'DELETE', headers: teacherHeaders(teacher), body: '{}' })).status).toBe(204);
+    // The second browser remains authenticated, regardless of ordering.
+    const access = await Promise.all([fetch(`${base}/api/student/activities`, { headers: { cookie: cookieOne } }), fetch(`${base}/api/student/activities`, { headers: { cookie: cookieTwo } })]);
+    expect(access.map((response) => response.status).sort()).toEqual([200, 401]);
+    // Repeating an approved target is a harmless idempotent DELETE.
+    expect((await fetch(`${base}/api/teacher/classes/${classroom.id}/student-sessions/${target}`, { method: 'DELETE', headers: teacherHeaders(teacher), body: '{}' })).status).toBe(204);
+  });
+
+  it('does not mark a student as left while another device for that class is still active', async () => {
+    const base = await applicationBase();
+    const teacher = await teacherLogin(base);
+    const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(teacher), body: JSON.stringify({ name: '1A' }) });
+    const classroom = await created.json() as { id: string };
+    const first = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, studentNumber: '1001' }) });
+    const second = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, studentNumber: '1001' }) });
+    const firstCookie = first.headers.get('set-cookie')?.split(';')[0]; const secondCookie = second.headers.get('set-cookie')?.split(';')[0];
+    const firstCsrf = (await first.json() as { csrfToken: string }).csrfToken;
+    if (firstCookie === undefined || secondCookie === undefined) throw new Error('missing student cookies');
+    expect((await fetch(`${base}/api/auth/student/leave`, { method: 'POST', headers: { origin, cookie: firstCookie, 'x-csrf-token': firstCsrf, 'content-type': 'application/json' }, body: '{}' })).status).toBe(204);
+    expect((await fetch(`${base}/api/student/activities`, { headers: { cookie: secondCookie } })).status).toBe(200);
+    expect(database?.prepare('SELECT left_at_utc FROM student_class_joins WHERE class_id=?').get(classroom.id)).toEqual({ left_at_utc: null });
   });
 
   it('does not consume the join failure budget for successful number-only joins', async () => {

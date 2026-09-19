@@ -18,6 +18,8 @@ export interface AuthSessionRepository {
   revokeStudentSession(tokenHash: string, revokedAtUtc: IsoUtc): boolean;
   revokeTeacherSessionById(id: TeacherSessionId, revokedAtUtc: IsoUtc): boolean;
   revokeStudentSessionById(id: StudentSessionId, revokedAtUtc: IsoUtc): boolean;
+  /** Finds a session by opaque id for a teacher-scoped revocation check. */
+  findStudentSessionById(id: StudentSessionId): StoredStudentSession | undefined;
   /** Atomically records a student leaving their current class and revokes only this session. */
   leaveStudentSession(tokenHash: string, revokedAtUtc: IsoUtc): StoredStudentSession | undefined;
 }
@@ -48,8 +50,9 @@ export class SqliteAuthSessionRepository implements AuthSessionRepository {
   createStudentSession(input: StoredStudentSession): void {
     this.database.transaction(() => {
       this.database.prepare('UPDATE student_sessions SET revoked_at_utc=? WHERE student_id=? AND revoked_at_utc IS NULL AND (absolute_expires_at_utc <= ? OR idle_expires_at_utc <= ?)').run(input.createdAtUtc, input.studentId, input.createdAtUtc, input.createdAtUtc);
-      const active = this.database.prepare('SELECT id FROM student_sessions WHERE student_id=? AND revoked_at_utc IS NULL').get(input.studentId);
-      if (active !== undefined) throw new Error('STUDENT_SESSION_ALREADY_ACTIVE');
+      // One student may use several devices at once. The partial unique index
+      // from the original release is removed by migration 0013; token_hash
+      // remains unique and every device receives its own opaque session.
       this.database.prepare('INSERT INTO student_sessions (id,student_id,class_id,token_hash,created_at_utc,last_seen_at_utc,absolute_expires_at_utc,idle_expires_at_utc,revoked_at_utc) VALUES (?,?,?,?,?,?,?,?,?)').run(input.id, input.studentId, input.classId, input.tokenHash, input.createdAtUtc, input.lastSeenAtUtc, input.absoluteExpiresAtUtc, input.idleExpiresAtUtc, input.revokedAtUtc);
     })();
   }
@@ -82,11 +85,19 @@ export class SqliteAuthSessionRepository implements AuthSessionRepository {
       if (session === undefined || session.revokedAtUtc !== null || session.absoluteExpiresAtUtc <= revokedAtUtc || session.idleExpiresAtUtc <= revokedAtUtc) return undefined;
       const revoked = this.database.prepare('UPDATE student_sessions SET revoked_at_utc=? WHERE token_hash=? AND revoked_at_utc IS NULL').run(revokedAtUtc, tokenHash);
       if (revoked.changes !== 1) return undefined;
-      // Leave history is preserved for the teacher dashboard. Student rows,
-      // answers, submissions and materials are never touched here.
-      this.database.prepare('UPDATE student_class_joins SET left_at_utc=? WHERE student_id=? AND class_id=? AND left_at_utc IS NULL').run(revokedAtUtc, session.studentId, session.classId);
+      // Membership is class-level, not device-level. Do not mark a student as
+      // left while another device for the same student and class remains
+      // active. Student rows, answers, submissions and materials are never
+      // touched here.
+      const activeElsewhere = this.database.prepare('SELECT 1 FROM student_sessions WHERE student_id=? AND class_id=? AND revoked_at_utc IS NULL AND absolute_expires_at_utc>? AND idle_expires_at_utc>? LIMIT 1').get(session.studentId, session.classId, revokedAtUtc, revokedAtUtc);
+      if (activeElsewhere === undefined) this.database.prepare('UPDATE student_class_joins SET left_at_utc=? WHERE student_id=? AND class_id=? AND left_at_utc IS NULL').run(revokedAtUtc, session.studentId, session.classId);
       return session;
     })();
+  }
+
+  findStudentSessionById(id: StudentSessionId): StoredStudentSession | undefined {
+    const row = this.database.prepare('SELECT id,student_id,class_id,token_hash,created_at_utc,last_seen_at_utc,absolute_expires_at_utc,idle_expires_at_utc,revoked_at_utc FROM student_sessions WHERE id=?').get(id) as StudentRow | undefined;
+    return row === undefined ? undefined : toStudentSession(row);
   }
 
   private touch<T>(table: 'teacher_sessions' | 'student_sessions', tokenHash: string, now: IsoUtc, idleExpiresAtUtc: IsoUtc, find: () => T | undefined): T | undefined {

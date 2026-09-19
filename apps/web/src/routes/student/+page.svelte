@@ -51,8 +51,8 @@
       // never revoke or displace an unknown device's active student session.
       const session = await studentApi.restoreSession();
       if (session !== undefined) { openActivities(); return; }
-      state = 'denied';
-      message = '此學號目前在另一部裝置的課堂中。請在原裝置開啟「我的課堂」後按「退出課堂」；只關閉頁面不會立即退出。若無法使用原裝置，請等待最長 2 小時未使用後再試。';
+      state = 'error';
+      message = '加入課堂未完成，請重新嘗試。';
     } catch {
       state = 'error';
       message = '送出失敗，請檢查網路後重試。';
