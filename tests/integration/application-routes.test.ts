@@ -213,10 +213,14 @@ describe('Task 3 composed API routes', () => {
     const second = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, studentNumber: '1001' }) });
     const firstCookie = first.headers.get('set-cookie')?.split(';')[0]; const secondCookie = second.headers.get('set-cookie')?.split(';')[0];
     const firstCsrf = (await first.json() as { csrfToken: string }).csrfToken;
+    const secondCsrf = (await second.json() as { csrfToken: string }).csrfToken;
     if (firstCookie === undefined || secondCookie === undefined) throw new Error('missing student cookies');
     expect((await fetch(`${base}/api/auth/student/leave`, { method: 'POST', headers: { origin, cookie: firstCookie, 'x-csrf-token': firstCsrf, 'content-type': 'application/json' }, body: '{}' })).status).toBe(204);
     expect((await fetch(`${base}/api/student/activities`, { headers: { cookie: secondCookie } })).status).toBe(200);
     expect(database?.prepare('SELECT left_at_utc FROM student_class_joins WHERE class_id=?').get(classroom.id)).toEqual({ left_at_utc: null });
+    // Once the final active device leaves, class-level membership becomes left.
+    expect((await fetch(`${base}/api/auth/student/leave`, { method: 'POST', headers: { origin, cookie: secondCookie, 'x-csrf-token': secondCsrf, 'content-type': 'application/json' }, body: '{}' })).status).toBe(204);
+    expect(database?.prepare('SELECT left_at_utc FROM student_class_joins WHERE class_id=?').get(classroom.id)).toEqual({ left_at_utc: expect.any(String) });
   });
 
   it('does not consume the join failure budget for successful number-only joins', async () => {
