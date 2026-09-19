@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isAsciiDigitStudentNumber, normalizeStudentNumber } from '../domain/normalization.js';
-import type { Class, ClassId, IsoUtc, PendingStudentRequest, PendingStudentRequestId, StudentId } from '../domain/types.js';
+import type { Class, ClassId, IsoUtc, PendingStudentRequest, PendingStudentRequestId, Student, StudentId } from '../domain/types.js';
 import type { ClassDeletionImpact, ClassRosterRepository, ClassSummary, CsvIssue, CsvPreview, JoinResult, RosterEntry, TeacherAuthorization } from './types.js';
 
 export type ClassServiceDependencies = Readonly<{
@@ -109,6 +109,22 @@ export class ClassService {
   }
 
   requestJoin(classId: ClassId, studentNumberOrLegacyDisplayName: string, legacyStudentNumber?: string): JoinResult {
+    const result = this.prepareStudentJoin(classId, studentNumberOrLegacyDisplayName, legacyStudentNumber);
+    // The compatibility endpoint has no authenticated student session, so its
+    // existing "accepted" behaviour continues to mean a durable class entry.
+    // The auth route uses prepareStudentJoin directly and records this only
+    // after it has successfully created a session.
+    if (result.outcome === 'joined') this.recordAuthenticatedStudentJoin(result.student);
+    return result;
+  }
+
+  /**
+   * Resolves (and if necessary creates) the student identity without marking
+   * the student as currently in class.  This split matters because a second
+   * device can be denied while the first device is still active: a denied
+   * request must not refresh the teacher's "joined" dashboard entry.
+   */
+  prepareStudentJoin(classId: ClassId, studentNumberOrLegacyDisplayName: string, legacyStudentNumber?: string): JoinResult {
     // A new self-service identity is intentionally digits only. Existing
     // imported records may still contain legacy identifiers and remain fully
     // readable; this boundary does not rewrite or delete them.
@@ -135,9 +151,14 @@ export class ClassService {
       displayName: `學生 ${rawStudentNumber}`,
       rawStudentNumber, normalizedStudentNumber, isTemporary: true, approvedAtUtc: now
     });
-    this.dependencies.repository.recordStudentJoin(joined.student, now);
-    if (joined.created) this.notify({ classId, resourceType: 'roster', id: joined.student.id, event: 'student_joined', audience: 'teacher' });
     return { outcome: 'joined', student: joined.student, created: joined.created };
+  }
+
+  /** Records a successful, session-backed classroom entry for the teacher. */
+  recordAuthenticatedStudentJoin(student: Student): void {
+    const now = this.now() as IsoUtc;
+    this.dependencies.repository.recordStudentJoin(student, now);
+    this.notify({ classId: student.classId, resourceType: 'roster', id: student.id, event: 'student_joined', audience: 'teacher' });
   }
 
   approvePendingRequest(teacherContext: unknown, requestId: PendingStudentRequestId): ReturnType<ClassRosterRepository['approvePendingRequest']> {

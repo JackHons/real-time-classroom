@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
   import StudentShell from '$lib/student/StudentShell.svelte';
   import { studentApi } from '$lib/student/api';
   import type { PublicClass } from '$lib/student/types';
@@ -19,7 +18,7 @@
   async function initialise(): Promise<void> {
     try {
       const session = await studentApi.restoreSession();
-      if (session !== undefined) { await goto('/student/activities'); return; }
+      if (session !== undefined) { openActivities(); return; }
       classes = await studentApi.listClasses();
       state = 'form';
     } catch {
@@ -46,13 +45,25 @@
     state = 'joining';
     try {
       const outcome = await studentApi.join(fetch, match.classId, trimmedNumber);
-      if (outcome === 'active') { await goto('/student/activities'); return; }
+      if (outcome === 'active') { openActivities(); return; }
+      // A prior POST can have created this browser's cookie even if a route
+      // navigation was interrupted.  Restore only this browser's cookie; we
+      // never revoke or displace an unknown device's active student session.
+      const session = await studentApi.restoreSession();
+      if (session !== undefined) { openActivities(); return; }
       state = 'denied';
-      message = '目前無法加入課堂。此學號可能已在另一部裝置登入，請先關閉原本的學生頁面後再試。';
+      message = '此學號目前在另一部裝置的課堂中。請在原裝置開啟「我的課堂」後按「退出課堂」；只關閉頁面不會立即退出。若無法使用原裝置，請等待最長 2 小時未使用後再試。';
     } catch {
       state = 'error';
       message = '送出失敗，請檢查網路後重試。';
     }
+  }
+
+  function openActivities(): void {
+    // A full navigation makes the successful login resilient to an interrupted
+    // client-side router transition. The HttpOnly session cookie is already
+    // committed before the API response resolves.
+    globalThis.location.assign('/student/activities');
   }
 
   type ClassMatch = Readonly<{ kind: 'matched'; classId: string }> | Readonly<{ kind: 'missing' | 'ambiguous' }>;

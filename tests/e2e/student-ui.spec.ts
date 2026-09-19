@@ -62,6 +62,36 @@ test.describe('student interface (real server)', () => {
     await expect(page.getByRole('button', { name: '加入課堂', exact: true })).toBeEnabled();
   });
 
+  test('recovers this browser when an interrupted navigation is retried', async ({ page }, testInfo) => {
+    const number = studentNumber(testInfo.project.name, '-RECOVER');
+    await page.goto('/student');
+    await page.getByLabel('班級代碼', { exact: true }).fill('F7A');
+    await page.getByLabel('學號').fill(number);
+    await page.getByRole('button', { name: '加入課堂', exact: true }).click();
+    await page.waitForURL('**/student/activities');
+
+    // Simulate only the initial restore request being interrupted. The browser
+    // still owns a valid HttpOnly session. Retrying must restore that local
+    // session rather than leave the student on a misleading device-conflict
+    // screen or displace another device.
+    let sessionReads = 0;
+    await page.route('**/api/auth/session', async (route) => {
+      sessionReads += 1;
+      if (sessionReads === 1) {
+        await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'STUDENT_AUTH_REQUIRED' }) });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto('/student');
+    await expect(page.getByRole('heading', { name: '學生登入' })).toBeVisible();
+    await page.getByLabel('班級代碼', { exact: true }).fill('F7A');
+    await page.getByLabel('學號').fill(number);
+    await page.getByRole('button', { name: '加入課堂', exact: true }).click();
+    await page.waitForURL('**/student/activities');
+    expect(sessionReads).toBeGreaterThanOrEqual(2);
+  });
+
   test('shows a clear client-side error for a non-digit student number', async ({ page }) => {
     await page.goto('/student');
     await page.getByLabel('班級代碼', { exact: true }).fill('F7A');

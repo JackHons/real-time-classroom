@@ -17,6 +17,12 @@ export type StudentJoinRequest = Readonly<{ classId: ClassId; studentNumber: str
 /** Task 4 supplies roster/pending-request behaviour behind this narrow port. */
 export interface StudentJoinPort {
   join(request: StudentJoinRequest): Promise<Student | undefined> | Student | undefined;
+  /**
+   * Optional durable dashboard update. Implementations that support it run
+   * only after the session insert succeeds, so a different active device
+   * cannot make a failed retry look like a new classroom entry.
+   */
+  recordAuthenticatedJoin?: (student: Student) => Promise<void> | void;
 }
 
 export type PasswordVerifier = (password: string, storedHash: string | undefined) => Promise<boolean>;
@@ -310,6 +316,14 @@ export function createAuthHttpHandler(options: AuthHttpHandlerOptions): (request
         try { login = options.sessions.createStudentSession(student); }
         catch (error) {
           if (error instanceof Error && error.message === 'STUDENT_SESSION_ALREADY_ACTIVE') { denyStudentJoin('STUDENT_SESSION_ALREADY_ACTIVE'); return; }
+          throw error;
+        }
+        try { await options.studentJoin.recordAuthenticatedJoin?.(student); }
+        catch (error) {
+          // No cookie has been sent yet.  Roll back the just-created session
+          // rather than leaving an unreachable active session behind.
+          options.sessions.logoutStudent(login.token);
+          reservation.release();
           throw error;
         }
         reservation.succeed();

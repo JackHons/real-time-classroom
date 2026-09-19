@@ -90,14 +90,15 @@ export function createApplication(options: ApplicationOptions): Application {
   const studentJoin: StudentJoinPort = {
     join: (request) => {
       try {
-        return classService.requestJoin(request.classId, request.studentNumber).student;
+        return classService.prepareStudentJoin(request.classId, request.studentNumber).student;
       } catch (error) {
         // The login boundary deliberately does not reveal whether an arbitrary
         // class ID exists; non-approved joins all receive the same denial.
         if (error instanceof Error && error.message === 'CLASS_NOT_FOUND') return undefined;
         throw error;
       }
-    }
+    },
+    recordAuthenticatedJoin: (student) => classService.recordAuthenticatedStudentJoin(student)
   };
   const authenticateTeacher = (request: IncomingMessage): AuthorizedTeacherContext => {
     if (request.method !== 'GET') requireAllowedOrigin(request, options.allowedOrigin);

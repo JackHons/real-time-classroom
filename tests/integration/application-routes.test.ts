@@ -139,7 +139,8 @@ describe('Task 3 composed API routes', () => {
   });
 
   it('creates a student session directly from a class and student number', async () => {
-    const base = await applicationBase();
+    const clock = new MutableClock(new Date('2026-09-07T00:00:00.000Z'));
+    const base = await applicationBase(clock);
     const login = await teacherLogin(base);
     const created = await fetch(`${base}/api/classes`, { method: 'POST', headers: teacherHeaders(login), body: JSON.stringify({ name: '1A' }) });
     const classroom = await created.json() as { id: string };
@@ -160,9 +161,14 @@ describe('Task 3 composed API routes', () => {
     expect(await unknown.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
 
     expect(database?.prepare('SELECT count(*) AS count FROM student_class_joins WHERE class_id=?').get(classroom.id)).toEqual({ count: 2 });
+    const activeEntryBeforeRetry = database?.prepare('SELECT last_joined_at_utc,left_at_utc FROM student_class_joins WHERE class_id=? AND student_id=(SELECT id FROM students WHERE class_id=? AND raw_student_number=?)').get(classroom.id, classroom.id, '1002');
+    clock.advance(60_000);
     const secondDevice = await fetch(`${base}/api/auth/student/join`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ classId: classroom.id, displayName: 'Unauthorised', studentNumber: '1002' }) });
     expect(secondDevice.status).toBe(403);
     expect(await secondDevice.json()).toEqual({ error: 'STUDENT_ACCESS_DENIED' });
+    // The conflict is deliberately non-destructive: it cannot refresh the
+    // first device's entry or make a left student appear rejoined.
+    expect(database?.prepare('SELECT last_joined_at_utc,left_at_utc FROM student_class_joins WHERE class_id=? AND student_id=(SELECT id FROM students WHERE class_id=? AND raw_student_number=?)').get(classroom.id, classroom.id, '1002')).toEqual(activeEntryBeforeRetry);
   });
 
   it('does not consume the join failure budget for successful number-only joins', async () => {
