@@ -139,6 +139,12 @@ async function dispatch(request: IncomingMessage, response: ServerResponse, opti
     if (options.apiHandler !== undefined && await options.apiHandler(request, response)) return;
 
     if (options.webHandler !== undefined) {
+      // HTML is an application shell, not a versioned asset.  Keeping it out
+      // of the HTTP cache means a direct reload after a deployment always
+      // receives the matching Svelte manifest.  The adapter deliberately
+      // replaces this header for fingerprinted /_app assets with its long
+      // immutable cache policy, so their cache efficiency is unchanged.
+      response.setHeader('cache-control', 'no-store');
       options.webHandler(request, response);
       return;
     }

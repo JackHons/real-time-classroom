@@ -34,6 +34,32 @@ describe('bootstrap host', () => {
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
   });
 
+  it('does not cache the dynamic web application shell', async () => {
+    running = await startServer({
+      host: '127.0.0.1', port: 0,
+      webHandler: (_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        response.end('<!doctype html><title>LAN Classroom</title>');
+      }
+    });
+
+    const response = await fetch(`http://${running.host}:${running.port}/student`);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('allows a fingerprinted web asset handler to retain its immutable cache policy', async () => {
+    running = await startServer({
+      host: '127.0.0.1', port: 0,
+      webHandler: (_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public,max-age=31536000,immutable' });
+        response.end('export {};');
+      }
+    });
+
+    const response = await fetch(`http://${running.host}:${running.port}/_app/immutable/nodes/example.hash.js`);
+    expect(response.headers.get('cache-control')).toBe('public,max-age=31536000,immutable');
+  });
+
   it('reports a fail-closed bootstrap as explicitly not ready', async () => {
     running = await startServer({ host: '127.0.0.1', port: 0, health: { status: 503, state: 'not_ready', reason: 'UPLOAD_STORAGE_NOT_READY' } });
     const response = await fetch(`http://${running.host}:${running.port}/health`);
