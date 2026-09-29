@@ -72,7 +72,7 @@
 <StudentShell title="繳交作業">
   {#if realtimeStatus === 'offline' || realtimeStatus === 'reconnecting'}<p class="connection">即時更新暫時中斷，作業狀態仍會定時重新確認。</p>{/if}
   {#if view && !sessionExpired}
-    <section aria-labelledby="task-title">
+    <section class="panel task-card" aria-labelledby="task-title">
       <h1 id="task-title">{view.task.title}</h1>
       <p>{view.task.description}</p>
       <p class:urgent={deadlinePassed && !lateReopened}><strong>原截止時間：</strong>{new Date(view.task.deadlineAtUtc).toLocaleString('zh-Hant-TW')} {deadlinePassed ? (lateReopened ? '（已過；教師重新開放中）' : '（已截止）') : ''}</p>
@@ -96,6 +96,14 @@
 </StudentShell>
 
 <style>
-  .connection { color: #475569; font-size: .9rem; }
-  form { display:grid; gap:.7rem; } input, button { min-height:44px; font:inherit; } button { border:0; border-radius:.4rem; background:#075985; color:white; padding:.6rem 1rem; font-weight:700; } progress { width:100%; height:1.5rem; } .urgent { color:#9f1239; font-weight:700; }
+  .task-card { max-width: 56rem; }
+  .task-card h1 { margin-top: 0; font-size: clamp(1.7rem, 4vw, 2.5rem); }
+  .task-card > p { max-width: 72ch; }
+  .task-card form { display: grid; gap: .75rem; margin-top: 1.1rem; }
+  .task-card form label { margin-top: 0; }
+  .task-card input[type="file"] { padding: .55rem; background: #fbfdfc; }
+  .task-card progress { height: .9rem; }
+  .task-card form button { justify-self: start; }
+  .connection { color: var(--color-muted); font-size: .94rem; }
+  .urgent { color: var(--color-danger); font-weight: 750; }
 </style>

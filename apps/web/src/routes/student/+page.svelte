@@ -106,7 +106,7 @@
         <label for="number">學號</label>
         <input id="number" bind:value={studentNumber} required autocomplete="username" inputmode="numeric" pattern="[0-9]*" aria-describedby="number-help" disabled={state === 'joining'} />
         <p id="number-help" class="hint">只可輸入半形數字 0–9。</p>
-        <button type="submit" disabled={state === 'joining' || classes.length === 0}>{state === 'joining' ? '正在送出…' : '加入課堂'}</button>
+        <button type="submit" class="primary" disabled={state === 'joining' || classes.length === 0}>{state === 'joining' ? '正在送出…' : '加入課堂'}</button>
       </form>
       {#if message}<p class="error" role="alert">{message}</p>{/if}
     {:else}
@@ -117,16 +117,18 @@
 </StudentShell>
 
 <style>
-  .hero { max-width: 44rem; }
-  h1 { margin: 0; font-size: clamp(2rem, 6vw, 3.2rem); line-height: 1.15; }
+  .hero { max-width: 48rem; margin-bottom: 1.35rem; }
+  h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.15rem); }
+  .hero p { max-width: 66ch; margin-top: .8rem; color: var(--color-muted); font-size: 1.08rem; }
   h2 { margin-top: 0; font-size: 1.3rem; }
-  .card { max-width: 38rem; margin-top: 1.4rem; padding: 1.2rem; border: 1px solid #cbd5e1; border-radius: .8rem; background: #fff; box-shadow: 0 1px 2px #17255412; }
-  form { display: grid; gap: .55rem; margin-top: 1rem; }
-  label { font-weight: 700; }
-  input, button { min-height: 44px; font: inherit; border-radius: .45rem; }
-  input { width: 100%; border: 1px solid #64748b; padding: .5rem .65rem; background: #fff; }
-  button { margin-top: .5rem; border: 0; padding: .6rem 1rem; background: #075985; color: #fff; font-weight: 700; cursor: pointer; }
-  button:disabled { opacity: .65; cursor: wait; }
-  .error { color: #7f1d1d; background: #fef2f2; border-left: 4px solid #b91c1c; padding: .7rem; }
-  .hint { margin: -.2rem 0 .2rem; color: #475569; font-size: .9rem; }
+  .card {
+    max-width: 40rem;
+    margin-top: 1rem;
+    background: #fff;
+  }
+  form { display: grid; gap: .35rem; margin-top: 1.15rem; }
+  form label { margin-top: .7rem; }
+  form button { width: 100%; margin-top: .65rem; }
+  .hint { margin: -.05rem 0 .35rem; font-size: .92rem; }
+  #number { letter-spacing: .035em; }
 </style>

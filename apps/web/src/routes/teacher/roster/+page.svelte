@@ -37,7 +37,3 @@
 <dialog bind:this={deleteDialog} aria-labelledby="delete-class-title" on:close={() => { deletion = undefined; confirmationName = ''; }}>
   {#if deletion}<form class="dialog" on:submit|preventDefault={() => void deleteClass()}><h2 id="delete-class-title">刪除「{deletion.className}」？</h2><p class="error">此操作不能復原，會永久移除以下資料：</p><ul><li>已加入學生：{deletion.joinedStudents}（學生紀錄共 {deletion.students}）</li><li>教材：{deletion.materials}</li><li>即時題：{deletion.questions}</li><li>作業：{deletion.fileTasks}</li><li>已交文件：{deletion.submissions}</li></ul><label for="delete-confirmation">請輸入班級名稱「{deletion.className}」以確認</label><input id="delete-confirmation" bind:value={confirmationName} autocomplete="off" required/><div class="actions"><button type="button" on:click={closeDelete}>取消</button><button type="submit" class="danger" disabled={busy || confirmationName.normalize('NFKC').trim() !== deletion.className}>永久刪除班級</button></div></form>{/if}
 </dialog>
-<style>
-  dialog{max-width:36rem;border:0;border-radius:.7rem;box-shadow:0 16px 50px #0008;padding:0}
-  dialog::backdrop{background:#07132599}.dialog{padding:1.25rem}
-</style>

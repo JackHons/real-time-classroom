@@ -141,8 +141,8 @@
 </StudentShell>
 
 <style>
-  .notice { min-height: 1.5rem; color: #075985; font-weight: 600; }
-  .connection { color: #475569; font-size: .9rem; }
-  button { min-height: 44px; padding: .6rem 1rem; color: white; background: #075985; border: 0; border-radius: .4rem; font: inherit; }
-  .discard { display: block; margin-top: .75rem; background: #991b1b; }
+  .notice:empty { min-height: 0; margin: 0; padding: 0; border: 0; }
+  .connection { max-width: 54rem; color: var(--color-muted); font-size: .94rem; }
+  button.discard { display: inline-flex; margin-top: .8rem; color: #fff; background: var(--color-danger); border-color: var(--color-danger); }
+  button.discard:hover:not(:disabled) { background: #84271f; }
 </style>

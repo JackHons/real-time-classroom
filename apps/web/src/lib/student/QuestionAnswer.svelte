@@ -54,14 +54,16 @@
 </section>
 
 <style>
-  .eyebrow { color: #075985; font-weight: 700; }
-  h1 { font-size: clamp(1.5rem, 4vw, 2.2rem); }
-  fieldset { border: 0; padding: 0; display: grid; gap: .75rem; }
-  legend { font-weight: 700; margin-bottom: .75rem; }
-  .choice { display: flex; align-items: center; gap: .75rem; min-height: 44px; padding: .5rem; border: 1px solid #64748b; border-radius: .5rem; }
-  textarea { width: 100%; font: inherit; border: 2px solid #475569; border-radius: .4rem; padding: .65rem; }
-  button { min-height: 44px; margin-top: 1rem; padding: .65rem 1rem; background: #075985; color: white; border: 0; border-radius: .4rem; font: inherit; font-weight: 700; }
-  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
-  .status { background: #e0f2fe; padding: .8rem; border-left: 4px solid #0369a1; }
-  .saved-answer { padding: .75rem; background: #f1f5f9; border-radius: .4rem; overflow-wrap: anywhere; }
+  section { max-width: 54rem; padding: clamp(1rem, 3vw, 1.6rem); background: #fff; border: 1px solid var(--color-surface-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
+  .eyebrow { color: var(--color-primary-strong); font-weight: 800; }
+  h1 { margin-top: .2rem; font-size: clamp(1.65rem, 4vw, 2.35rem); }
+  fieldset { display: grid; gap: .75rem; min-width: 0; padding: 0; border: 0; }
+  legend { margin-bottom: .8rem; color: #284846; font-weight: 750; }
+  .choice { display: flex; align-items: center; gap: .8rem; min-height: 48px; padding: .65rem .8rem; background: #fbfdfc; border: 1px solid var(--color-border); border-radius: .75rem; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease; }
+  .choice:hover { background: var(--color-primary-soft); border-color: #94c4bc; }
+  .choice input { flex: none; width: 1.2rem; min-height: 1.2rem; height: 1.2rem; margin: 0; accent-color: var(--color-primary); }
+  textarea { min-height: 9rem; }
+  form > button { min-width: 10rem; margin-top: .45rem; }
+  .status { padding: .85rem 1rem; color: #1b514d; background: var(--color-primary-soft); border-left: 4px solid var(--color-primary); border-radius: .55rem; }
+  .saved-answer { padding: .85rem; color: #354b49; background: var(--color-surface-muted); border-radius: .65rem; overflow-wrap: anywhere; white-space: pre-wrap; }
 </style>

@@ -146,15 +146,50 @@
 </StudentShell>
 
 <style>
-  .intro { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; } .actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-  h1 { margin: 0; font-size: clamp(2rem, 6vw, 3rem); line-height: 1.15; } h2 { margin: 0; font-size: 1.35rem; } .activities-heading { margin: 1.4rem 0 .75rem; }
-  .intro p { margin-bottom: 0; color: #475569; } .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
-  .panel,.empty { border: 1px solid #cbd5e1; border-radius: .8rem; padding: 1.1rem; background: #fff; box-shadow: 0 1px 2px #17255412; }
-  .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; padding-bottom: .7rem; border-bottom: 1px solid #e2e8f0; } .section-title span,.muted,small { color: #475569; }
-  .activity-list { display: grid; gap: .65rem; padding: 0; list-style: none; } .activity-list li { margin: 0; }
-  .activity-list a { display: grid; gap: .3rem; min-height: 6rem; padding: .8rem; color: #172554; border: 1px solid #cbd5e1; border-radius: .6rem; text-decoration: none; } .activity-list a:hover { background: #f0f9ff; border-color: #0284c7; }
-  .badge { width: max-content; padding: .1rem .45rem; border-radius: 99px; color: #475569; background: #e2e8f0; font-size: .8rem; font-weight: 800; } .badge.open { color: #065f46; background: #d1fae5; }
-  button,.button { min-height: 44px; border: 0; border-radius: .45rem; padding: .55rem .9rem; color: #fff; background: #075985; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; } button:disabled { opacity: .65; cursor: wait; } .secondary { color: #075985; background: #e0f2fe; } .leave { background: #9f1239; } .more { display: block; margin: 1rem auto; }
-  .error,.connection { margin: 1rem 0; padding: .7rem; border-left: 4px solid #b91c1c; color: #7f1d1d; background: #fef2f2; } .connection { border-color: #0369a1; color: #075985; background: #e0f2fe; }
-  .empty { max-width: 40rem; } @media (max-width: 46rem) { .intro { align-items: flex-start; flex-direction: column; } .columns { grid-template-columns: 1fr; } }
+  .intro { display: flex; align-items: end; justify-content: space-between; gap: 1.25rem; margin-bottom: 1.5rem; }
+  .intro h1 { margin: 0; font-size: clamp(2rem, 5vw, 3rem); }
+  .intro p { max-width: 68ch; margin-bottom: 0; color: var(--color-muted); }
+  .intro .actions { display: flex; flex-wrap: wrap; gap: .55rem; }
+  .columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+  .activities-heading { margin: 1.7rem 0 .8rem; font-size: 1.35rem; }
+  .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; padding-bottom: .8rem; border-bottom: 1px solid #dce6e3; }
+  .section-title h2 { margin: 0; font-size: 1.3rem; }
+  .section-title span { flex: none; padding: .22rem .65rem; color: #315653; background: var(--color-surface-muted); border-radius: 999px; font-size: .88rem; font-weight: 750; }
+  .activity-list { display: grid; gap: .7rem; padding: 0; list-style: none; }
+  .activity-list li { margin: 0; }
+  .activity-list a {
+    display: grid;
+    gap: .35rem;
+    min-height: 6.25rem;
+    padding: .9rem;
+    color: var(--color-foreground);
+    background: #fff;
+    border: 1px solid var(--color-surface-border);
+    border-radius: .75rem;
+    text-decoration: none;
+    transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  }
+  .activity-list a:hover { background: #f0f8f6; border-color: #8dbdb5; }
+  .activity-list a:focus-visible { outline-offset: 3px; }
+  .badge { width: max-content; padding: .16rem .55rem; color: #4d5e5d; background: #edf2f1; border-radius: 999px; font-size: .82rem; font-weight: 750; }
+  .badge.open { color: #155738; background: #e4f4e9; }
+  .activity-list small { font-size: .91rem; }
+  button, .button { min-height: 46px; border: 1px solid transparent; border-radius: .7rem; padding: .6rem .95rem; color: #fff; background: var(--color-primary); font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; }
+  button:hover:not(:disabled), .button:hover { background: var(--color-primary-strong); }
+  button:disabled { opacity: .58; cursor: not-allowed; }
+  .secondary { color: #20524e; background: #e5f2ef; border-color: #c6ded9; }
+  .secondary:hover:not(:disabled) { color: #173c39; background: #d7ebe6; }
+  .leave { color: #852d25; background: #fff; border-color: #e4b9b2; }
+  .leave:hover:not(:disabled) { color: #fff; background: #9d382d; }
+  .more { display: flex; margin: 1rem auto; }
+  .connection { margin: 1rem 0; padding: .75rem .9rem; color: #20524e; background: #e7f4f1; border-left: 4px solid var(--color-primary); border-radius: .5rem; }
+  .empty { max-width: 42rem; }
+  .materials { margin-top: 1rem; }
+  @media (max-width: 52rem) { .columns { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 38rem) {
+    .intro { align-items: flex-start; flex-direction: column; }
+    .intro .actions { width: 100%; }
+    .intro .actions > button { flex: 1; }
+    .activity-list a { min-height: 5.5rem; }
+  }
 </style>

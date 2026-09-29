@@ -1,1 +1,43 @@
-*{box-sizing:border-box}body{margin:0;color:#172033;background:#f5f7fb;font-family:system-ui,"Noto Sans TC",sans-serif;line-height:1.55}button,input,select,textarea{font:inherit}button,.button{min-height:44px;padding:.55rem .9rem;border:1px solid #50627d;border-radius:.45rem;color:#172033;background:#fff;cursor:pointer;text-decoration:none}button:hover,.button:hover{background:#e8eef8}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #005fcc;outline-offset:2px}button:disabled{cursor:wait;opacity:.6}main{max-width:1160px;margin:auto;padding:1.25rem}.panel{background:#fff;border:1px solid #c8d3e3;border-radius:.7rem;padding:1.15rem;box-shadow:0 1px 2px #17203312}.grid{display:grid;gap:1rem;margin-block:1rem}.two{grid-template-columns:repeat(auto-fit,minmax(min(290px,100%),1fr))}.actions{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;margin-top:1rem}.primary{color:#fff;background:#064a9b;border-color:#064a9b}.primary:hover{background:#003b7c}.danger{color:#fff;background:#a22b18;border-color:#a22b18}.danger:hover{background:#81200f}.small{min-height:36px;padding:.35rem .6rem}.notice{color:#084a2c;background:#e4f5ea;border-left:.3rem solid #167341;padding:.6rem .75rem}.error,.issues{color:#7b1d10;background:#fff0ed;border-left:.3rem solid #b12b17;padding:.6rem .75rem}.muted{color:#45556d;font-size:.93rem}label{display:block;font-weight:700;margin-top:.8rem}input,select,textarea{width:100%;min-height:44px;border:1px solid #66758a;border-radius:.35rem;padding:.55rem;color:#172033;background:#fff}textarea{min-height:7rem;resize:vertical}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse}th,td{padding:.55rem;text-align:left;border-bottom:1px solid #d6deea;vertical-align:top}th{background:#eef3fa}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+@import "../ui-theme.css";
+
+main {
+  width: min(100% - 2rem, 82rem);
+  margin-inline: auto;
+  padding: clamp(1rem, 3vw, 2rem) 0 3rem;
+}
+main > h2 {
+  margin: 1.6rem 0 .35rem;
+  font-size: clamp(1.55rem, 3vw, 2rem);
+}
+main > .muted { max-width: 70ch; }
+.panel h3 { margin: 0 0 1rem; font-size: 1.16rem; }
+.panel h4 { margin-block: 1rem .45rem; }
+.panel > .actions:first-child { margin-top: 0; }
+.panel > .actions h3 { margin: .1rem auto .1rem 0; }
+.panel > p:last-child { margin-bottom: 0; }
+.panel form { display: grid; gap: .65rem; }
+.panel form button { justify-self: start; margin-top: .25rem; }
+.panel form label:first-child { margin-top: 0; }
+.panel :where(input, select, textarea) { margin-top: .15rem; }
+.login-page {
+  min-height: calc(100vh - 4rem);
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: var(--color-background);
+}
+.login { width: min(100%, 34rem); }
+.login h1 { margin-top: 0; }
+.login form { display: grid; gap: .75rem; margin-top: 1.25rem; }
+.login form label { margin-top: 0; }
+.login a { font-weight: 700; }
+.dialog { width: min(calc(100vw - 2rem), 38rem); padding: clamp(1rem, 3vw, 1.5rem); }
+.dialog h2 { margin-top: 0; }
+.dialog ul { padding-left: 1.3rem; }
+.feedback:empty { display: none; }
+
+@media (max-width: 35rem) {
+  main { width: min(100% - 1.25rem, 82rem); }
+  .actions > button, .actions > .button { flex: 1 1 auto; }
+  .login-page { min-height: calc(100vh - 2rem); padding: .75rem; }
+}

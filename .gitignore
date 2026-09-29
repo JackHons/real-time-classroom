@@ -20,4 +20,5 @@ runtime-data/
 /runtime/
 /uploads/
 /release/
+/artifacts/
 tests/.runtime-e2e/
